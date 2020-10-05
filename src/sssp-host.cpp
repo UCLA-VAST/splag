@@ -288,7 +288,7 @@ int main(int argc, const char* argv[]) {
   // Other kernel arguments.
   aligned_vector<Vid> parents(tapa::round_up<kVertexVecLen>(vertex_count));
   aligned_vector<float> distances(tapa::round_up<kVertexVecLen>(vertex_count));
-  aligned_vector<uint64_t> metadata(interval_count * (kPeCount + 1) + 1);
+  aligned_vector<uint64_t> metadata(interval_count * (kPeCount + 1) + 3);
   for (int64_t iid = 0; iid < interval_count; ++iid) {
     for (int pe = 0; pe < kPeCount; ++pe) {
       metadata[kPeCount * iid + pe] = out_edge_counts[pe][iid];
@@ -303,6 +303,8 @@ int main(int argc, const char* argv[]) {
   // Statistics.
   vector<double> teps;
   vector<int64_t> iteration_count;
+  vector<int64_t> visited_edge_count;
+  vector<int64_t> processed_update_count;
 
   for (const auto root : sample_vertices) {
     CHECK_GE(root, 0) << "invalid root";
@@ -339,7 +341,10 @@ int main(int argc, const char* argv[]) {
       }
     }
     teps.push_back(connected_edge_count / elapsed_time);
-    iteration_count.push_back(*metadata.rbegin());
+    iteration_count.push_back(metadata[interval_count * (kPeCount + 1)]);
+    visited_edge_count.push_back(metadata[interval_count * (kPeCount + 1) + 1]);
+    processed_update_count.push_back(
+        metadata[interval_count * (kPeCount + 1) + 2]);
 
     if (!IsValid(root, edges_view, weights_view, parents.data(),
                  distances.data(), vertex_count)) {
@@ -349,6 +354,11 @@ int main(int argc, const char* argv[]) {
 
   LOG(INFO) << "average #iteration: "
             << average<decltype(iteration_count), float>(iteration_count);
+  LOG(INFO) << "average #edge visited: "
+            << average<decltype(visited_edge_count), float>(visited_edge_count);
+  LOG(INFO) << "average #update processed: "
+            << average<decltype(processed_update_count), float>(
+                   processed_update_count);
   printf("sssp harmonic_mean_TEPS:     !  %g\n", geo_mean(teps));
 
   return 0;

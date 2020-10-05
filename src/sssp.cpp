@@ -61,6 +61,10 @@ void Control(const Iid interval_count, const Vid interval_size,
   // Temporary variables for accumulating the edge offsets.
   DECL_ARRAY(Eid, eid_offsets_acc, kPeCount, 0);
 
+  // Collect stats about #edge and #update.
+  Eid total_edge_count = 0;
+  Eid total_update_count = 0;
+
 load_config:
   for (Iid i = 0; i < interval_count * kPeCount; ++i) {
 #pragma HLS pipeline II = 1
@@ -100,14 +104,16 @@ bulk_steps:
 #pragma HLS pipeline II = 1
       // Tell VertexMem to start broadcasting source vertices.
       vertex_req_q.write({iid});
-      RANGE(pe, kPeCount,
-            task_req_q[pe].write({
-                .phase = TaskReq::kScatter,
-                .iid = iid,
-                .edge_count_v = edge_count_local[iid][pe] / kEdgeVecLen,
-                .eid_offset_v = eid_offsets[iid][pe] / kEdgeVecLen,
-                .scatter_done = false,  // Unused for scatter.
-            }));
+      RANGE(pe, kPeCount, {
+        total_edge_count += edge_count_local[iid][pe];
+        task_req_q[pe].write({
+            .phase = TaskReq::kScatter,
+            .iid = iid,
+            .edge_count_v = edge_count_local[iid][pe] / kEdgeVecLen,
+            .eid_offset_v = eid_offsets[iid][pe] / kEdgeVecLen,
+            .scatter_done = false,  // Unused for scatter.
+        });
+      });
 
       ap_wait();
 
@@ -146,6 +152,7 @@ bulk_steps:
       });
       if (done && iid < interval_count) {
         VLOG_F(7, recv) << "update_count_v: " << update_count_v;
+        total_update_count += update_count_v.payload * kUpdateVecLen;
         update_count_local[iid] += update_count_v.payload;
       }
     }
@@ -194,6 +201,8 @@ bulk_steps:
   });
 
   metadata[interval_count * kPeCount + interval_count] = iter;
+  metadata[interval_count * kPeCount + interval_count + 1] = total_edge_count;
+  metadata[interval_count * kPeCount + interval_count + 2] = total_update_count;
 }
 
 void VertexMem(const Vid interval_size, tapa::istream<VertexReq>& scatter_req_q,
