@@ -18,8 +18,8 @@ struct TaskReq {
   enum Phase { kScatter = 0, kGather = 1 };
   Phase phase;
   Iid iid;
-  Eid edge_count;
-  Eid eid_offset;
+  Eid edge_count_v;
+  Eid eid_offset_v;
   bool scatter_done;
 };
 
@@ -32,8 +32,8 @@ inline std::ostream& operator<<(std::ostream& os, const TaskReq& obj) {
     return os << "{scatter_done: " << obj.scatter_done << "}";
   }
   return os << "{phase: " << obj.phase << ", iid: " << obj.iid
-            << ", edge_count: " << obj.edge_count
-            << ", eid_offset: " << obj.eid_offset << "}";
+            << ", edge_count_v: " << obj.edge_count_v
+            << ", eid_offset_v: " << obj.eid_offset_v << "}";
 }
 
 struct TaskResp {
@@ -47,12 +47,12 @@ inline std::ostream& operator<<(std::ostream& os, const TaskResp& obj) {
 struct UpdateReq {
   TaskReq::Phase phase;
   Iid iid;
-  Eid update_count;
+  Eid update_count_v;
 };
 
 inline std::ostream& operator<<(std::ostream& os, const UpdateReq& obj) {
   return os << "{phase: " << obj.phase << ", iid: " << obj.iid
-            << ", update_count: " << obj.update_count << "}";
+            << ", update_count_v: " << obj.update_count_v << "}";
 }
 
 struct VertexReq {

@@ -75,9 +75,10 @@ load_config:
   // Initialize UpdateMem, needed only once per execution.
 config_update_offsets:
   for (Iid iid = 0; iid < interval_count; ++iid) {
-    auto update_offset = metadata[interval_count * kPeCount + iid];
-    VLOG_F(7, info) << "update offset[" << iid << "]: " << update_offset;
-    update_config_q[iid % kPeCount].write(update_offset);
+    auto update_offset_v =
+        metadata[interval_count * kPeCount + iid] / kUpdateVecLen;
+    VLOG_F(7, info) << "update offset[" << iid << "]: " << update_offset_v;
+    update_config_q[iid % kPeCount].write(update_offset_v);
   }
 
   // Tells UpdateHandler start to wait for phase requests.
@@ -103,8 +104,8 @@ bulk_steps:
             task_req_q[pe].write({
                 .phase = TaskReq::kScatter,
                 .iid = iid,
-                .edge_count = edge_count_local[iid][pe],
-                .eid_offset = eid_offsets[iid][pe],
+                .edge_count_v = edge_count_local[iid][pe] / kEdgeVecLen,
+                .eid_offset_v = eid_offsets[iid][pe] / kEdgeVecLen,
                 .scatter_done = false,  // Unused for scatter.
             }));
 
@@ -133,19 +134,19 @@ bulk_steps:
          iid_recv < tapa::round_up<kPeCount>(interval_count);) {
 #pragma HLS pipeline II = 1
 #pragma HLS dependence false variable = update_count_local
-      UpdateCount update_count;
+      UpdateCount update_count_v;
       bool done = false;
       Iid iid;
       RANGE(pe, kPeCount, {
-        if (!done && update_count_q[pe].try_read(update_count)) {
+        if (!done && update_count_q[pe].try_read(update_count_v)) {
           done |= true;
-          iid = update_count.addr * kPeCount + pe;
+          iid = update_count_v.addr * kPeCount + pe;
           ++iid_recv;
         }
       });
       if (done && iid < interval_count) {
-        VLOG_F(7, recv) << "update_count: " << update_count;
-        update_count_local[iid] += update_count.payload;
+        VLOG_F(7, recv) << "update_count_v: " << update_count_v;
+        update_count_local[iid] += update_count_v.payload;
       }
     }
 
@@ -164,8 +165,8 @@ bulk_steps:
           if (task_req_q[pe].try_write({
                   .phase = TaskReq::kGather,
                   .iid = iid,
-                  .edge_count = update_count_local[iid],
-                  .eid_offset = 0,        // Unused for gather.
+                  .edge_count_v = update_count_local[iid],
+                  .eid_offset_v = 0,      // Unused for gather.
                   .scatter_done = false,  // Unused for gather.
               })) {
             ++iid_send[pe];
@@ -202,6 +203,7 @@ void VertexMem(const Vid interval_size, tapa::istream<VertexReq>& scatter_req_q,
                tapa::async_mmap<VidVec>& parents,
                tapa::async_mmap<FloatVec>& distances) {
   constexpr int N = kPeCountR0 + 1;
+  const Vid interval_size_v = interval_size / kVertexVecLen;
 infinite_loop:
   for (;;) {
     // Prioritize scatter phase broadcast.
@@ -214,14 +216,12 @@ infinite_loop:
       bool valid = false;
       DECL_ARRAY(bool, ready, N, false);
     scatter:
-      for (Vid i_req = 0, i_resp = 0; i_resp < interval_size;) {
+      for (Vid i_req = 0, i_resp = 0; i_resp < interval_size_v;) {
 #pragma HLS pipeline II = 1
         // Send requests.
-        if (i_req < interval_size &&
-            i_req < i_resp + kMemLatency * kVertexVecLen &&
-            distances.read_addr_try_write((req.iid * interval_size + i_req) /
-                                          kVertexVecLen)) {
-          i_req += kVertexVecLen;
+        if (i_req < interval_size_v && i_req < i_resp + kMemLatency &&
+            distances.read_addr_try_write(req.iid * interval_size_v + i_req)) {
+          ++i_req;
         }
 
         // Handle responses.
@@ -232,7 +232,7 @@ infinite_loop:
           RANGE(pe, N,
                 UPDATE(ready[pe], vertex_out_q[pe].try_write(vertex_out)));
           if (All(ready)) {
-            i_resp += kVertexVecLen;
+            ++i_resp;
             valid = false;
             MemSet(ready, false);
           }
@@ -263,26 +263,24 @@ infinite_loop:
         gather:
           for (Vid i_rd_req_parent = 0, i_rd_req_distance = 0, i_rd_resp = 0,
                    i_wr = 0;
-               i_wr < interval_size;) {
+               i_wr < interval_size_v;) {
             _Pragma("HLS pipeline II = 1");
             // Send read requests.
-            if (i_rd_req_parent < interval_size &&
-                i_rd_req_parent < i_rd_resp + kMemLatency * kVertexVecLen &&
-                parents.read_addr_try_write(
-                    (req.iid * interval_size + i_rd_req_parent) /
-                    kVertexVecLen)) {
-              i_rd_req_parent += kVertexVecLen;
+            if (i_rd_req_parent < interval_size_v &&
+                i_rd_req_parent < i_rd_resp + kMemLatency &&
+                parents.read_addr_try_write(req.iid * interval_size_v +
+                                            i_rd_req_parent)) {
+              ++i_rd_req_parent;
             }
-            if (i_rd_req_distance < interval_size &&
-                i_rd_req_distance < i_rd_resp + kMemLatency * kVertexVecLen &&
-                distances.read_addr_try_write(
-                    (req.iid * interval_size + i_rd_req_distance) /
-                    kVertexVecLen)) {
-              i_rd_req_distance += kVertexVecLen;
+            if (i_rd_req_distance < interval_size_v &&
+                i_rd_req_distance < i_rd_resp + kMemLatency &&
+                distances.read_addr_try_write(req.iid * interval_size_v +
+                                              i_rd_req_distance)) {
+              ++i_rd_req_distance;
             }
 
             // Handle read responses.
-            if (i_rd_resp < interval_size) {
+            if (i_rd_resp < interval_size_v) {
               UPDATE(valid_parent, parents.read_data_try_read(resp_parent));
               UPDATE(valid_distance,
                      distances.read_data_try_read(resp_distance));
@@ -291,7 +289,7 @@ infinite_loop:
                     vertex_out.set(i, {resp_parent[i], resp_distance[i]}));
               if (valid_parent && valid_distance &&
                   vertex_out_q[pe].try_write(vertex_out)) {
-                i_rd_resp += kVertexVecLen;
+                ++i_rd_resp;
                 valid_parent = false;
                 valid_distance = false;
               }
@@ -306,7 +304,7 @@ infinite_loop:
                 parent_out.set(i, v[i].parent);
                 distance_out.set(i, v[i].distance);
               });
-              uint64_t addr = (req.iid * interval_size + i_wr) / kVertexVecLen;
+              uint64_t addr = req.iid * interval_size_v + i_wr;
               UPDATE(addr_ready_distance, distances.write_addr_try_write(addr));
               UPDATE(data_ready_distance,
                      distances.write_data_try_write(distance_out));
@@ -320,7 +318,7 @@ infinite_loop:
                 data_ready_distance = false;
                 addr_ready_parent = false;
                 data_ready_parent = false;
-                i_wr += kVertexVecLen;
+                ++i_wr;
               }
             }
           }
@@ -535,7 +533,7 @@ void UpdateHandler(Iid interval_count,
   Eid update_offsets[tapa::round_up_div<kPeCount>(kMaxIntervalCount)];
 #pragma HLS resource variable = update_offsets latency = 4
 
-  // Number of updates of each update interval in memory.
+  // Number of updates of each update interval in memory (in unit of UpdateVec).
   Eid update_counts[tapa::round_up_div<kPeCount>(kMaxIntervalCount)];
 
 num_updates_init:
@@ -584,8 +582,7 @@ update_phases:
 #pragma HLS latency min = 1 max = 1
             update_idx = update_counts[iid / kPeCount];
             if (last_iid != -1) {
-              update_counts[last_iid / kPeCount] =
-                  tapa::round_up<kUpdateVecLen>(last_update_idx);
+              update_counts[last_iid / kPeCount] = last_update_idx;
             }
           } else {
             update_idx = last_update_idx;
@@ -594,23 +591,22 @@ update_phases:
           // set for next iteration
           last_last_iid = last_iid;
           last_iid = iid;
-          last_update_idx = update_idx + kUpdateVecLen;
+          last_update_idx = update_idx + 1;
 
           Eid update_offset = update_offsets[iid / kPeCount] + update_idx;
-          updates_write_addr_q.write(update_offset / kUpdateVecLen);
+          updates_write_addr_q.write(update_offset);
           updates_write_data_q.write(update_v);
         }
       }
       if (last_iid != -1) {
-        update_counts[last_iid / kPeCount] =
-            tapa::round_up<kUpdateVecLen>(last_update_idx);
+        update_counts[last_iid / kPeCount] = last_update_idx;
       }
       update_in_q.open();
       ap_wait_n(1);
     send_num_updates:
       for (Iid i = 0; i < tapa::round_up_div<kPeCount>(interval_count); ++i) {
         // TODO: store relevant intervals only
-        VLOG_F(7, send) << "update_count[" << i << "]: " << update_counts[i];
+        VLOG_F(7, send) << "update_count_v[" << i << "]: " << update_counts[i];
         num_updates_out_q.write({i, update_counts[i]});
         update_counts[i] = 0;  // Reset for the next scatter phase.
       }
@@ -620,25 +616,24 @@ update_phases:
       for (UpdateReq update_req; update_phase_q.empty();) {
         if (update_req_q.try_read(update_req)) {
           const auto iid = update_req.iid;
-          const auto update_count = update_req.update_count;
+          const auto update_count_v = update_req.update_count_v;
           VLOG_F(7, recv) << "UpdateReq: " << update_req;
 
           bool valid = false;
           UpdateVec update_v;
         update_reads:
-          for (Eid i_rd = 0, i_wr = 0; i_rd < update_count;) {
+          for (Eid i_rd = 0, i_wr = 0; i_rd < update_count_v;) {
             auto read_addr = update_offsets[iid / kPeCount] + i_wr;
-            if (i_wr < update_count &&
-                updates_read_addr_q.try_write(read_addr / kUpdateVecLen)) {
-              VLOG_F(9, req)
-                  << "UpdateVec[" << read_addr / kUpdateVecLen << "]";
-              i_wr += kUpdateVecLen;
+            if (i_wr < update_count_v &&
+                updates_read_addr_q.try_write(read_addr)) {
+              VLOG_F(9, req) << "UpdateVec[" << read_addr << "]";
+              ++i_wr;
             }
 
             if (UPDATE(valid, updates_read_data_q.try_read(update_v)) &&
                 update_out_q.try_write(update_v)) {
               VLOG_F(9, send) << "Update: " << update_v;
-              i_rd += kUpdateVecLen;
+              ++i_rd;
               valid = false;
             }
           }
@@ -702,13 +697,11 @@ task_requests:
         }
 
       edge_reads:
-        for (Eid eid_resp = 0, eid_req = 0; eid_resp < req.edge_count;) {
+        for (Eid eid_resp = 0, eid_req = 0; eid_resp < req.edge_count_v;) {
 #pragma HLS pipeline II = 1
-          if (eid_req < req.edge_count &&
-              eid_resp < eid_req + kMemLatency * kEdgeVecLen &&
-              edge_req_q.try_write(req.eid_offset / kEdgeVecLen +
-                                   eid_req / kEdgeVecLen)) {
-            eid_req += kEdgeVecLen;
+          if (eid_req < req.edge_count_v && eid_resp < eid_req + kMemLatency &&
+              edge_req_q.try_write(req.eid_offset_v + eid_req)) {
+            ++eid_req;
           }
           EdgeVec edge_v;
           // empty edge is indicated by src == kNullVertex
@@ -740,7 +733,7 @@ task_requests:
               update_out_q.write(update_v);
               VLOG_F(9, send) << "Update: " << update_v;
             }
-            eid_resp += kEdgeVecLen;
+            ++eid_resp;
           }
         }
       } else {
@@ -751,7 +744,7 @@ task_requests:
           vertices_local[i] = {kNullVertex, kInfDistance};
         }
 
-        update_req_q.write({req.phase, req.iid, req.edge_count});
+        update_req_q.write({req.phase, req.iid, req.edge_count_v});
       update_reads:
         TAPA_WHILE_NOT_EOS(update_in_q) {
 #pragma HLS pipeline II = 1
