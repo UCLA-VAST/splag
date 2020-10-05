@@ -22,12 +22,11 @@ endif()
 
 add_tapa_target(
   sssp-hw-xo
-  INPUT
-  src/sssp.cpp
-  TOP
-  SSSP
-  PLATFORM
-  xilinx_u280_xdma_201920_3)
+  INPUT src/sssp.cpp
+  TOP SSSP
+  PLATFORM xilinx_u280_xdma_201920_3
+  DIRECTIVE ${CMAKE_CURRENT_SOURCE_DIR}/directive.json
+  CONSTRAINT ${CMAKE_CURRENT_BINARY_DIR}/constraint.tcl)
 
 add_xocc_hw_link_targets(
   ${CMAKE_CURRENT_BINARY_DIR}
@@ -50,12 +49,11 @@ add_xocc_hw_link_targets(
   --sp=SSSP.updates_5:HBM[15]
   --sp=SSSP.updates_6:HBM[16]
   --sp=SSSP.updates_7:HBM[17]
-  INPUT
-  sssp-hw-xo
-  HW_EMU_XCLBIN
-  hw_emu_xclbin_target
-  HW_XCLBIN
-  hw_xclbin_target)
+  --vivado.prop=run.impl_1.STRATEGY=Performance_EarlyBlockPlacement
+  --vivado.prop=run.impl_1.STEPS.OPT_DESIGN.TCL.PRE=${CMAKE_CURRENT_BINARY_DIR}/constraint.tcl
+  INPUT sssp-hw-xo
+  HW_EMU_XCLBIN hw_emu_xclbin_target
+  HW_XCLBIN hw_xclbin_target)
 
 add_executable(sssp-frt)
 target_compile_features(sssp-frt PRIVATE cxx_std_17)
