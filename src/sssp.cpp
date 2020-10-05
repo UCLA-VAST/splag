@@ -98,14 +98,12 @@ bulk_steps:
     for (Iid iid = 0; iid < interval_count; ++iid) {
 #pragma HLS pipeline II = 1
       // Tell VertexMem to start broadcasting source vertices.
-      Vid vid_offset = iid * interval_size;
-      vertex_req_q.write({vid_offset, interval_size});
+      vertex_req_q.write({iid});
       RANGE(pe, kPeCount,
             task_req_q[pe].write({
                 .phase = TaskReq::kScatter,
-                .iid = 0,  // Unused for scatter.
+                .iid = iid,
                 .edge_count = edge_count_local[iid][pe],
-                .vid_offset = vid_offset,
                 .eid_offset = eid_offsets[iid][pe],
                 .scatter_done = false,  // Unused for scatter.
             }));
@@ -167,7 +165,6 @@ bulk_steps:
                   .phase = TaskReq::kGather,
                   .iid = iid,
                   .edge_count = update_count_local[iid],
-                  .vid_offset = interval_size * iid,
                   .eid_offset = 0,        // Unused for gather.
                   .scatter_done = false,  // Unused for gather.
               })) {
@@ -198,7 +195,7 @@ bulk_steps:
   metadata[interval_count * kPeCount + interval_count] = iter;
 }
 
-void VertexMem(tapa::istream<VertexReq>& scatter_req_q,
+void VertexMem(const Vid interval_size, tapa::istream<VertexReq>& scatter_req_q,
                tapa::istreams<VertexReq, kPeCountR0 + 1>& vertex_req_q,
                tapa::istreams<VertexAttrVec, kPeCountR0 + 1>& vertex_in_q,
                tapa::ostreams<VertexAttrVec, kPeCountR0 + 1>& vertex_out_q,
@@ -217,12 +214,12 @@ infinite_loop:
       bool valid = false;
       DECL_ARRAY(bool, ready, N, false);
     scatter:
-      for (Vid i_req = 0, i_resp = 0; i_resp < req.length;) {
+      for (Vid i_req = 0, i_resp = 0; i_resp < interval_size;) {
 #pragma HLS pipeline II = 1
         // Send requests.
-        if (i_req < req.length &&
+        if (i_req < interval_size &&
             i_req < i_resp + kMemLatency * kVertexVecLen &&
-            distances.read_addr_try_write((req.offset + i_req) /
+            distances.read_addr_try_write((req.iid * interval_size + i_req) /
                                           kVertexVecLen)) {
           i_req += kVertexVecLen;
         }
@@ -266,24 +263,26 @@ infinite_loop:
         gather:
           for (Vid i_rd_req_parent = 0, i_rd_req_distance = 0, i_rd_resp = 0,
                    i_wr = 0;
-               i_wr < req.length;) {
+               i_wr < interval_size;) {
             _Pragma("HLS pipeline II = 1");
             // Send read requests.
-            if (i_rd_req_parent < req.length &&
+            if (i_rd_req_parent < interval_size &&
                 i_rd_req_parent < i_rd_resp + kMemLatency * kVertexVecLen &&
-                parents.read_addr_try_write((req.offset + i_rd_req_parent) /
-                                            kVertexVecLen)) {
+                parents.read_addr_try_write(
+                    (req.iid * interval_size + i_rd_req_parent) /
+                    kVertexVecLen)) {
               i_rd_req_parent += kVertexVecLen;
             }
-            if (i_rd_req_distance < req.length &&
+            if (i_rd_req_distance < interval_size &&
                 i_rd_req_distance < i_rd_resp + kMemLatency * kVertexVecLen &&
-                distances.read_addr_try_write((req.offset + i_rd_req_distance) /
-                                              kVertexVecLen)) {
+                distances.read_addr_try_write(
+                    (req.iid * interval_size + i_rd_req_distance) /
+                    kVertexVecLen)) {
               i_rd_req_distance += kVertexVecLen;
             }
 
             // Handle read responses.
-            if (i_rd_resp < req.length) {
+            if (i_rd_resp < interval_size) {
               UPDATE(valid_parent, parents.read_data_try_read(resp_parent));
               UPDATE(valid_distance,
                      distances.read_data_try_read(resp_distance));
@@ -307,7 +306,7 @@ infinite_loop:
                 parent_out.set(i, v[i].parent);
                 distance_out.set(i, v[i].distance);
               });
-              uint64_t addr = (req.offset + i_wr) / kVertexVecLen;
+              uint64_t addr = (req.iid * interval_size + i_wr) / kVertexVecLen;
               UPDATE(addr_ready_distance, distances.write_addr_try_write(addr));
               UPDATE(data_ready_distance,
                      distances.write_data_try_write(distance_out));
@@ -333,6 +332,8 @@ infinite_loop:
 
 template <uint64_t N>
 void VertexRouterTemplated(
+    // scalar
+    const Vid interval_size,
     // upstream to VertexMem
     tapa::ostream<VertexReq>& mm_req_q, tapa::istream<VertexAttrVec>& mm_in_q,
     tapa::ostream<VertexAttrVec>& mm_out_q,
@@ -353,8 +354,8 @@ void VertexRouterTemplated(
   bool mm_out_ready = false;
 
   int pe = 0;
-  decltype(pe_req.length) mm2pe_count = 0;
-  decltype(pe_req.length) pe2mm_count = 0;
+  Vid mm2pe_count = 0;
+  Vid pe2mm_count = 0;
 
 infinite_loop:
   for (;;) {
@@ -379,7 +380,7 @@ infinite_loop:
         if (!pe_req_valid && pe_req_q[i].try_read(pe_req)) {
           pe_req_valid |= true;
           pe = i;
-          mm2pe_count = pe2mm_count = pe_req.length / kVertexVecLen;
+          mm2pe_count = pe2mm_count = interval_size / kVertexVecLen;
         }
       });
     } else {
@@ -425,6 +426,8 @@ infinite_loop:
 }
 
 void VertexRouterR1(
+    // scalar
+    const Vid interval_size,
     // upstream to VertexMem
     tapa::ostream<VertexReq>& mm_req_q, tapa::istream<VertexAttrVec>& mm_in_q,
     tapa::ostream<VertexAttrVec>& mm_out_q,
@@ -433,11 +436,13 @@ void VertexRouterR1(
     tapa::istreams<VertexAttrVec, kPeCountR1 + 1>& pe_in_q,
     tapa::ostreams<VertexAttrVec, kPeCountR1 + 1>& pe_out_q) {
 #pragma HLS inline region
-  VertexRouterTemplated(mm_req_q, mm_in_q, mm_out_q, pe_req_q, pe_in_q,
-                        pe_out_q);
+  VertexRouterTemplated(interval_size, mm_req_q, mm_in_q, mm_out_q, pe_req_q,
+                        pe_in_q, pe_out_q);
 }
 
 void VertexRouterR2(
+    // scalar
+    const Vid interval_size,
     // upstream to VertexMem
     tapa::ostream<VertexReq>& mm_req_q, tapa::istream<VertexAttrVec>& mm_in_q,
     tapa::ostream<VertexAttrVec>& mm_out_q,
@@ -446,8 +451,8 @@ void VertexRouterR2(
     tapa::istreams<VertexAttrVec, kPeCountR2>& pe_in_q,
     tapa::ostreams<VertexAttrVec, kPeCountR2>& pe_out_q) {
 #pragma HLS inline region
-  VertexRouterTemplated(mm_req_q, mm_in_q, mm_out_q, pe_req_q, pe_in_q,
-                        pe_out_q);
+  VertexRouterTemplated(interval_size, mm_req_q, mm_in_q, mm_out_q, pe_req_q,
+                        pe_in_q, pe_out_q);
 }
 
 // Handles edge read requests.
@@ -680,6 +685,7 @@ void ProcElem(
 task_requests:
   TAPA_WHILE_NOT_EOS(task_req_q) {
     const auto req = task_req_q.read();
+    const Vid vid_offset = req.iid * interval_size;
     VLOG_F(6, recv) << "TaskReq: " << req;
     if (req.scatter_done) {
       update_out_q.close();
@@ -716,10 +722,10 @@ task_requests:
             RANGE(i, kEdgeVecLen, {
               const auto& edge = edge_v[i];
               if (edge.src != kNullVertex) {
-                auto addr = edge.src - req.vid_offset;
+                auto addr = edge.src - vid_offset;
                 CHECK_EQ(addr % kEdgeVecLen, i)
                     << " incorrect edge vector: " << edge_v
-                    << " (vid_offset: " << req.vid_offset << ")";
+                    << " (vid_offset: " << vid_offset << ")";
                 addr /= kEdgeVecLen;
                 auto vertex_attr = vertices_local[addr * kEdgeVecLen + i];
                 if (vertex_attr.distance < kInfDistance) {
@@ -756,10 +762,10 @@ task_requests:
           RANGE(i, kUpdateVecLen, ({
                   auto update = update_v[i];
                   if (update.dst != kNullVertex) {
-                    auto addr = update.dst - req.vid_offset;
+                    auto addr = update.dst - vid_offset;
                     CHECK_EQ(addr % kEdgeVecLen, i)
                         << " incorrect update vector: " << update_v
-                        << " (vid_offset: " << req.vid_offset << ")";
+                        << " (vid_offset: " << vid_offset << ")";
                     addr /= kEdgeVecLen;
                     auto& vertex_attr = vertices_local[addr * kEdgeVecLen + i];
                     if (update.new_distance < vertex_attr.distance) {
@@ -770,7 +776,7 @@ task_requests:
         }
         update_in_q.open();
 
-        vertex_req_q.write({req.vid_offset, interval_size});
+        vertex_req_q.write({req.iid});
 
       vertex_writes:
         for (Vid i = 0; i * kVertexVecLen < interval_size; ++i) {
@@ -856,15 +862,17 @@ void SSSP(Iid interval_count, Vid interval_size, tapa::mmap<uint64_t> metadata,
   tapa::streams<UpdateCount, kPeCount, 2> update_count("update_count");
 
   tapa::task()
-      .invoke<-1>(VertexMem, "VertexMem", scatter_phase_vertex_req,
-                  vertex_req_r0, vertex_pe2mm_r0, vertex_mm2pe_r0, parents,
-                  distances)
-      .invoke<-1>(VertexRouterR1, "VertexRouterR1", vertex_req_r0[kPeCountR0],
-                  vertex_mm2pe_r0[kPeCountR0], vertex_pe2mm_r0[kPeCountR0],
-                  vertex_req_r1, vertex_pe2mm_r1, vertex_mm2pe_r1)
-      .invoke<-1>(VertexRouterR2, "VertexRouterR2", vertex_req_r1[kPeCountR1],
-                  vertex_mm2pe_r1[kPeCountR1], vertex_pe2mm_r1[kPeCountR1],
-                  vertex_req_r2, vertex_pe2mm_r2, vertex_mm2pe_r2)
+      .invoke<-1>(VertexMem, "VertexMem", interval_size,
+                  scatter_phase_vertex_req, vertex_req_r0, vertex_pe2mm_r0,
+                  vertex_mm2pe_r0, parents, distances)
+      .invoke<-1>(VertexRouterR1, "VertexRouterR1", interval_size,
+                  vertex_req_r0[kPeCountR0], vertex_mm2pe_r0[kPeCountR0],
+                  vertex_pe2mm_r0[kPeCountR0], vertex_req_r1, vertex_pe2mm_r1,
+                  vertex_mm2pe_r1)
+      .invoke<-1>(VertexRouterR2, "VertexRouterR2", interval_size,
+                  vertex_req_r1[kPeCountR1], vertex_mm2pe_r1[kPeCountR1],
+                  vertex_pe2mm_r1[kPeCountR1], vertex_req_r2, vertex_pe2mm_r2,
+                  vertex_mm2pe_r2)
       .invoke<-1, kPeCount>(EdgeMem, "EdgeMem", edge_req, edge_resp, edges)
       .invoke<-1, kPeCount>(UpdateMem, "UpdateMem", update_read_addr,
                             update_read_data, update_write_addr,

@@ -19,7 +19,6 @@ struct TaskReq {
   Phase phase;
   Iid iid;
   Eid edge_count;
-  Vid vid_offset;
   Eid eid_offset;
   bool scatter_done;
 };
@@ -34,7 +33,6 @@ inline std::ostream& operator<<(std::ostream& os, const TaskReq& obj) {
   }
   return os << "{phase: " << obj.phase << ", iid: " << obj.iid
             << ", edge_count: " << obj.edge_count
-            << ", vid_offset: " << obj.vid_offset
             << ", eid_offset: " << obj.eid_offset << "}";
 }
 
@@ -58,8 +56,7 @@ inline std::ostream& operator<<(std::ostream& os, const UpdateReq& obj) {
 }
 
 struct VertexReq {
-  Vid offset;
-  Vid length;
+  Iid iid;
 };
 
 using UpdateCount = tapa::packet<Iid, Eid>;
