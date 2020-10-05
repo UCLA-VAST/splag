@@ -21,7 +21,7 @@ constexpr int kPeCountR2 = kPeCount - kPeCountR0 - kPeCountR1;
 //   v=8: O(#vertex)
 //   v=9: O(#edge)
 
-void Control(Iid interval_count, Vid interval_size,
+void Control(const Iid interval_count, const Vid interval_size,
              tapa::mmap<uint64_t> metadata,
              // to VertexMem
              tapa::ostream<VertexReq>& vertex_req_q,
@@ -104,7 +104,6 @@ bulk_steps:
             task_req_q[pe].write({
                 .phase = TaskReq::kScatter,
                 .iid = 0,  // Unused for scatter.
-                .interval_size = interval_size,
                 .edge_count = edge_count_local[iid][pe],
                 .vid_offset = vid_offset,
                 .eid_offset = eid_offsets[iid][pe],
@@ -167,7 +166,6 @@ bulk_steps:
           if (task_req_q[pe].try_write({
                   .phase = TaskReq::kGather,
                   .iid = iid,
-                  .interval_size = interval_size,
                   .edge_count = update_count_local[iid],
                   .vid_offset = interval_size * iid,
                   .eid_offset = 0,        // Unused for gather.
@@ -649,6 +647,8 @@ update_phases:
 }
 
 void ProcElem(
+    // scalar
+    const Vid interval_size,
     // from Control
     tapa::istream<TaskReq>& task_req_q,
     // to Control
@@ -687,7 +687,7 @@ task_requests:
       bool is_active = false;
       if (req.phase == TaskReq::kScatter) {
       vertex_reads:
-        for (Vid i = 0; i * kVertexVecLen < req.interval_size; ++i) {
+        for (Vid i = 0; i * kVertexVecLen < interval_size; ++i) {
 #pragma HLS pipeline II = 1
           auto vertex_vec = vertex_in_q.read();
           VLOG_F(8, recv) << "VertexAttrVec: " << vertex_vec;
@@ -710,7 +710,7 @@ task_requests:
           if (edge_resp_q.try_read(edge_v)) {
             VLOG_F(9, recv) << "Edge: " << edge_v;
             UpdateVecPacket update_v;
-            update_v.addr = edge_v[0].dst / req.interval_size;
+            update_v.addr = edge_v[0].dst / interval_size;
             update_v.payload.set(Update{kNullVertex, kNullVertex});
             bool is_valid_update = false;
             RANGE(i, kEdgeVecLen, {
@@ -739,7 +739,7 @@ task_requests:
         }
       } else {
       vertex_resets:
-        for (Vid i = 0; i < req.interval_size; ++i) {
+        for (Vid i = 0; i < interval_size; ++i) {
 #pragma HLS pipeline II = 1
 #pragma HLS unroll factor = kVertexPartitionFactor
           vertices_local[i] = {kNullVertex, kInfDistance};
@@ -770,10 +770,10 @@ task_requests:
         }
         update_in_q.open();
 
-        vertex_req_q.write({req.vid_offset, req.interval_size});
+        vertex_req_q.write({req.vid_offset, interval_size});
 
       vertex_writes:
-        for (Vid i = 0; i * kVertexVecLen < req.interval_size; ++i) {
+        for (Vid i = 0; i * kVertexVecLen < interval_size; ++i) {
 #pragma HLS pipeline II = 1
           VertexAttrVec vertex_vec = vertex_in_q.read();
           bool is_active_local = false;
@@ -869,38 +869,38 @@ void SSSP(Iid interval_count, Vid interval_size, tapa::mmap<uint64_t> metadata,
       .invoke<-1, kPeCount>(UpdateMem, "UpdateMem", update_read_addr,
                             update_read_data, update_write_addr,
                             update_write_data, updates)
-      .invoke<0>(ProcElem, "ProcElem[0]", task_req[0], task_resp[0],
-                 vertex_req_r0[0], vertex_mm2pe_r0[0], vertex_pe2mm_r0[0],
-                 edge_req[0], edge_resp[0], update_req[0], update_mm2pe[0],
-                 update_pe2mm[0])
-      .invoke<0>(ProcElem, "ProcElem[1]", task_req[1], task_resp[1],
-                 vertex_req_r1[0], vertex_mm2pe_r1[0], vertex_pe2mm_r1[0],
-                 edge_req[1], edge_resp[1], update_req[1], update_mm2pe[1],
-                 update_pe2mm[1])
-      .invoke<0>(ProcElem, "ProcElem[2]", task_req[2], task_resp[2],
-                 vertex_req_r1[1], vertex_mm2pe_r1[1], vertex_pe2mm_r1[1],
-                 edge_req[2], edge_resp[2], update_req[2], update_mm2pe[2],
-                 update_pe2mm[2])
-      .invoke<0>(ProcElem, "ProcElem[3]", task_req[3], task_resp[3],
-                 vertex_req_r1[2], vertex_mm2pe_r1[2], vertex_pe2mm_r1[2],
-                 edge_req[3], edge_resp[3], update_req[3], update_mm2pe[3],
-                 update_pe2mm[3])
-      .invoke<0>(ProcElem, "ProcElem[4]", task_req[4], task_resp[4],
-                 vertex_req_r2[0], vertex_mm2pe_r2[0], vertex_pe2mm_r2[0],
-                 edge_req[4], edge_resp[4], update_req[4], update_mm2pe[4],
-                 update_pe2mm[4])
-      .invoke<0>(ProcElem, "ProcElem[5]", task_req[5], task_resp[5],
-                 vertex_req_r2[1], vertex_mm2pe_r2[1], vertex_pe2mm_r2[1],
-                 edge_req[5], edge_resp[5], update_req[5], update_mm2pe[5],
-                 update_pe2mm[5])
-      .invoke<0>(ProcElem, "ProcElem[6]", task_req[6], task_resp[6],
-                 vertex_req_r2[2], vertex_mm2pe_r2[2], vertex_pe2mm_r2[2],
-                 edge_req[6], edge_resp[6], update_req[6], update_mm2pe[6],
-                 update_pe2mm[6])
-      .invoke<0>(ProcElem, "ProcElem[7]", task_req[7], task_resp[7],
-                 vertex_req_r2[3], vertex_mm2pe_r2[3], vertex_pe2mm_r2[3],
-                 edge_req[7], edge_resp[7], update_req[7], update_mm2pe[7],
-                 update_pe2mm[7])
+      .invoke<0>(ProcElem, "ProcElem[0]", interval_size, task_req[0],
+                 task_resp[0], vertex_req_r0[0], vertex_mm2pe_r0[0],
+                 vertex_pe2mm_r0[0], edge_req[0], edge_resp[0], update_req[0],
+                 update_mm2pe[0], update_pe2mm[0])
+      .invoke<0>(ProcElem, "ProcElem[1]", interval_size, task_req[1],
+                 task_resp[1], vertex_req_r1[0], vertex_mm2pe_r1[0],
+                 vertex_pe2mm_r1[0], edge_req[1], edge_resp[1], update_req[1],
+                 update_mm2pe[1], update_pe2mm[1])
+      .invoke<0>(ProcElem, "ProcElem[2]", interval_size, task_req[2],
+                 task_resp[2], vertex_req_r1[1], vertex_mm2pe_r1[1],
+                 vertex_pe2mm_r1[1], edge_req[2], edge_resp[2], update_req[2],
+                 update_mm2pe[2], update_pe2mm[2])
+      .invoke<0>(ProcElem, "ProcElem[3]", interval_size, task_req[3],
+                 task_resp[3], vertex_req_r1[2], vertex_mm2pe_r1[2],
+                 vertex_pe2mm_r1[2], edge_req[3], edge_resp[3], update_req[3],
+                 update_mm2pe[3], update_pe2mm[3])
+      .invoke<0>(ProcElem, "ProcElem[4]", interval_size, task_req[4],
+                 task_resp[4], vertex_req_r2[0], vertex_mm2pe_r2[0],
+                 vertex_pe2mm_r2[0], edge_req[4], edge_resp[4], update_req[4],
+                 update_mm2pe[4], update_pe2mm[4])
+      .invoke<0>(ProcElem, "ProcElem[5]", interval_size, task_req[5],
+                 task_resp[5], vertex_req_r2[1], vertex_mm2pe_r2[1],
+                 vertex_pe2mm_r2[1], edge_req[5], edge_resp[5], update_req[5],
+                 update_mm2pe[5], update_pe2mm[5])
+      .invoke<0>(ProcElem, "ProcElem[6]", interval_size, task_req[6],
+                 task_resp[6], vertex_req_r2[2], vertex_mm2pe_r2[2],
+                 vertex_pe2mm_r2[2], edge_req[6], edge_resp[6], update_req[6],
+                 update_mm2pe[6], update_pe2mm[6])
+      .invoke<0>(ProcElem, "ProcElem[7]", interval_size, task_req[7],
+                 task_resp[7], vertex_req_r2[3], vertex_mm2pe_r2[3],
+                 vertex_pe2mm_r2[3], edge_req[7], edge_resp[7], update_req[7],
+                 update_mm2pe[7], update_pe2mm[7])
       .invoke<0>(Control, "Control", interval_count, interval_size, metadata,
                  scatter_phase_vertex_req, update_config, update_phase,
                  update_count, task_req, task_resp)

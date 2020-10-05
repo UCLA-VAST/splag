@@ -18,7 +18,6 @@ struct TaskReq {
   enum Phase { kScatter = 0, kGather = 1 };
   Phase phase;
   Iid iid;
-  Vid interval_size;
   Eid edge_count;
   Vid vid_offset;
   Eid eid_offset;
@@ -34,7 +33,6 @@ inline std::ostream& operator<<(std::ostream& os, const TaskReq& obj) {
     return os << "{scatter_done: " << obj.scatter_done << "}";
   }
   return os << "{phase: " << obj.phase << ", iid: " << obj.iid
-            << ", interval_size: " << obj.interval_size
             << ", edge_count: " << obj.edge_count
             << ", vid_offset: " << obj.vid_offset
             << ", eid_offset: " << obj.eid_offset << "}";
