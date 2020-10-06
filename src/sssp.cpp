@@ -478,7 +478,7 @@ infinite_loop:
 #pragma HLS pipeline II = 1
     // Handle responses.
     if (UPDATE(valid, edges.read_data_try_read(edge_v))) {
-      if (edge_resp_q.try_write(edge_v)) valid = false;
+      valid = !edge_resp_q.try_write(edge_v);
     }
 
     // Handle requests.
@@ -501,7 +501,7 @@ infinite_loop:
 #pragma HLS pipeline II = 1
     // Handle read responses.
     if (UPDATE(valid, updates.read_data_try_read(update_v))) {
-      if (read_data_q.try_write(update_v)) valid = false;
+      valid = !read_data_q.try_write(update_v);
     }
 
     // Handle read requests.
