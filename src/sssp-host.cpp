@@ -245,6 +245,9 @@ int main(int argc, const char* argv[]) {
       }
     }
 
+    VLOG(7) << "edge count in interval[" << src_iid
+            << "]: " << interval_edge_counts[src_iid];
+
     total_edge_count += interval_out_edge_counts[src_iid];
     VLOG(7) << "edge count in interval[" << src_iid
             << "]: " << interval_out_edge_counts[src_iid];
@@ -259,17 +262,35 @@ int main(int argc, const char* argv[]) {
     VLOG(7) << "edge count in interval[" << src_iid
             << "]: " << max_edge_count * kPeCount << " (+" << std::fixed
             << std::setprecision(2)
-            << (100. *
-                (max_edge_count * kPeCount -
-                 interval_out_edge_counts[src_iid]) /
-                interval_out_edge_counts[src_iid])
-            << "%)";
+            << 100 * (1. * max_edge_count * kPeCount /
+                          interval_edge_counts[src_iid] -
+                      1)
+            << "%, "
+            << 1. * max_edge_count * kPeCount /
+                   interval_out_edge_counts[src_iid]
+            << "x due to load imbalance, "
+            << 1. * interval_out_edge_counts[src_iid] /
+                   interval_edge_counts[src_iid]
+            << "x due to vectorization & dependency)";
 
     for (Iid dst_iid = 0; dst_iid < interval_count; ++dst_iid) {
       VLOG(7) << "edge count in shard[" << src_iid << "][" << dst_iid
               << "]: " << shard_edge_counts[dst_iid];
     }
   }
+  LOG(INFO) << "edge count: " << sum_of_max_edge_count << " (+" << std::fixed
+            << std::setprecision(2)
+            << 100 * (1. * sum_of_max_edge_count /
+                          std::accumulate(interval_edge_counts.begin(),
+                                          interval_edge_counts.end(), 0) -
+                      1)
+            << "%, " << 1. * sum_of_max_edge_count / total_edge_count
+            << "x due to load imbalance, "
+            << 1. * total_edge_count /
+                   std::accumulate(interval_edge_counts.begin(),
+                                   interval_edge_counts.end(), 0)
+            << "x due to vectorization & dependency)";
+
   edge_bins.reset();
   for (auto& per_pe_edges : edges) {
     // Allocate at least 1 element to the kernel.
