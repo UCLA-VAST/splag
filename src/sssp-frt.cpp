@@ -8,8 +8,8 @@
 
 #include "sssp.h"
 
-void SSSP(Iid interval_count, Vid interval_size, tapa::mmap<uint64_t> metadata,
-          tapa::async_mmap<VidVec> parents,
+void SSSP(Iid interval_count, Vid interval_size, Vid root,
+          tapa::mmap<uint64_t> metadata, tapa::async_mmap<VidVec> parents,
           tapa::async_mmap<FloatVec> distances,
           tapa::async_mmaps<EdgeVec, kPeCount> edges,
           tapa::async_mmaps<UpdateVec, kPeCount> updates) {
@@ -20,6 +20,7 @@ void SSSP(Iid interval_count, Vid interval_size, tapa::mmap<uint64_t> metadata,
   int arg_idx = 0;
   instance.SetArg(arg_idx++, interval_count);
   instance.SetArg(arg_idx++, interval_size);
+  instance.SetArg(arg_idx++, root);
   instance.AllocBuf(arg_idx, metadata_arg);
   instance.SetArg(arg_idx++, metadata_arg);
   instance.AllocBuf(arg_idx, parents_arg);

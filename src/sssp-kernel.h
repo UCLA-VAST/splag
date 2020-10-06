@@ -38,10 +38,11 @@ inline std::ostream& operator<<(std::ostream& os, const TaskReq& obj) {
 
 struct TaskResp {
   bool active;
+  Iid iid;
 };
 
 inline std::ostream& operator<<(std::ostream& os, const TaskResp& obj) {
-  return os << "{active: " << obj.active << "}";
+  return os << "{active: " << obj.active << ", iid: " << obj.iid << "}";
 }
 
 struct UpdateReq {

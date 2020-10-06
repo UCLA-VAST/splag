@@ -91,8 +91,8 @@ bool IsValid(int64_t root, PackedEdgesView edges, WeightsView weights,
   return true;
 }
 
-void SSSP(Iid interval_count, Vid interval_size, tapa::mmap<uint64_t> metadata,
-          tapa::async_mmap<VidVec> parents,
+void SSSP(Iid interval_count, Vid interval_size, Vid root,
+          tapa::mmap<uint64_t> metadata, tapa::async_mmap<VidVec> parents,
           tapa::async_mmap<FloatVec> distances,
           tapa::async_mmaps<EdgeVec, kPeCount> edges,
           tapa::async_mmaps<UpdateVec, kPeCount> updates);
@@ -101,8 +101,8 @@ int main(int argc, const char* argv[]) {
   FLAGS_logtostderr = true;
   google::InitGoogleLogging(argv[0]);
 
-  if (argc != 2) {
-    LOG(FATAL) << "usage: " << argv[0] << " <edges file>";
+  if (argc != 2 && argc != 3) {
+    LOG(FATAL) << "usage: " << argv[0] << " <edges file> [interval_count]";
     return 1;
   }
 
@@ -118,10 +118,16 @@ int main(int argc, const char* argv[]) {
   // Determine vertex intervals.
   const int64_t vertex_count = edge_count / 16;
   CHECK_GE(vertex_count, kVertexVecLen);
-  const int64_t interval_count =
+  int64_t interval_count =
       std::max(std::min({vertex_count / kVertexVecLen, int64_t{kPeCount},
                          int64_t{kMaxIntervalCount}}),
                vertex_count / kMaxIntervalSize);
+  if (argc == 3) {
+    interval_count = atoi(argv[2]);
+    CHECK_LE(interval_count, vertex_count / kVertexVecLen);
+    CHECK_LE(interval_count, kMaxIntervalCount);
+    CHECK_GE(interval_count, vertex_count / kMaxIntervalSize);
+  }
   LOG(INFO) << "interval_count: " << interval_count;
   CHECK_EQ(vertex_count % interval_count, 0);
   const int64_t interval_size = vertex_count / interval_count;
@@ -323,7 +329,7 @@ int main(int argc, const char* argv[]) {
 
     unsetenv("KERNEL_TIME_NS");
     const auto tic = steady_clock::now();
-    SSSP(interval_count, interval_size, metadata,
+    SSSP(interval_count, interval_size, root, metadata,
          tapa::make_vec_async_mmap<Vid, kVertexVecLen>(parents),
          tapa::make_vec_async_mmap<float, kVertexVecLen>(distances),
          tapa::make_vec_async_mmaps<Edge, kEdgeVecLen, kPeCount>(edges),
@@ -345,6 +351,10 @@ int main(int argc, const char* argv[]) {
     visited_edge_count.push_back(metadata[interval_count * (kPeCount + 1) + 1]);
     processed_update_count.push_back(
         metadata[interval_count * (kPeCount + 1) + 2]);
+    VLOG(3) << "  TEPS: " << *teps.rbegin();
+    VLOG(3) << "  #iteration: " << *iteration_count.rbegin();
+    VLOG(3) << "  #edge: " << *visited_edge_count.rbegin();
+    VLOG(3) << "  #update: " << *processed_update_count.rbegin();
 
     if (!IsValid(root, edges_view, weights_view, parents.data(),
                  distances.data(), vertex_count)) {

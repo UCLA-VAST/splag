@@ -21,7 +21,7 @@ constexpr int kPeCountR2 = kPeCount - kPeCountR0 - kPeCountR1;
 //   v=8: O(#vertex)
 //   v=9: O(#edge)
 
-void Control(const Iid interval_count, const Vid interval_size,
+void Control(const Iid interval_count, const Vid interval_size, const Vid root,
              tapa::mmap<uint64_t> metadata,
              // to VertexMem
              tapa::ostream<VertexReq>& vertex_req_q,
@@ -45,6 +45,8 @@ void Control(const Iid interval_count, const Vid interval_size,
   });
 
   // Control keeps track of all intervals.
+  bool interval_is_active[kMaxIntervalCount] = {};
+  interval_is_active[root / interval_size] = true;
 
   // Number of edges in each interval of each PE.
   Eid edge_count_local[kMaxIntervalCount][kPeCount];
@@ -103,21 +105,23 @@ bulk_steps:
     for (Iid iid = 0; iid < interval_count; ++iid) {
 #pragma HLS pipeline II = 1
       // Tell VertexMem to start broadcasting source vertices.
-      vertex_req_q.write({iid});
-      RANGE(pe, kPeCount, {
-        total_edge_count += edge_count_local[iid][pe];
-        task_req_q[pe].write({
-            .phase = TaskReq::kScatter,
-            .iid = iid,
-            .edge_count_v = edge_count_local[iid][pe] / kEdgeVecLen,
-            .eid_offset_v = eid_offsets[iid][pe] / kEdgeVecLen,
-            .scatter_done = false,  // Unused for scatter.
+      if (interval_is_active[iid]) {
+        vertex_req_q.write({iid});
+        RANGE(pe, kPeCount, {
+          total_edge_count += edge_count_local[iid][pe];
+          task_req_q[pe].write({
+              .phase = TaskReq::kScatter,
+              .iid = iid,
+              .edge_count_v = edge_count_local[iid][pe] / kEdgeVecLen,
+              .eid_offset_v = eid_offsets[iid][pe] / kEdgeVecLen,
+              .scatter_done = false,  // Unused for scatter.
+          });
         });
-      });
 
-      ap_wait();
+        ap_wait();
 
-      RANGE(pe, kPeCount, task_resp_q[pe].read());
+        RANGE(pe, kPeCount, task_resp_q[pe].read());
+      }
     }
 
     // Tell PEs to tell UpdateHandlers that the scatter phase is done.
@@ -186,6 +190,7 @@ bulk_steps:
         if (task_resp_q[pe].try_read(resp)) {
           VLOG_F(7, recv) << resp;
           if (resp.active) all_done = false;
+          interval_is_active[resp.iid] = resp.active;
           ++iid_recv;
         }
       });
@@ -800,15 +805,15 @@ task_requests:
           VLOG_F(8, send) << "VertexAttrVec: " << vertex_vec;
         }
       }
-      TaskResp resp{is_active};
+      TaskResp resp{is_active, req.iid};
       task_resp_q.write(resp);
     }
   }
   task_req_q.open();
 }
 
-void SSSP(Iid interval_count, Vid interval_size, tapa::mmap<uint64_t> metadata,
-          tapa::async_mmap<VidVec> parents,
+void SSSP(Iid interval_count, Vid interval_size, Vid root,
+          tapa::mmap<uint64_t> metadata, tapa::async_mmap<VidVec> parents,
           tapa::async_mmap<FloatVec> distances,
           tapa::async_mmaps<EdgeVec, kPeCount> edges,
           tapa::async_mmaps<UpdateVec, kPeCount> updates) {
@@ -911,9 +916,9 @@ void SSSP(Iid interval_count, Vid interval_size, tapa::mmap<uint64_t> metadata,
                  task_resp[7], vertex_req_r2[3], vertex_mm2pe_r2[3],
                  vertex_pe2mm_r2[3], edge_req[7], edge_resp[7], update_req[7],
                  update_mm2pe[7], update_pe2mm[7])
-      .invoke<0>(Control, "Control", interval_count, interval_size, metadata,
-                 scatter_phase_vertex_req, update_config, update_phase,
-                 update_count, task_req, task_resp)
+      .invoke<0>(Control, "Control", interval_count, interval_size, root,
+                 metadata, scatter_phase_vertex_req, update_config,
+                 update_phase, update_count, task_req, task_resp)
       .invoke<0, kPeCount>(UpdateHandler, "UpdateHandler", interval_count,
                            update_config, update_phase, update_count,
                            update_req, update_pe2mm, update_mm2pe,
