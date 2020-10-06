@@ -689,6 +689,7 @@ void ProcElem(
   VertexAttr vertices_local[kMaxIntervalSize];
 #pragma HLS array_partition variable = vertices_local cyclic factor = \
     kVertexPartitionFactor
+#pragma HLS data_pack variable = vertices_local
 #pragma HLS resource variable = vertices_local core = RAM_S2P_URAM
 
 task_requests:
