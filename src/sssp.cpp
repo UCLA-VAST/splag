@@ -130,6 +130,10 @@ infinite_loop:
         TaskOp resp{.op = TaskOp::NOOP, .task = {}};
         auto new_distance = distances[update.src] + update.edge.weight;
         if (new_distance < distances[update.edge.dst]) {
+          VLOG_F(9, info) << "distances[" << update.edge.dst
+                          << "] = " << distances[update.edge.dst]
+                          << " -> distances[" << update.src << "] + "
+                          << update.edge.weight << " = " << new_distance;
           distances[update.edge.dst] = new_distance;
           parents[update.edge.dst] = update.src;
           resp = {
