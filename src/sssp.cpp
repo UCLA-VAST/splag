@@ -54,7 +54,9 @@ infinite_loop:
         case QueueOp::PUSH:
           RANGE(pe, kPeCount, {
             if (auto& handle = handle_map[req.task.vid]) {
-              task_q.increase(*handle, req.task);
+              if (handle->node_->value < req.task) {
+                task_q.increase(*handle, req.task);
+              }
             } else {
               handle = std::make_unique<handle_t>(task_q.push(req.task));
               resp.task_op = TaskOp::NEW;
@@ -333,7 +335,7 @@ void SSSP(Vid root, tapa::mmap<int64_t> metadata, tapa::mmap<Edge> edges,
           {
             Task task{.vid = edge.dst, .distance = new_distance};
             if (auto& handle = handle_map[task.vid]) {
-              task_q.increase(*handle, task);
+              if (handle->node_->value < task) task_q.increase(*handle, task);
             } else {
               handle = std::make_unique<handle_t>(task_q.push(task));
             }
