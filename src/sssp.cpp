@@ -41,10 +41,6 @@ void TaskQueue(
   handle_map[root] =
       std::make_unique<handle_t>(task_q.push({.vid = root, .distance = 0.}));
 
-  int64_t queue_count = 0;
-  int64_t total_queue_size = 0;
-  int64_t max_queue_size = 0;
-
 infinite_loop:
   for (QueueOp req;;) {
     if (queue_req_q.try_read(req)) {
@@ -52,19 +48,14 @@ infinite_loop:
           .queue_op = req.op, .task_op = TaskOp::NOOP, .task = {}};
       switch (req.op) {
         case QueueOp::PUSH:
-          RANGE(pe, kPeCount, {
-            if (auto& handle = handle_map[req.task.vid]) {
-              if (handle->node_->value < req.task) {
-                task_q.increase(*handle, req.task);
-              }
-            } else {
-              handle = std::make_unique<handle_t>(task_q.push(req.task));
-              resp.task_op = TaskOp::NEW;
+          if (auto& handle = handle_map[req.task.vid]) {
+            if (handle->node_->value < req.task) {
+              task_q.increase(*handle, req.task);
             }
-            ++queue_count;
-            total_queue_size += task_q.size();
-            if (task_q.size() > max_queue_size) max_queue_size = task_q.size();
-          });
+          } else {
+            handle = std::make_unique<handle_t>(task_q.push(req.task));
+            resp.task_op = TaskOp::NEW;
+          }
           break;
         case QueueOp::POP:
           if (!task_q.empty()) {
