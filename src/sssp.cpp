@@ -183,9 +183,14 @@ void Dispatcher(
   int64_t max_queue_size = 0;
 
   // Format log messages.
-#define STATS                                                     \
-  std::setfill(' ') << std::setw(1) << task_count << " active + " \
-                    << std::setw(2) << queue_size << " pending tasks"
+#define STATS(leve, tag, content)                                              \
+  do {                                                                         \
+    VLOG_F(9, tag) << content " | " << std::setfill(' ') << std::setw(1)       \
+                   << task_count << " active + " << std::setw(2) << queue_size \
+                   << " pending tasks";                                        \
+    CHECK_GE(queue_size, 0);                                                   \
+    CHECK_GE(task_count, 0);                                                   \
+  } while (0)
 
   for (; queue_size > 0 || task_count > 0 || !queue_resp_q.empty();) {
     // Process response messages from the queue.
@@ -197,7 +202,7 @@ void Dispatcher(
           if (queue_buf.task_op == TaskOp::NOOP) {
             // PUSH request updated priority of existing tasks.
             --queue_size;
-            VLOG_F(9, recv) << "QUEUE: DECR | " << STATS;
+            STATS(9, recv, "QUEUE: DECR");
           }
 
           // Update statistics.
@@ -209,12 +214,12 @@ void Dispatcher(
           if (queue_buf.task_op == TaskOp::NEW) {
             // POP request returned a new task.
             --queue_size;
-            VLOG_F(9, recv) << "QUEUE: NEW  | " << STATS;
+            STATS(9, recv, "QUEUE: NEW ");
           } else {
             // The queue is empty.
             queue_buf_valid = false;
             --task_count;
-            VLOG_F(9, recv) << "QUEUE: EMPT | " << STATS;
+            STATS(9, recv, "QUEUE: NOOP");
           }
           break;
       }
@@ -236,7 +241,7 @@ void Dispatcher(
 
           // Update statistics.
           visited_edge_count += task_buf.task.vid;
-          VLOG_F(9, recv) << "TASK : DONE | " << STATS;
+          STATS(9, recv, "TASK : DONE");
         }
       }
     });
@@ -245,14 +250,14 @@ void Dispatcher(
       // Dequeue tasks from the queue.
       if (queue_req_q.try_write({.op = QueueOp::POP, .task = {}})) {
         ++task_count;
-        VLOG_F(9, send) << "QUEUE: POP  | " << STATS;
+        STATS(9, send, "QUEUE: POP ");
       }
     } else if (RESET(task_buf_valid,
                      queue_req_q.try_write(
                          {.op = QueueOp::PUSH, .task = task_buf.task}))) {
       // Enqueue tasks generated from PEs.
       ++queue_size;
-      VLOG_F(9, send) << "QUEUE: PUSH | " << STATS;
+      STATS(9, send, "QUEUE: PUSH");
     }
   }
 
