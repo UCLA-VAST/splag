@@ -15,9 +15,10 @@ target_link_libraries(sssp_kernel PUBLIC tapa::tapa)
 add_executable(sssp)
 target_sources(sssp PRIVATE src/sssp-host.cpp)
 target_compile_features(sssp PRIVATE cxx_std_17)
-target_link_libraries(sssp PRIVATE tapa::tapa)
+target_link_libraries(sssp PRIVATE sssp_kernel tapa::tapa)
 if(OpenMP_CXX_FOUND)
-  target_link_libraries(sssp PRIVATE sssp_kernel OpenMP::OpenMP_CXX)
+  target_link_libraries(sssp PRIVATE OpenMP::OpenMP_CXX)
+  target_link_libraries(sssp_kernel PRIVATE OpenMP::OpenMP_CXX)
 endif()
 
 add_tapa_target(

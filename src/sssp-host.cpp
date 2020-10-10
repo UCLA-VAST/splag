@@ -1,13 +1,11 @@
 #include <algorithm>
-#include <array>
 #include <atomic>
 #include <chrono>
-#include <deque>
 #include <iomanip>
 #include <memory>
 #include <random>
 #include <string>
-#include <thread>
+#include <tuple>
 #include <unordered_map>
 #include <vector>
 
@@ -16,8 +14,6 @@
 #include "sssp.h"
 #include "util.h"
 
-using std::array;
-using std::deque;
 using std::make_unique;
 using std::unordered_map;
 using std::vector;
@@ -91,17 +87,15 @@ bool IsValid(int64_t root, PackedEdgesView edges, WeightsView weights,
   return true;
 }
 
-void SSSP(Iid interval_count, Vid interval_size, Vid root,
-          tapa::mmap<uint64_t> metadata, tapa::async_mmap<VidVec> parents,
-          tapa::async_mmap<FloatVec> distances,
-          tapa::async_mmaps<EdgeVec, kPeCount> edges,
-          tapa::async_mmaps<UpdateVec, kPeCount> updates);
+void SSSP(Vid root, tapa::mmap<int64_t> metadata, tapa::mmap<Edge> edges,
+          tapa::mmap<Index> indices, tapa::mmap<Vid> parents,
+          tapa::mmap<float> distances);
 
 int main(int argc, const char* argv[]) {
   FLAGS_logtostderr = true;
   google::InitGoogleLogging(argv[0]);
 
-  if (argc != 2 && argc != 3) {
+  if (argc != 2) {
     LOG(FATAL) << "usage: " << argv[0] << " <edges file> [interval_count]";
     return 1;
   }
@@ -118,187 +112,55 @@ int main(int argc, const char* argv[]) {
   // Determine vertex intervals.
   const int64_t vertex_count = edge_count / 16;
   CHECK_GE(vertex_count, kVertexVecLen);
-  int64_t interval_count =
-      std::max(std::min({vertex_count / kVertexVecLen, int64_t{kPeCount},
-                         int64_t{kMaxIntervalCount}}),
-               vertex_count / kMaxIntervalSize);
-  if (argc == 3) {
-    interval_count = atoi(argv[2]);
-    CHECK_LE(interval_count, vertex_count / kVertexVecLen);
-    CHECK_LE(interval_count, kMaxIntervalCount);
-    CHECK_GE(interval_count, vertex_count / kMaxIntervalSize);
-  }
-  LOG(INFO) << "interval_count: " << interval_count;
-  CHECK_EQ(vertex_count % interval_count, 0);
-  const int64_t interval_size = vertex_count / interval_count;
-  LOG(INFO) << "interval_size: " << interval_size;
-  CHECK_GE(interval_size, kVertexVecLen);
 
   // Validate inputs and collect degree.
   vector<int64_t> degree(vertex_count);               // For TEPS calculation.
   vector<int64_t> degree_no_self_loop(vertex_count);  // For root sampling.
-  vector<int64_t> interval_edge_counts(interval_count);
-  array<Eid, kPeCount> pe_edge_counts = {};
-  array<vector<Eid>, kPeCount> out_edge_counts;
-  for (auto& edge_count : out_edge_counts) {
-    edge_count.resize(interval_count);
-  }
 
-  // Stores edges in [src_iid][dst_iid][src_bank][dst_bank] bins.
-  auto edge_bins = make_unique<unordered_map<
-      Iid, unordered_map<
-               Iid, array<array<deque<Edge>, kEdgeVecLen>, kEdgeVecLen>>>>();
-
-  for (Eid eid = 0; eid < edge_count; ++eid) {
-    auto& edge = edges_view[eid];
-    const int64_t v0 = edge.v0();
-    const int64_t v1 = edge.v1();
-
-    for (int64_t v : {v0, v1}) {
-      CHECK_GE(v, 0) << "invalid edge: " << edge;
-      CHECK_LT(v, vertex_count) << "invalid edge: " << edge;
-    }
-
+  Eid edge_count_no_self_loop = 0;
+  for (const auto& edge : edges_view) {
+    const auto v0 = edge.v0();
+    const auto v1 = edge.v1();
     ++degree[v0];
     ++degree[v1];
     if (v0 != v1) {
-      // Interval indices.
-      const int p0 = v0 / interval_size;
-      const int p1 = v1 / interval_size;
-
-      // Bank indices.
-      const int b0 = v0 % kEdgeVecLen;
-      const int b1 = v1 % kEdgeVecLen;
-
       ++degree_no_self_loop[v0];
       ++degree_no_self_loop[v1];
-      ++interval_edge_counts[p0];
-      ++interval_edge_counts[p1];
-      ++pe_edge_counts[p0 % kPeCount];
-      ++pe_edge_counts[p1 % kPeCount];
-      (*edge_bins)[p0][p1][b0][b1].push_back(
-          Edge{static_cast<Vid>(v0), static_cast<Vid>(v1), weights_view[eid]});
-      (*edge_bins)[p1][p0][b1][b0].push_back(
-          Edge{static_cast<Vid>(v1), static_cast<Vid>(v0), weights_view[eid]});
+      ++edge_count_no_self_loop;
     }
   }
 
-  // Parition the edges.
-  Eid total_edge_count = 0;
-  Eid sum_of_max_edge_count = 0;
-  vector<Eid> interval_in_edge_counts(interval_count);
-  vector<Eid> interval_out_edge_counts(interval_count);
-  array<aligned_vector<Edge>, kPeCount> edges;
-  for (Iid src_iid = 0; src_iid < interval_count; ++src_iid) {
-    vector<Eid> shard_edge_counts(interval_count);
+  // Allocate and fill edges and indices for the kernel.
+  aligned_vector<Index> indices(vertex_count);
+  aligned_vector<Edge> edges(edge_count_no_self_loop * 2);  // Undirected edge.
+  Eid offset = 0;
+  for (Vid vid = 0; vid < vertex_count; ++vid) {
+    const Vid count = degree_no_self_loop[vid];
+    indices[vid] = {.offset = offset, .count = count};
+    offset += count;
+  }
 
-    for (Iid dst_iid = 0; dst_iid < interval_count; ++dst_iid) {
-      // There are kEdgeVecLen x kEdgeVecLen edge bins in each shard.
-      // We select edges along diagonal directions until the bins are empty.
-      for (bool done = false; !done;) {
-        done = true;
-        for (int i = 0; i < kEdgeVecLen; ++i) {
-          bool active = false;
-          Edge edge_v[kEdgeVecLen] = {};
-          // An empty edge is indicated by src == kNullVertex.
-          for (int j = 0; j < kEdgeVecLen; ++j) edge_v[j].src = kNullVertex;
-          // First edge in a vector must have valid dst for routing purpose.
-          edge_v[0].dst = dst_iid * interval_size;
+  {
+    vector<Vid> vertex_counts(vertex_count);
+    for (Eid eid = 0; eid < edge_count; ++eid) {
+      const auto edge = edges_view[eid];
+      const auto v0 = edge.v0();
+      const auto v1 = edge.v1();
+      const auto weight = weights_view[eid];
+      if (v0 == v1) continue;
 
-          for (int j = 0; j < kEdgeVecLen; ++j) {
-            deque<Edge>& bin = (*edge_bins)[src_iid][dst_iid][j % kEdgeVecLen]
-                                           [(i + j) % kEdgeVecLen];
-            if (!bin.empty()) {
-              // Make sure the last kVertexUpdateDepDist edge vectors do
-              // not write to the same dst.
-              auto conflict = [&](const Edge& edge) -> bool {
-                const auto& per_pe_edges = edges[dst_iid % kPeCount];
-                return std::any_of(
-                    per_pe_edges.rbegin(),
-                    per_pe_edges.rbegin() +
-                        std::min(kVertexUpdateDepDist * kEdgeVecLen,
-                                 static_cast<int>(per_pe_edges.size())),
-                    [&edge](auto& elem) -> bool {
-                      return elem.dst == edge.dst && elem.src != kNullVertex;
-                    });
-              };
-              if (!conflict(bin.back())) {
-                edge_v[j] = bin.back();
-                bin.pop_back();
-              }
-              active = true;
-            }
-          }
-          if (!active) continue;  // All bins in this shard are empty.
-
-          // Append newly assembled edge vector to edges.
-          for (int j = 0; j < kEdgeVecLen; ++j) {
-            edges[dst_iid % kPeCount].push_back(edge_v[j]);
-          }
-          shard_edge_counts[dst_iid] += kEdgeVecLen;
-          interval_in_edge_counts[dst_iid] += kEdgeVecLen;
-          interval_out_edge_counts[src_iid] += kEdgeVecLen;
-          pe_edge_counts[dst_iid % kPeCount] += kEdgeVecLen;
-          out_edge_counts[dst_iid % kPeCount][src_iid] += kEdgeVecLen;
-          done = false;
-        }
+      for (auto [src, dst] : {std::tie(v0, v1), std::tie(v1, v0)}) {
+        edges[indices[src].offset + vertex_counts[src]] = {
+            .dst = Vid(dst),
+            .weight = weight,
+        };
+        ++vertex_counts[src];
       }
     }
 
-    VLOG(7) << "edge count in interval[" << src_iid
-            << "]: " << interval_edge_counts[src_iid];
-
-    total_edge_count += interval_out_edge_counts[src_iid];
-    VLOG(7) << "edge count in interval[" << src_iid
-            << "]: " << interval_out_edge_counts[src_iid];
-
-    // If edges are not balanced among PEs, max #edge bottlenecks all PEs.
-    Eid max_edge_count =
-        (*std::max_element(out_edge_counts.begin(), out_edge_counts.end(),
-                           [src_iid](auto& lhs, auto& rhs) -> bool {
-                             return lhs[src_iid] < rhs[src_iid];
-                           }))[src_iid];
-    sum_of_max_edge_count += max_edge_count * kPeCount;
-    VLOG(7) << "edge count in interval[" << src_iid
-            << "]: " << max_edge_count * kPeCount << " (+" << std::fixed
-            << std::setprecision(2)
-            << 100 * (1. * max_edge_count * kPeCount /
-                          interval_edge_counts[src_iid] -
-                      1)
-            << "%, "
-            << 1. * max_edge_count * kPeCount /
-                   interval_out_edge_counts[src_iid]
-            << "x due to load imbalance, "
-            << 1. * interval_out_edge_counts[src_iid] /
-                   interval_edge_counts[src_iid]
-            << "x due to vectorization & dependency)";
-
-    for (Iid dst_iid = 0; dst_iid < interval_count; ++dst_iid) {
-      VLOG(7) << "edge count in shard[" << src_iid << "][" << dst_iid
-              << "]: " << shard_edge_counts[dst_iid];
+    for (Vid vid = 0; vid < vertex_count; ++vid) {
+      CHECK_EQ(vertex_counts[vid], indices[vid].count);
     }
-  }
-  LOG(INFO) << "edge count: " << sum_of_max_edge_count << " (+" << std::fixed
-            << std::setprecision(2)
-            << 100 * (1. * sum_of_max_edge_count /
-                          std::accumulate(interval_edge_counts.begin(),
-                                          interval_edge_counts.end(), 0) -
-                      1)
-            << "%, " << 1. * sum_of_max_edge_count / total_edge_count
-            << "x due to load imbalance, "
-            << 1. * total_edge_count /
-                   std::accumulate(interval_edge_counts.begin(),
-                                   interval_edge_counts.end(), 0)
-            << "x due to vectorization & dependency)";
-
-  edge_bins.reset();
-  for (auto& per_pe_edges : edges) {
-    // Allocate at least 1 element to the kernel.
-    if (per_pe_edges.size() == 0) {
-      per_pe_edges.resize(kEdgeVecLen, {kNullVertex});
-    }
-    CHECK_EQ(per_pe_edges.size() % kEdgeVecLen, 0);
-    CHECK_GT(per_pe_edges.size(), 0);
   }
 
   // Sample root vertices.
@@ -313,25 +175,12 @@ int main(int argc, const char* argv[]) {
               std::back_inserter(sample_vertices), 64, std::mt19937());
 
   // Other kernel arguments.
+  aligned_vector<int64_t> metadata(4);
   aligned_vector<Vid> parents(tapa::round_up<kVertexVecLen>(vertex_count));
   aligned_vector<float> distances(tapa::round_up<kVertexVecLen>(vertex_count));
-  aligned_vector<uint64_t> metadata(interval_count * (kPeCount + 1) + 3);
-  for (int64_t iid = 0; iid < interval_count; ++iid) {
-    for (int pe = 0; pe < kPeCount; ++pe) {
-      metadata[kPeCount * iid + pe] = out_edge_counts[pe][iid];
-    }
-    if (iid / kPeCount > 0) {
-      metadata[kPeCount * interval_count + iid] =
-          metadata[kPeCount * interval_count + iid - kPeCount] +
-          interval_in_edge_counts[iid - kPeCount];
-    }
-  }
 
   // Statistics.
   vector<double> teps;
-  vector<int64_t> iteration_count;
-  vector<int64_t> visited_edge_count;
-  vector<int64_t> processed_update_count;
 
   for (const auto root : sample_vertices) {
     CHECK_GE(root, 0) << "invalid root";
@@ -343,18 +192,9 @@ int main(int argc, const char* argv[]) {
     parents[root] = root;
     distances[root] = 0.f;
 
-    array<aligned_vector<Update>, kPeCount> updates;
-    for (int pe = 0; pe < kPeCount; ++pe) {
-      updates[pe].resize(edges[pe].size());
-    }
-
     unsetenv("KERNEL_TIME_NS");
     const auto tic = steady_clock::now();
-    SSSP(interval_count, interval_size, root, metadata,
-         tapa::make_vec_async_mmap<Vid, kVertexVecLen>(parents),
-         tapa::make_vec_async_mmap<float, kVertexVecLen>(distances),
-         tapa::make_vec_async_mmaps<Edge, kEdgeVecLen, kPeCount>(edges),
-         tapa::make_vec_async_mmaps<Update, kUpdateVecLen, kPeCount>(updates));
+    SSSP(root, metadata, edges, indices, parents, distances);
     double elapsed_time =
         1e-9 * duration_cast<nanoseconds>(steady_clock::now() - tic).count();
     if (auto env = getenv("KERNEL_TIME_NS")) {
@@ -368,14 +208,24 @@ int main(int argc, const char* argv[]) {
       }
     }
     teps.push_back(connected_edge_count / elapsed_time);
-    iteration_count.push_back(metadata[interval_count * (kPeCount + 1)]);
-    visited_edge_count.push_back(metadata[interval_count * (kPeCount + 1) + 1]);
-    processed_update_count.push_back(
-        metadata[interval_count * (kPeCount + 1) + 2]);
-    VLOG(3) << "  TEPS: " << *teps.rbegin();
-    VLOG(3) << "  #iteration: " << *iteration_count.rbegin();
-    VLOG(3) << "  #edge: " << *visited_edge_count.rbegin();
-    VLOG(3) << "  #update: " << *processed_update_count.rbegin();
+    VLOG(3) << "  TEPS:                  " << *teps.rbegin();
+    auto visited_edge_count = metadata[0];
+    auto total_queue_size = metadata[1];
+    auto queue_count = metadata[2];
+    auto max_queue_size = metadata[3];
+    VLOG(3) << "  #edges visited:        " << visited_edge_count << " (+"
+            << std::fixed << std::setprecision(1)
+            << 100. * visited_edge_count / edges.size() - 100 << "% over "
+            << edges.size() << ")";
+    VLOG(3) << "  average size of queue: " << std::fixed << std::setprecision(1)
+            << 1. * total_queue_size / queue_count << " ("
+            << 100. * total_queue_size / queue_count / vertex_count << "% of "
+            << vertex_count << ")";
+    VLOG(3) << "  max size of queue:     " << max_queue_size << " ("
+            << std::fixed << std::setprecision(1)
+            << 100. * max_queue_size / vertex_count << "% of " << vertex_count
+            << ")";
+    VLOG(3) << "  queue operations:      " << queue_count;
 
     if (!IsValid(root, edges_view, weights_view, parents.data(),
                  distances.data(), vertex_count)) {
@@ -383,13 +233,6 @@ int main(int argc, const char* argv[]) {
     }
   }
 
-  LOG(INFO) << "average #iteration: "
-            << average<decltype(iteration_count), float>(iteration_count);
-  LOG(INFO) << "average #edge visited: "
-            << average<decltype(visited_edge_count), float>(visited_edge_count);
-  LOG(INFO) << "average #update processed: "
-            << average<decltype(processed_update_count), float>(
-                   processed_update_count);
   printf("sssp harmonic_mean_TEPS:     !  %g\n", geo_mean(teps));
 
   return 0;

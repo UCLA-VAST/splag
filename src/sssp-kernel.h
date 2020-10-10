@@ -6,64 +6,88 @@
 
 #include "sssp.h"
 
+// Used in:
+//
+// Dispatcher -> ProcElem
+struct Task {
+  Vid vid;
+  float distance;
+  bool operator<(const Task& other) const { return other.distance < distance; }
+};
+
+// Used in:
+//
+// VertexMem -> ProcElem
+// ProcElem  -> Dispatcher
+struct TaskOp {
+  // VertexMem -> ProcElem: Valid values are NEW and NOOP.
+  // ProcElem  -> Dispatcher: Valid values are NEW and DONE.
+  enum Op { NEW, NOOP, DONE = NOOP } op;
+  Task task;  // Valid only when op is NEW.
+};
+
+// Used in:
+//
+// ProcElem -> VertexMem
+struct Update {
+  Vid src;
+  Edge edge;
+};
+
+// Used in:
+//
+// Dispatcher -> TaskQueue
+struct QueueOp {
+  enum Op { PUSH, POP } op;
+  Task task;  // Valid only when op is PUSH.
+};
+
+// Used in:
+//
+// TaskQueue -> Dispatcher
+struct QueueOpResp {
+  QueueOp::Op queue_op;
+  // Valid values are NEW and NOOP.
+  // If queue_op is PUSH, NEW indicates a new task is created; NOOP indicates
+  // the priority of existing task is increased.
+  // If queue_op is POP, NEW indicates a task is dequeued and returned; NOOP
+  // indicates the queue is empty.
+  TaskOp::Op task_op;
+  Task task;  // Valid only when queue_op is POP and task_op is NEW.
+};
+
 // Constants and types.
-using VertexAttrVec = tapa::vec_t<VertexAttr, kVertexVecLen>;
-
 constexpr int kVertexPartitionFactor =
-    kEdgeVecLen > kVertexVecLen
-        ? kEdgeVecLen > kUpdateVecLen ? kEdgeVecLen : kUpdateVecLen
-        : kVertexVecLen > kUpdateVecLen ? kVertexVecLen : kUpdateVecLen;
-
-struct TaskReq {
-  enum Phase { kScatter = 0, kGather = 1 };
-  Phase phase;
-  Iid iid;
-  Eid edge_count_v;
-  Eid eid_offset_v;
-  bool scatter_done;
-};
-
-inline std::ostream& operator<<(std::ostream& os, const TaskReq::Phase& obj) {
-  return os << (obj == TaskReq::kScatter ? "SCATTER" : "GATHER");
-}
-
-inline std::ostream& operator<<(std::ostream& os, const TaskReq& obj) {
-  if (obj.scatter_done) {
-    return os << "{scatter_done: " << obj.scatter_done << "}";
-  }
-  return os << "{phase: " << obj.phase << ", iid: " << obj.iid
-            << ", edge_count_v: " << obj.edge_count_v
-            << ", eid_offset_v: " << obj.eid_offset_v << "}";
-}
-
-struct TaskResp {
-  bool active;
-  Iid iid;
-};
-
-inline std::ostream& operator<<(std::ostream& os, const TaskResp& obj) {
-  return os << "{active: " << obj.active << ", iid: " << obj.iid << "}";
-}
-
-struct UpdateReq {
-  TaskReq::Phase phase;
-  Iid iid;
-  Eid update_count_v;
-};
-
-inline std::ostream& operator<<(std::ostream& os, const UpdateReq& obj) {
-  return os << "{phase: " << obj.phase << ", iid: " << obj.iid
-            << ", update_count_v: " << obj.update_count_v << "}";
-}
-
-struct VertexReq {
-  Iid iid;
-};
-
-using UpdateCount = tapa::packet<Iid, Eid>;
-using UpdateVecPacket = tapa::packet<Iid, UpdateVec>;
+    kEdgeVecLen > kVertexVecLen ? kEdgeVecLen : kVertexVecLen;
 
 // Convenient functions and macros.
+
+/// Returns whether singleton @p array contains @p value.
+///
+/// @tparam T     Type of each element in @p array and @p value.
+/// @param array  An array of type @p T[1].
+/// @param value  A value of type @p T.
+/// @return       True if @p array contains @p value.
+template <typename T>
+inline bool Contains(const volatile T (&array)[1], const T& value) {
+#pragma HLS inline
+  return array[0] == value;
+}
+
+/// Returns whether @p array contains @p value.
+///
+/// @tparam T     Type of each element in @p array and @p value.
+/// @tparam N     Number of elements in @p array.
+/// @param array  An array of type @p T[N].
+/// @param value  A value of type @p T.
+/// @return       True if @p array contains @p value.
+template <typename T, int N>
+inline bool Contains(const volatile T (&array)[N], const T& value) {
+#pragma HLS inline
+  return Contains((const T(&)[N / 2])(array), value) ||
+         Contains((const T(&)[N - N / 2])(array[N / 2]), value);
+}
+
 inline bool All(const bool (&array)[1]) {
 #pragma HLS inline
   return array[0];
@@ -90,37 +114,52 @@ inline void MemSet(T (&array)[N], T value) {
 }
 
 // Prints logging messages with tag and function name as prefix.
-#define VLOG_F(level, tag) VLOG(level) << #tag << "@" << __FUNCTION__ << ": "
 #define LOG_F(level, tag) LOG(level) << #tag << "@" << __FUNCTION__ << ": "
+#define VLOG_F(level, tag) VLOG(level) << #tag << "@" << __FUNCTION__ << ": "
 
-// Creates an unrolled loop with "var" iterating over [0, bound).
-#define RANGE(var, bound, body)               \
+/// Creates an unrolled loop with @c var iterating over [0, bound).
+///
+/// @param var    Name of the loop variable, may be referenced in @c body.
+/// @param bound  Trip count of the loop.
+/// @param ...    Loop body. Variadic arguments are used to allow commas.
+#define RANGE(var, bound, ...)                \
   do {                                        \
     for (int var = 0; var < (bound); ++var) { \
-      _Pragma("HLS unroll") body;             \
+      _Pragma("HLS unroll") __VA_ARGS__;      \
     }                                         \
   } while (0)
 
 // Creates a pragma with stringified arguments.
 #define DO_PRAGMA(x) _Pragma(#x)
 
-// Fully partitions array "var" and initializes all elements with value "val".
-// Note that "val" is evaluated once for each element.
-#define INIT_ARRAY(var, val)                              \
+/// Defines and initializes a fully partitioned array.
+///
+/// @param type Type of each array element.
+/// @param var  Name of the declared array.
+/// @param size Array size, in unit of elements, evaluated only once.
+/// @param val  Initial value of all array elements, evaluated once per element.
+#define DECL_ARRAY(type, var, size, val)                  \
+  type var[(size)];                                       \
   static_assert(std::is_array<decltype(var)>::value,      \
                 "'" #var "' is not an array");            \
   DO_PRAGMA(HLS array_partition complete variable = var); \
   RANGE(_i, sizeof(var) / sizeof(var[0]), var[_i] = (val))
 
-// Defines fully partitioned array "var" and initializes all elements with
-// "val". Note that "val" is evaluated once for each element.
-#define DECL_ARRAY(type, var, size, val) \
-  type var[(size)];                      \
-  INIT_ARRAY(var, val);
+/// Sets @c var, if @c var is not set and @c val evaluates to true.
+///
+/// @param var  A boolean lvalue that must not have side effects.
+/// @param val  A boolean expression. Evaluated only if @c var is false.
+/// @return     Whether @c var changed from false to true.
+#define SET(var, val) !(var || !(var = (val)))
 
-// Updates "var" with "val" if and only "var" is not true. Returns the possibly
-// updated "var". Note that "val" is evaluated if and only if "var" is not true.
-#define UPDATE(var, val) (var = var || (val))
+/// Resets @c var, if @c var is set and @c val evaluates to true.
+///
+/// @param var  A boolean lvalue that must not have side effects.
+/// @param val  A boolean expression. Evaluated only if @c var is true.
+/// @return     Whether @c var changed from true to false.
+#define RESET(var, val) (var && !(var = !(val)))
+
+#define UNUSED(x) (void)(x)
 
 #ifndef __SYNTHESIS__
 inline void ap_wait() {}
