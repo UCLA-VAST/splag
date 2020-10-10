@@ -6,14 +6,15 @@
 
 #include "sssp.h"
 
-// Used in:
-//
-// Dispatcher -> ProcElem
 struct Task {
   Vid vid;
   float distance;
   bool operator<(const Task& other) const { return other.distance < distance; }
 };
+
+inline std::ostream& operator<<(std::ostream& os, const Task& obj) {
+  return os << "{vid: " << obj.vid << ", distance: " << obj.distance << "}";
+}
 
 // Used in:
 //
@@ -55,6 +56,31 @@ struct QueueOpResp {
   TaskOp::Op task_op;
   Task task;  // Valid only when queue_op is POP and task_op is NEW.
 };
+
+inline std::ostream& operator<<(std::ostream& os, const QueueOpResp& obj) {
+  os << "{queue_op: ";
+  switch (obj.queue_op) {
+    case QueueOp::PUSH:
+      os << "PUSH";
+      break;
+    case QueueOp::POP:
+      os << "POP";
+      break;
+  }
+  os << ", task_op: ";
+  switch (obj.task_op) {
+    case TaskOp::NEW:
+      os << "NEW";
+      break;
+    case TaskOp::NOOP:
+      os << "NOOP";
+      break;
+  }
+  if (obj.queue_op == QueueOp::POP && obj.task_op == TaskOp::NEW) {
+    os << ", task: " << obj.task;
+  }
+  return os << "}";
+}
 
 // Constants and types.
 constexpr int kVertexPartitionFactor =
