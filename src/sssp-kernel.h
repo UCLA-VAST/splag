@@ -6,16 +6,6 @@
 
 #include "sssp.h"
 
-struct Task {
-  Vid vid;
-  float distance;
-  bool operator<(const Task& other) const { return other.distance < distance; }
-};
-
-inline std::ostream& operator<<(std::ostream& os, const Task& obj) {
-  return os << "{vid: " << obj.vid << ", distance: " << obj.distance << "}";
-}
-
 // Used in:
 //
 // VertexMem -> ProcElem

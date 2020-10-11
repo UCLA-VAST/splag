@@ -87,9 +87,10 @@ bool IsValid(int64_t root, PackedEdgesView edges, WeightsView weights,
   return true;
 }
 
-void SSSP(Vid root, tapa::mmap<int64_t> metadata, tapa::mmap<Edge> edges,
-          tapa::mmap<Index> indices, tapa::mmap<Vid> parents,
-          tapa::mmap<float> distances);
+void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
+          tapa::mmap<Edge> edges, tapa::mmap<Index> indices,
+          tapa::mmap<Vid> parents, tapa::mmap<float> distances,
+          tapa::mmap<Task> heap_array, tapa::mmap<Vid> heap_index);
 
 int main(int argc, const char* argv[]) {
   FLAGS_logtostderr = true;
@@ -178,6 +179,8 @@ int main(int argc, const char* argv[]) {
   aligned_vector<int64_t> metadata(4);
   aligned_vector<Vid> parents(tapa::round_up<kVertexVecLen>(vertex_count));
   aligned_vector<float> distances(tapa::round_up<kVertexVecLen>(vertex_count));
+  aligned_vector<Task> heap_array(vertex_count);
+  aligned_vector<Vid> heap_index(vertex_count);
 
   // Statistics.
   vector<double> teps;
@@ -194,7 +197,8 @@ int main(int argc, const char* argv[]) {
 
     unsetenv("KERNEL_TIME_NS");
     const auto tic = steady_clock::now();
-    SSSP(root, metadata, edges, indices, parents, distances);
+    SSSP(vertex_count, root, metadata, edges, indices, parents, distances,
+         heap_array, heap_index);
     double elapsed_time =
         1e-9 * duration_cast<nanoseconds>(steady_clock::now() - tic).count();
     if (auto env = getenv("KERNEL_TIME_NS")) {

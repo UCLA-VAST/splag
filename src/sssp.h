@@ -35,8 +35,21 @@ inline std::ostream& operator<<(std::ostream& os, const Index& obj) {
             << " }";
 }
 
+struct Task {
+  Vid vid;
+  float distance;
+  bool operator<(const Task& other) const { return other.distance < distance; }
+  bool operator<=(const Task& other) const {
+    return other.distance <= distance;
+  }
+};
+
+inline std::ostream& operator<<(std::ostream& os, const Task& obj) {
+  return os << "{vid: " << obj.vid << ", distance: " << obj.distance << "}";
+}
+
 // Platform-specific constants and types.
-constexpr int kPeCount = 8;
+constexpr int kPeCount = 1;
 constexpr int kVecLenBytes = 64;  // 512 bits
 constexpr int kVertexVecLen = kVecLenBytes / sizeof(float);
 static_assert(sizeof(float) == sizeof(Vid), "Vid must be 32-bit");

@@ -25,33 +25,20 @@ add_tapa_target(
   sssp-hw-xo
   INPUT src/sssp.cpp
   TOP SSSP
-  PLATFORM xilinx_u280_xdma_201920_3
-  DIRECTIVE ${CMAKE_CURRENT_SOURCE_DIR}/directive.json
-  CONSTRAINT ${CMAKE_CURRENT_BINARY_DIR}/constraint.tcl)
+  PLATFORM xilinx_u280_xdma_201920_3)
 
 add_xocc_hw_link_targets(
   ${CMAKE_CURRENT_BINARY_DIR}
   --remote_ip_cache=$ENV{HOME}/.remote_ip_cache
-  --sp=SSSP.parents:HBM[0]
-  --sp=SSSP.distances:HBM[1]
-  --sp=SSSP.edges_0:HBM[2]
-  --sp=SSSP.edges_1:HBM[3]
-  --sp=SSSP.edges_2:HBM[4]
-  --sp=SSSP.edges_3:HBM[5]
-  --sp=SSSP.edges_4:HBM[6]
-  --sp=SSSP.edges_5:HBM[7]
-  --sp=SSSP.edges_6:HBM[8]
-  --sp=SSSP.edges_7:HBM[9]
-  --sp=SSSP.updates_0:HBM[10]
-  --sp=SSSP.updates_1:HBM[11]
-  --sp=SSSP.updates_2:HBM[12]
-  --sp=SSSP.updates_3:HBM[13]
-  --sp=SSSP.updates_4:HBM[14]
-  --sp=SSSP.updates_5:HBM[15]
-  --sp=SSSP.updates_6:HBM[16]
-  --sp=SSSP.updates_7:HBM[17]
+  --sp=SSSP.metadata:PLRAM[0]
+  --sp=SSSP.edges:HBM[0]
+  --sp=SSSP.indices:HBM[1]
+  --sp=SSSP.parents:HBM[2]
+  --sp=SSSP.distances:HBM[3]
+  --sp=SSSP.heap_array:HBM[4]
+  --sp=SSSP.heap_index:HBM[5]
   --vivado.prop=run.impl_1.STRATEGY=Performance_EarlyBlockPlacement
-  --vivado.prop=run.impl_1.STEPS.OPT_DESIGN.TCL.PRE=${CMAKE_CURRENT_BINARY_DIR}/constraint.tcl
+  # --vivado.prop=run.impl_1.STEPS.OPT_DESIGN.TCL.PRE=${CMAKE_CURRENT_BINARY_DIR}/constraint.tcl
   INPUT sssp-hw-xo
   HW_EMU_XCLBIN hw_emu_xclbin_target
   HW_XCLBIN hw_xclbin_target)

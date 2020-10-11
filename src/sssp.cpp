@@ -6,9 +6,6 @@
 
 #include <tapa.h>
 
-// Non-synthesizable
-#include <boost/heap/fibonacci_heap.hpp>
-#include <memory>
 #include "sssp-kernel.h"
 
 // Estimated DRAM latency.
@@ -18,6 +15,99 @@ constexpr int kMemLatency = 50;
 //   v=5: O(1)
 //   v=8: O(#vertex)
 //   v=9: O(#edge)
+
+QueueOpResp Push(const Task& new_task, tapa::mmap<Task> heap_array,
+                 tapa::mmap<Vid> heap_index, Vid& heap_size) {
+  QueueOpResp result{
+      .queue_op = QueueOp::PUSH,
+      .task_op = TaskOp::NOOP,
+      .task = {},
+  };
+  const Vid task_index = heap_index[new_task.vid];
+  bool heapify = false;
+  Vid heapify_index = task_index;
+  if (task_index != kNullVertex) {
+    const Task old_task = heap_array[task_index];
+    CHECK_EQ(old_task.vid, new_task.vid);
+    if (old_task <= new_task) {
+      heapify = true;
+      heap_array[task_index] = new_task;
+    }
+  } else {
+    heapify = true;
+    heap_array[heap_size] = new_task;
+    heap_index[new_task.vid] = heapify_index = heap_size;
+    ++heap_size;
+    result.task_op = TaskOp::NEW;
+  }
+
+  if (heapify)
+    // Increase the priority of heap_array[i] if necessary.
+  heapify_up:
+    for (Vid i = heapify_index;;) {
+#pragma HLS pipeline II = 1
+      const Vid parent = (i - 1) / 2;
+      const Task task_i = heap_array[i];
+      const Task task_parent = heap_array[parent];
+      if (task_i <= task_parent) break;
+
+      heap_array[i] = task_parent;
+      heap_array[parent] = task_i;
+      heap_index[task_i.vid] = parent;
+      heap_index[task_parent.vid] = i;
+
+      i = parent;
+    }
+  return result;
+}
+
+QueueOpResp Pop(tapa::mmap<Task> heap_array, tapa::mmap<Vid> heap_index,
+                Vid& heap_size) {
+  QueueOpResp result{
+      .queue_op = QueueOp::POP,
+      .task_op = TaskOp::NOOP,
+      .task = {},
+  };
+  if (heap_size > 0) {
+    const Task front = heap_array[0];
+    const Task back = heap_array[heap_size - 1];
+    heap_index[back.vid] = 0;
+    heap_index[front.vid] = kNullVertex;
+    heap_array[0] = back;
+    --heap_size;
+
+    result.task_op = TaskOp::NEW;
+    result.task = front;
+
+    // Decrease the priority of heap_array[i] if necessary.
+  heapify_down:
+    for (Vid i = 0;;) {
+#pragma HLS pipeline II = 1
+      const Vid left = i * 2 + 1;
+      const Vid right = i * 2 + 2;
+      const Task task_i = heap_array[i];
+      constexpr Task kNullTask{.vid = kNullVertex, .distance = kInfDistance};
+      const Task task_left = left < heap_size ? heap_array[left] : kNullTask;
+      const Task task_right = right < heap_size ? heap_array[right] : kNullTask;
+      const bool left_child_ok = task_left <= task_i;
+      const bool right_child_ok = task_right <= task_i;
+      if (left_child_ok && right_child_ok) break;
+
+      const bool left_is_max =
+          right_child_ok || (!left_child_ok && task_right <= task_left);
+      const Vid max = left_is_max ? left : right;
+      const Task task_max = left_is_max ? task_left : task_right;
+
+      heap_array[i] = task_max;
+      heap_array[max] = task_i;
+      heap_index[task_i.vid] = max;
+      heap_index[task_max.vid] = i;
+
+      i = max;
+    }
+  }
+  return result;
+}
 
 // The queue is initialized with the root vertex. Each request is either a push
 // or a pop.
@@ -34,39 +124,27 @@ void TaskQueue(
     const Vid vertex_count, const Vid root,
     // Queue requests.
     tapa::istream<QueueOp>& queue_req_q,
-    tapa::ostream<QueueOpResp>& queue_resp_q) {
-  boost::heap::fibonacci_heap<Task> task_q;
-  using handle_t = decltype(task_q)::handle_type;
-  std::vector<std::unique_ptr<handle_t>> handle_map(vertex_count);
-  handle_map[root] =
-      std::make_unique<handle_t>(task_q.push({.vid = root, .distance = 0.}));
+    tapa::ostream<QueueOpResp>& queue_resp_q, tapa::mmap<Task> heap_array,
+    tapa::mmap<Vid> heap_index) {
+#pragma HLS inline recursive
+  // Parent   of heap_array[i]: heap_array[(i - 1) / 2]
+  // Children of heap_array[i]: heap_array[i * 2 + 1], heap_array[i * 2 + 2]
+  // Heap rule: child <= parent
+  heap_array[0] = {.vid = root, .distance = 0.f};
 
-infinite_loop:
+heap_init:
+  for (Vid i = 0; i < vertex_count; ++i) {
+#pragma HLS pipeline II = 1
+    heap_index[i] = i == root ? 0 : kNullVertex;
+  }
+  Vid heap_size = 1;
+
+spin:
   for (QueueOp req;;) {
     if (queue_req_q.try_read(req)) {
-      QueueOpResp resp = {
-          .queue_op = req.op, .task_op = TaskOp::NOOP, .task = {}};
-      switch (req.op) {
-        case QueueOp::PUSH:
-          if (auto& handle = handle_map[req.task.vid]) {
-            if (handle->node_->value < req.task) {
-              task_q.increase(*handle, req.task);
-            }
-          } else {
-            handle = std::make_unique<handle_t>(task_q.push(req.task));
-            resp.task_op = TaskOp::NEW;
-          }
-          break;
-        case QueueOp::POP:
-          if (!task_q.empty()) {
-            resp.task_op = TaskOp::NEW;
-            resp.task = task_q.top();
-            handle_map[task_q.top().vid].reset();
-            task_q.pop();
-          }
-          break;
-      }
-      queue_resp_q.write(resp);
+      queue_resp_q.write(req.op == QueueOp::PUSH
+                             ? Push(req.task, heap_array, heap_index, heap_size)
+                             : Pop(heap_array, heap_index, heap_size));
     }
   }
 }
@@ -78,11 +156,14 @@ void ProcElem(
     tapa::ostream<Update>& update_req_q, tapa::istream<TaskOp>& update_resp_q,
     // Memory-maps.
     tapa::mmap<Index> indices, tapa::mmap<Edge> edges) {
-infinite_loop:
+  bool valid = false;
+  TaskOp resp;
+
+spin:
   for (;;) {
     const auto src = task_req_q.read();
-    CHECK_LT(src, indices.size());
-    const Index& index = indices[src];
+    const Index index = indices[src];
+  read_edges:
     for (Eid eid_req = 0, eid_resp = 0; eid_resp < index.count;) {
       if (eid_req < index.count &&
           update_req_q.try_write(
@@ -90,10 +171,9 @@ infinite_loop:
         ++eid_req;
       }
 
-      TaskOp resp;
-      if (update_resp_q.try_peek(resp) &&
-          (resp.op == TaskOp::NOOP || task_resp_q.try_write(resp))) {
-        update_resp_q.read(nullptr);
+      SET(valid, update_resp_q.try_read(resp));
+      if (valid && (resp.op == TaskOp::NOOP || task_resp_q.try_write(resp))) {
+        valid = false;
         ++eid_resp;
       }
     }
@@ -113,22 +193,25 @@ void VertexMem(
   DECL_ARRAY(volatile Vid, active_srcs, kPeCount, kNullVertex);
   DECL_ARRAY(volatile Vid, active_dsts, kPeCount, kNullVertex);
 
-infinite_loop:
+  DECL_ARRAY(bool, valid, kPeCount, false);
+  DECL_ARRAY(Update, updates, kPeCount, Update());
+
+spin:
   for (;;) {
     RANGE(pe, kPeCount, {
-      Update update;
-      if (req_q[pe].try_peek(update) &&
-          !Contains(active_srcs, update.edge.dst) &&
+      Update& update = updates[pe];
+      UNUSED(SET(valid[pe], req_q[pe].try_read(update)));
+      if (valid[pe] && !Contains(active_srcs, update.edge.dst) &&
           !Contains(active_dsts, update.edge.dst) &&
           !Contains(active_dsts, update.src)) {
         // No conflict; lock both src and dst and read from the FIFO.
         active_srcs[pe] = update.src;
         active_dsts[pe] = update.edge.dst;
-        req_q[pe].read(nullptr);
+        valid[pe] = false;
 
         // Process the update.
         TaskOp resp{.op = TaskOp::NOOP, .task = {}};
-        auto new_distance = distances[update.src] + update.edge.weight;
+        const auto new_distance = distances[update.src] + update.edge.weight;
         if (new_distance < distances[update.edge.dst]) {
           VLOG_F(9, info) << "distances[" << update.edge.dst
                           << "] = " << distances[update.edge.dst]
@@ -187,7 +270,9 @@ void Dispatcher(
     CHECK_GE(task_count, 0);                                                   \
   } while (0)
 
+spin:
   for (; queue_size > 0 || task_count > 0 || !queue_resp_q.empty();) {
+#pragma HLS pipeline II = 1
     // Process response messages from the queue.
     if (SET(queue_buf_valid, queue_resp_q.try_read(queue_buf))) {
       switch (queue_buf.queue_op) {
@@ -262,12 +347,10 @@ void Dispatcher(
   metadata[3] = max_queue_size;
 }
 
-void SSSP(Vid root, tapa::mmap<int64_t> metadata, tapa::mmap<Edge> edges,
-          tapa::mmap<Index> indices, tapa::mmap<Vid> parents,
-          tapa::mmap<float> distances) {
-  const Vid vertex_count = indices.size();
-
-  //*
+void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
+          tapa::mmap<Edge> edges, tapa::mmap<Index> indices,
+          tapa::mmap<Vid> parents, tapa::mmap<float> distances,
+          tapa::mmap<Task> heap_array, tapa::mmap<Vid> heap_index) {
   tapa::stream<QueueOp, 2> queue_req_q("queue_req");
   tapa::stream<QueueOpResp, 2> queue_resp_q("queue_resp");
   tapa::streams<Vid, kPeCount, 2> task_req_q("task_req");
@@ -276,81 +359,11 @@ void SSSP(Vid root, tapa::mmap<int64_t> metadata, tapa::mmap<Edge> edges,
   tapa::streams<TaskOp, kPeCount, 2> update_resp_q("update_resp");
 
   tapa::task()
-      .invoke<-1>(TaskQueue, vertex_count, root, queue_req_q, queue_resp_q)
+      .invoke<-1>(TaskQueue, vertex_count, root, queue_req_q, queue_resp_q,
+                  heap_array, heap_index)
       .invoke<-1, kPeCount>(ProcElem, task_req_q, task_resp_q, update_req_q,
                             update_resp_q, indices, edges)
       .invoke<-1>(VertexMem, update_req_q, update_resp_q, parents, distances)
       .invoke<0>(Dispatcher, root, metadata, task_req_q, task_resp_q,
                  queue_req_q, queue_resp_q);
-  // */
-
-  /*
-  boost::heap::fibonacci_heap<Task> task_q;
-  using handle_t = decltype(task_q)::handle_type;
-  std::vector<std::unique_ptr<handle_t>> handle_map(vertex_count);
-  handle_map[root] =
-      std::make_unique<handle_t>(task_q.push({.vid = root, .distance = 0.}));
-
-  int64_t visited_edge_count = 0;
-  int64_t queue_count = 0;
-  int64_t total_queue_size = 0;
-  int64_t max_queue_size = 0;
-
-  auto update = [&distances, &parents](const Edge& edge, Vid src) -> float {
-    float result = 0.f;
-#pragma omp critical(vertex_lock)
-    {
-      auto new_distance = distances[src] + edge.weight;
-      CHECK_NE(new_distance, result) << result << " indicates inactivity";
-      if (new_distance < distances[edge.dst]) {
-        distances[edge.dst] = new_distance;
-        parents[edge.dst] = src;
-        result = new_distance;
-      }
-    }
-    return result;
-  };
-
-  while (!task_q.empty()) {
-    std::vector<Task> tasks;
-    tasks.reserve(kPeCount);
-    for (int i = 0; !task_q.empty() && i < kPeCount; ++i) {
-      tasks.push_back(task_q.top());
-      task_q.pop();
-      handle_map[tasks.back().vid].reset();
-    }
-
-#pragma omp parallel for
-    for (int i = 0; i < tasks.size(); ++i) {
-      const auto src = tasks[i].vid;
-      const auto src_distance = tasks[i].distance;
-      CHECK_LT(src, indices.size());
-      const Index& index = indices[src];
-      for (Eid eid = index.offset; eid < index.offset + index.count; ++eid) {
-        const Edge& edge = edges[eid];
-#pragma omp atomic
-        ++visited_edge_count;
-        if (auto new_distance = update(edge, src)) {
-#pragma omp critical(queue_lock)
-          {
-            Task task{.vid = edge.dst, .distance = new_distance};
-            if (auto& handle = handle_map[task.vid]) {
-              if (handle->node_->value < task) task_q.increase(*handle, task);
-            } else {
-              handle = std::make_unique<handle_t>(task_q.push(task));
-            }
-            ++queue_count;
-            total_queue_size += task_q.size();
-            if (task_q.size() > max_queue_size) max_queue_size = task_q.size();
-          }
-        }
-      }
-    }
-  }
-
-  metadata[0] = visited_edge_count;
-  metadata[1] = total_queue_size;
-  metadata[2] = queue_count;
-  metadata[3] = max_queue_size;
-  // */
 }
