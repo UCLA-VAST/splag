@@ -18,8 +18,8 @@ void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
   auto indices_arg = fpga::WriteOnly(indices.get(), indices.size());
   auto parents_arg = fpga::ReadWrite(parents.get(), parents.size());
   auto distances_arg = fpga::ReadWrite(distances.get(), distances.size());
-  auto heap_array_arg = fpga::ReadWrite(heap_array.get(), heap_array.size());
-  auto heap_index_arg = fpga::ReadWrite(heap_index.get(), heap_index.size());
+  auto heap_array_arg = fpga::WriteOnly(heap_array.get(), heap_array.size());
+  auto heap_index_arg = fpga::WriteOnly(heap_index.get(), heap_index.size());
 
   int arg_idx = 0;
   instance.SetArg(arg_idx++, vertex_count);

@@ -130,14 +130,7 @@ void TaskQueue(
   // Parent   of heap_array[i]: heap_array[(i - 1) / 2]
   // Children of heap_array[i]: heap_array[i * 2 + 1], heap_array[i * 2 + 2]
   // Heap rule: child <= parent
-  heap_array[0] = {.vid = root, .distance = 0.f};
-
-heap_init:
-  for (Vid i = 0; i < vertex_count; ++i) {
-#pragma HLS pipeline II = 1
-    heap_index[i] = i == root ? 0 : kNullVertex;
-  }
-  Vid heap_size = 1;
+  Vid heap_size = 0;
 
 spin:
   for (QueueOp req;;) {
@@ -250,9 +243,12 @@ void Dispatcher(
   bool queue_buf_valid = false;
   QueueOpResp queue_buf;
 
-  int task_count = 0;                       // Number of active tasks.
-  int queue_size = 1;                       // Number of tasks in the queue.
+  int task_count = 1;                       // Number of active tasks.
+  int queue_size = 0;                       // Number of tasks in the queue.
   DECL_ARRAY(bool, busy, kPeCount, false);  // Busy state of each PE.
+
+  task_req_q[0].write(root);
+  busy[0] = true;
 
   // Statistics.
   int64_t visited_edge_count = 0;

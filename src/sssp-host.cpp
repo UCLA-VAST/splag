@@ -192,6 +192,7 @@ int main(int argc, const char* argv[]) {
 
     std::fill(parents.begin(), parents.end(), kNullVertex);
     std::fill(distances.begin(), distances.end(), kInfDistance);
+    std::fill(heap_index.begin(), heap_index.end(), kNullVertex);
     parents[root] = root;
     distances[root] = 0.f;
 
