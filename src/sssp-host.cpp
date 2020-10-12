@@ -22,7 +22,23 @@ using std::chrono::nanoseconds;
 using std::chrono::steady_clock;
 
 template <typename T>
-using aligned_vector = std::vector<T, tapa::aligned_allocator<T>>;
+struct mmap_allocator {
+  using value_type = T;
+  using size_type = std::size_t;
+  using difference_type = std::ptrdiff_t;
+  T* allocate(size_t count) {
+    void* ptr = mmap(nullptr, count * sizeof(T), PROT_READ | PROT_WRITE,
+                     MAP_SHARED | MAP_ANONYMOUS, /*fd=*/-1, /*offset=*/0);
+    if (ptr == MAP_FAILED) throw std::bad_alloc();
+    return reinterpret_cast<T*>(ptr);
+  }
+  void deallocate(T* ptr, std::size_t count) {
+    if (munmap(ptr, count * sizeof(T)) != 0) throw std::bad_alloc();
+  }
+};
+
+template <typename T>
+using aligned_vector = std::vector<T, mmap_allocator<T>>;
 
 template <typename T>
 bool IsValid(int64_t root, PackedEdgesView edges, WeightsView weights,
@@ -204,6 +220,7 @@ int main(int argc, const char* argv[]) {
         1e-9 * duration_cast<nanoseconds>(steady_clock::now() - tic).count();
     if (auto env = getenv("KERNEL_TIME_NS")) {
       elapsed_time = 1e-9 * atoll(env);
+      VLOG(3) << "using time reported by the kernel: " << elapsed_time << " s";
     }
 
     int64_t connected_edge_count = 0;
@@ -218,8 +235,8 @@ int main(int argc, const char* argv[]) {
     auto total_queue_size = metadata[1];
     auto queue_count = metadata[2];
     auto max_queue_size = metadata[3];
-    VLOG(3) << "  #edges visited:        " << visited_edge_count << " (+"
-            << std::fixed << std::setprecision(1)
+    VLOG(3) << "  #edges visited:        " << visited_edge_count << " ("
+            << std::fixed << std::setprecision(1) << std::showpos
             << 100. * visited_edge_count / edges.size() - 100 << "% over "
             << edges.size() << ")";
     VLOG(3) << "  average size of queue: " << std::fixed << std::setprecision(1)
