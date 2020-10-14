@@ -175,6 +175,25 @@ inline void MemSet(T (&array)[N], T value) {
 /// @return     Whether @c var changed from true to false.
 #define RESET(var, val) (var && !(var = !(val)))
 
+/// Defines a variable and a boolean valid signal. To be used with @c UPDATE.
+///
+/// @param type Type of the variable.
+/// @param var  Name of the declared variable.
+#define DECL_BUF(type, var) \
+                            \
+  type var;                 \
+  bool var##_valid = false
+
+/// Produce @c buf if it is invalid, and consume it if valid.
+/// @c buf should be declared using @c DECL_BUF.
+///
+/// @param buf      Name of the buffer variable.
+/// @param producer A boolean expression that produces value to @c buf.
+/// @param consumer A boolean expression that consumes value from @c buf.
+/// @return         Whether @c consumer successfully consumed an element.
+#define UPDATE(buf, producer, consumer) \
+  SET(buf##_valid, producer), RESET(buf##_valid, consumer)
+
 #define UNUSED(x) (void)(x)
 
 #ifndef __SYNTHESIS__

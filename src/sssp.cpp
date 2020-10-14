@@ -148,9 +148,9 @@ void ProcElem(
     // Vertex requests.
     tapa::ostream<Update>& update_req_q, tapa::istream<TaskOp>& update_resp_q,
     // Memory-maps.
-    tapa::mmap<Index> indices, tapa::mmap<Edge> edges) {
-  bool valid = false;
-  TaskOp resp;
+    tapa::mmap<Index> indices, tapa::async_mmap<Edge> edges) {
+  DECL_BUF(Edge, edge);
+  DECL_BUF(TaskOp, resp);
 
 spin:
   for (;;) {
@@ -159,14 +159,15 @@ spin:
   read_edges:
     for (Eid eid_req = 0, eid_resp = 0; eid_resp < index.count;) {
       if (eid_req < index.count &&
-          update_req_q.try_write(
-              {.src = src, .edge = edges[index.offset + eid_req]})) {
+          edges.read_addr_try_write(index.offset + eid_req)) {
         ++eid_req;
       }
 
-      SET(valid, update_resp_q.try_read(resp));
-      if (valid && (resp.op == TaskOp::NOOP || task_resp_q.try_write(resp))) {
-        valid = false;
+      UPDATE(edge, edges.read_data_try_read(edge),
+             update_req_q.try_write({.src = src, .edge = edge}));
+
+      if (UPDATE(resp, update_resp_q.try_read(resp),
+                 resp.op == TaskOp::NOOP || task_resp_q.try_write(resp))) {
         ++eid_resp;
       }
     }
@@ -344,7 +345,7 @@ spin:
 }
 
 void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
-          tapa::mmap<Edge> edges, tapa::mmap<Index> indices,
+          tapa::async_mmap<Edge> edges, tapa::mmap<Index> indices,
           tapa::mmap<Vid> parents, tapa::mmap<float> distances,
           tapa::mmap<Task> heap_array, tapa::mmap<Vid> heap_index) {
   tapa::stream<QueueOp, 2> queue_req_q("queue_req");
