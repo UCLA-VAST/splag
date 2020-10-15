@@ -16,99 +16,6 @@ constexpr int kMemLatency = 50;
 //   v=8: O(#vertex)
 //   v=9: O(#edge)
 
-QueueOpResp Push(const Task& new_task, tapa::mmap<Task> heap_array,
-                 tapa::mmap<Vid> heap_index, Vid& heap_size) {
-  QueueOpResp result{
-      .queue_op = QueueOp::PUSH,
-      .task_op = TaskOp::NOOP,
-      .task = {},
-  };
-  const Vid task_index = heap_index[new_task.vid];
-  bool heapify = false;
-  Vid heapify_index = task_index;
-  if (task_index != kNullVertex) {
-    const Task old_task = heap_array[task_index];
-    CHECK_EQ(old_task.vid, new_task.vid);
-    if (old_task <= new_task) {
-      heapify = true;
-      heap_array[task_index] = new_task;
-    }
-  } else {
-    heapify = true;
-    heap_array[heap_size] = new_task;
-    heap_index[new_task.vid] = heapify_index = heap_size;
-    ++heap_size;
-    result.task_op = TaskOp::NEW;
-  }
-
-  if (heapify)
-    // Increase the priority of heap_array[i] if necessary.
-  heapify_up:
-    for (Vid i = heapify_index;;) {
-#pragma HLS pipeline II = 1
-      const Vid parent = (i - 1) / 2;
-      const Task task_i = heap_array[i];
-      const Task task_parent = heap_array[parent];
-      if (task_i <= task_parent) break;
-
-      heap_array[i] = task_parent;
-      heap_array[parent] = task_i;
-      heap_index[task_i.vid] = parent;
-      heap_index[task_parent.vid] = i;
-
-      i = parent;
-    }
-  return result;
-}
-
-QueueOpResp Pop(tapa::mmap<Task> heap_array, tapa::mmap<Vid> heap_index,
-                Vid& heap_size) {
-  QueueOpResp result{
-      .queue_op = QueueOp::POP,
-      .task_op = TaskOp::NOOP,
-      .task = {},
-  };
-  if (heap_size > 0) {
-    const Task front = heap_array[0];
-    const Task back = heap_array[heap_size - 1];
-    heap_index[back.vid] = 0;
-    heap_index[front.vid] = kNullVertex;
-    heap_array[0] = back;
-    --heap_size;
-
-    result.task_op = TaskOp::NEW;
-    result.task = front;
-
-    // Decrease the priority of heap_array[i] if necessary.
-  heapify_down:
-    for (Vid i = 0;;) {
-#pragma HLS pipeline II = 1
-      const Vid left = i * 2 + 1;
-      const Vid right = i * 2 + 2;
-      const Task task_i = heap_array[i];
-      constexpr Task kNullTask{.vid = kNullVertex, .distance = kInfDistance};
-      const Task task_left = left < heap_size ? heap_array[left] : kNullTask;
-      const Task task_right = right < heap_size ? heap_array[right] : kNullTask;
-      const bool left_child_ok = task_left <= task_i;
-      const bool right_child_ok = task_right <= task_i;
-      if (left_child_ok && right_child_ok) break;
-
-      const bool left_is_max =
-          right_child_ok || (!left_child_ok && task_right <= task_left);
-      const Vid max = left_is_max ? left : right;
-      const Task task_max = left_is_max ? task_left : task_right;
-
-      heap_array[i] = task_max;
-      heap_array[max] = task_i;
-      heap_index[task_i.vid] = max;
-      heap_index[task_max.vid] = i;
-
-      i = max;
-    }
-  }
-  return result;
-}
-
 // The queue is initialized with the root vertex. Each request is either a push
 // or a pop.
 //
@@ -133,12 +40,100 @@ void TaskQueue(
   Vid heap_size = 0;
 
 spin:
-  for (QueueOp req;;) {
-    if (queue_req_q.try_read(req)) {
-      queue_resp_q.write(req.op == QueueOp::PUSH
-                             ? Push(req.task, heap_array, heap_index, heap_size)
-                             : Pop(heap_array, heap_index, heap_size));
+  for (;;) {
+    QueueOp req = queue_req_q.read();
+    QueueOpResp resp{
+        .queue_op = req.op,
+        .task_op = TaskOp::NOOP,
+        .task = {},
+    };
+    switch (req.op) {
+      case QueueOp::PUSH: {
+        const auto new_task = req.task;
+        const Vid task_index = heap_index[new_task.vid];
+        bool heapify = false;
+        Vid heapify_index = task_index;
+        if (task_index != kNullVertex) {
+          const Task old_task = heap_array[task_index];
+          CHECK_EQ(old_task.vid, new_task.vid);
+          if (old_task <= new_task) {
+            heapify = true;
+            heap_array[task_index] = new_task;
+          }
+        } else {
+          heapify = true;
+          heap_array[heap_size] = new_task;
+          heap_index[new_task.vid] = heapify_index = heap_size;
+          ++heap_size;
+          resp.task_op = TaskOp::NEW;
+        }
+
+        if (heapify) {
+          // Increase the priority of heap_array[i] if necessary.
+        heapify_up:
+          for (Vid i = heapify_index;;) {
+#pragma HLS pipeline II = 1
+            const Vid parent = (i - 1) / 2;
+            const Task task_i = heap_array[i];
+            const Task task_parent = heap_array[parent];
+            if (task_i <= task_parent) break;
+
+            heap_array[i] = task_parent;
+            heap_array[parent] = task_i;
+            heap_index[task_i.vid] = parent;
+            heap_index[task_parent.vid] = i;
+
+            i = parent;
+          }
+        }
+        break;
+      }
+      case QueueOp::POP: {
+        if (heap_size > 0) {
+          const Task front = heap_array[0];
+          const Task back = heap_array[heap_size - 1];
+          heap_index[back.vid] = 0;
+          heap_index[front.vid] = kNullVertex;
+          heap_array[0] = back;
+          --heap_size;
+
+          resp.task_op = TaskOp::NEW;
+          resp.task = front;
+
+          // Decrease the priority of heap_array[i] if necessary.
+        heapify_down:
+          for (Vid i = 0;;) {
+#pragma HLS pipeline II = 1
+            const Vid left = i * 2 + 1;
+            const Vid right = i * 2 + 2;
+            const Task task_i = heap_array[i];
+            constexpr Task kNullTask{.vid = kNullVertex,
+                                     .distance = kInfDistance};
+            const Task task_left =
+                left < heap_size ? heap_array[left] : kNullTask;
+            const Task task_right =
+                right < heap_size ? heap_array[right] : kNullTask;
+            const bool left_child_ok = task_left <= task_i;
+            const bool right_child_ok = task_right <= task_i;
+            if (left_child_ok && right_child_ok) break;
+
+            const bool left_is_max =
+                right_child_ok || (!left_child_ok && task_right <= task_left);
+            const Vid max = left_is_max ? left : right;
+            const Task task_max = left_is_max ? task_left : task_right;
+
+            heap_array[i] = task_max;
+            heap_array[max] = task_i;
+            heap_index[task_i.vid] = max;
+            heap_index[task_max.vid] = i;
+
+            i = max;
+          }
+        }
+        break;
+      }
     }
+    queue_resp_q.write(resp);
   }
 }
 
