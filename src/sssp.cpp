@@ -153,7 +153,7 @@ spin:
     const Index index = indices[src];
   read_edges:
     for (Eid eid_req = 0, eid_resp = 0; eid_resp < index.count;) {
-      if (eid_req < index.count &&
+      if (eid_req < index.count && eid_req < eid_resp + kMemLatency &&
           edges.read_addr_try_write(index.offset + eid_req)) {
         ++eid_req;
       }
