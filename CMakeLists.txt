@@ -27,18 +27,25 @@ add_tapa_target(
   TOP SSSP
   PLATFORM xilinx_u280_xdma_201920_3)
 
+include(ProcessorCount)
+processorcount(NPROC)
+if(NPROC EQUAL 0)
+  set(NPROC 8)
+endif()
+
 add_xocc_hw_link_targets(
   ${CMAKE_CURRENT_BINARY_DIR}
+  --jobs=${NPROC}
   --remote_ip_cache=$ENV{HOME}/.remote_ip_cache
   --sp=SSSP.metadata:PLRAM[0]
-  --sp=SSSP.edges:HBM[0]
-  --sp=SSSP.indices:HBM[1]
-  --sp=SSSP.parents:HBM[2]
-  --sp=SSSP.distances:HBM[3]
-  --sp=SSSP.heap_array:HBM[4]
-  --sp=SSSP.heap_index:HBM[5]
+  --sp=SSSP.edges:HBM[16]
+  --sp=SSSP.indices:HBM[17]
+  --sp=SSSP.parents:HBM[18]
+  --sp=SSSP.distances:HBM[19]
+  --sp=SSSP.heap_array:HBM[20]
+  --sp=SSSP.heap_index:HBM[21]
   --vivado.prop=run.impl_1.STRATEGY=Performance_EarlyBlockPlacement
-  # --vivado.prop=run.impl_1.STEPS.OPT_DESIGN.TCL.PRE=${CMAKE_CURRENT_BINARY_DIR}/constraint.tcl
+  --vivado.prop=run.impl_1.STEPS.OPT_DESIGN.TCL.PRE=${CMAKE_CURRENT_SOURCE_DIR}/constraint.tcl
   INPUT sssp-hw-xo
   HW_EMU_XCLBIN hw_emu_xclbin_target
   HW_XCLBIN hw_xclbin_target)
