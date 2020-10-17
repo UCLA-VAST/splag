@@ -6,6 +6,18 @@
 
 #include <tapa.h>
 
+// Kernel-friendly bit_cast.
+template <typename To, typename From>
+inline To bit_cast(const From& from) {
+  static_assert(sizeof(To) == sizeof(From), "unsupported bitcast");
+  union {
+    To to;
+    From from;
+  } u;
+  u.from = from;
+  return u.to;
+}
+
 // Application-specific constants and type definitions.
 using Vid = int32_t;  // Large enough to index all vertices.
 using Eid = int32_t;  // Large enough to index all edges.
