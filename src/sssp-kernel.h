@@ -30,9 +30,19 @@ inline std::ostream& operator<<(std::ostream& os, const TaskOp& obj) {
 //
 // ProcElem -> VertexMem
 struct Update {
-  Vid src;
-  Edge edge;
+  Vid vid;
+  float weight;
 };
+
+inline std::ostream& operator<<(std::ostream& os, const Update& obj) {
+  if (obj.weight < bit_cast<float>(0x10000000)) {
+    // Weights are evenly distributed between 0 and 1; if it is this small,
+    // almost certainly it should actually be interpreted as Vid.
+    return os << "{ src: " << obj.vid
+              << ", count: " << bit_cast<Vid>(obj.weight) << " }";
+  }
+  return os << "{ dst: " << obj.vid << ", weight: " << obj.weight << " }";
+}
 
 // Used in:
 //

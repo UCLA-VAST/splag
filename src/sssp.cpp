@@ -151,6 +151,7 @@ spin:
   for (;;) {
     const auto src = task_req_q.read();
     const Index index = indices[src];
+    update_req_q.write({.vid = src, .weight = bit_cast<float>(index.count)});
   read_edges:
     for (Eid eid_req = 0, eid_resp = 0; eid_resp < index.count;) {
       if (eid_req < index.count && eid_req < eid_resp + kMemLatency &&
@@ -159,7 +160,7 @@ spin:
       }
 
       UPDATE(edge, edges.read_data_try_read(edge),
-             update_req_q.try_write({.src = src, .edge = edge}));
+             update_req_q.try_write({.vid = edge.dst, .weight = edge.weight}));
 
       if (UPDATE(resp, update_resp_q.try_read(resp),
                  resp.op == TaskOp::NOOP || task_resp_q.try_write(resp))) {
@@ -188,35 +189,32 @@ void VertexMem(
 spin:
   for (;;) {
     RANGE(pe, kPeCount, {
-      Update& update = updates[pe];
-      UNUSED(SET(valid[pe], req_q[pe].try_read(update)));
-      if (valid[pe] && !Contains(active_srcs, update.edge.dst) &&
-          !Contains(active_dsts, update.edge.dst) &&
-          !Contains(active_dsts, update.src)) {
-        // No conflict; lock both src and dst and read from the FIFO.
-        active_srcs[pe] = update.src;
-        active_dsts[pe] = update.edge.dst;
-        valid[pe] = false;
+      Update update = req_q[pe].read();
+      const auto src = update.vid;
+      const auto count = bit_cast<Vid>(update.weight);
+      const auto src_distance = distances[src];
 
-        // Process the update.
+      for (Vid i = 0; i < count; ++i) {
+        _Pragma("HLS pipeline II = 1");
+        _Pragma("HLS dependence false variable = distances");
+        const auto update = req_q[pe].read();
+        const auto dst = update.vid;
+        const auto weight = update.weight;
+        const auto dst_distance = distances[dst];
+        const auto new_distance = src_distance + weight;
         TaskOp resp{.op = TaskOp::NOOP, .task = {}};
-        const auto new_distance = distances[update.src] + update.edge.weight;
-        if (new_distance < distances[update.edge.dst]) {
-          VLOG_F(9, info) << "distances[" << update.edge.dst
-                          << "] = " << distances[update.edge.dst]
-                          << " -> distances[" << update.src << "] + "
-                          << update.edge.weight << " = " << new_distance;
-          distances[update.edge.dst] = new_distance;
-          parents[update.edge.dst] = update.src;
+        if (new_distance < dst_distance) {
+          VLOG_F(9, info) << "distances[" << dst << "] = " << dst_distance
+                          << " -> distances[" << src << "] + " << weight
+                          << " = " << new_distance;
+          distances[dst] = new_distance;
+          parents[dst] = src;
           resp = {
               .op = TaskOp::NEW,
-              .task = {.vid = update.edge.dst, .distance = new_distance},
+              .task = {.vid = dst, .distance = new_distance},
           };
         }
 
-        // Unlock src and dst.
-        active_srcs[pe] = kNullVertex;
-        active_dsts[pe] = kNullVertex;
         resp_q[pe].write(resp);
       }
     });
