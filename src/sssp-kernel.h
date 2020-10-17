@@ -194,7 +194,7 @@ inline void MemSet(T (&array)[N], T value) {
 #define UPDATE(buf, producer, consumer) \
   SET(buf##_valid, producer), RESET(buf##_valid, consumer)
 
-#define UNUSED(x) (void)(x)
+#define UNUSED (void)
 
 #ifndef __SYNTHESIS__
 inline void ap_wait() {}

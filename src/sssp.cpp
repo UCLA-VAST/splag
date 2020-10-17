@@ -298,10 +298,10 @@ spin:
     }
 
     // Assign tasks to PEs.
-    RANGE(
-        pe, kPeCount,
-        UNUSED(SET(busy[pe], RESET(queue_buf_valid, task_req_q[pe].try_write(
-                                                        queue_buf.task.vid)))));
+    RANGE(pe, kPeCount,
+          UNUSED SET(busy[pe],
+                     RESET(queue_buf_valid,
+                           task_req_q[pe].try_write(queue_buf.task.vid))));
 
     // Receive tasks generated from PEs.
     RANGE(pe, kPeCount, {
