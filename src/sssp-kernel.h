@@ -17,6 +17,15 @@ struct TaskOp {
   Task task;  // Valid only when op is NEW.
 };
 
+inline std::ostream& operator<<(std::ostream& os, const TaskOp& obj) {
+  switch (obj.op) {
+    case TaskOp::NEW:
+      return os << "{ op: NEW, task: " << obj.task << " }";
+    default:
+      return os << "{ op: NOOP/DONE }";
+  }
+}
+
 // Used in:
 //
 // ProcElem -> VertexMem
