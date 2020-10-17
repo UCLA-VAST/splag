@@ -46,6 +46,7 @@ spin:
         .queue_op = req.op,
         .task_op = TaskOp::NOOP,
         .task = {},
+        .queue_size = 0,
     };
     switch (req.op) {
       case QueueOp::PUSH: {
@@ -133,6 +134,7 @@ spin:
         break;
       }
     }
+    resp.queue_size = heap_size;
     queue_resp_q.write(resp);
   }
 }
@@ -265,13 +267,13 @@ spin:
 #pragma HLS pipeline II = 1
     // Process response messages from the queue.
     if (SET(queue_buf_valid, queue_resp_q.try_read(queue_buf))) {
+      queue_size = queue_buf.queue_size;
       switch (queue_buf.queue_op) {
         case QueueOp::PUSH:
           // PUSH requests do not need further processing.
           queue_buf_valid = false;
           if (queue_buf.task_op == TaskOp::NOOP) {
             // PUSH request updated priority of existing tasks.
-            --queue_size;
             STATS(9, recv, "QUEUE: DECR");
           }
 
@@ -283,7 +285,6 @@ spin:
         case QueueOp::POP:
           if (queue_buf.task_op == TaskOp::NEW) {
             // POP request returned a new task.
-            --queue_size;
             STATS(9, recv, "QUEUE: NEW ");
           } else {
             // The queue is empty.
