@@ -42,18 +42,10 @@ using aligned_vector = std::vector<T, mmap_allocator<T>>;
 
 template <typename T>
 bool IsValid(int64_t root, PackedEdgesView edges, WeightsView weights,
+             const vector<unordered_map<T, float>>& indexed_weights,
              const T* parents, const float* distances, int64_t vertex_count) {
   // Check that the parent of root is root.
   CHECK_EQ(parents[root], root);
-
-  // Index weights with edges.
-  unordered_map<T, unordered_map<T, float>> indexed_weights;
-  for (int64_t eid = 0; eid < edges.size(); ++eid) {
-    int64_t v0 = edges[eid].v0();
-    int64_t v1 = edges[eid].v1();
-    if (v0 > v1) std::swap(v0, v1);
-    indexed_weights[v0][v1] = weights[eid];
-  }
 
   auto parents_copy = make_unique<vector<T>>(parents, parents + vertex_count);
   for (int64_t dst = 0; dst < vertex_count; ++dst) {
@@ -74,9 +66,10 @@ bool IsValid(int64_t root, PackedEdgesView edges, WeightsView weights,
     const int64_t src = parents[dst];
     int64_t v0 = src, v1 = dst;
     if (v0 > v1) std::swap(v0, v1);
-    CHECK_GT(indexed_weights.count(v0), 0) << "v0: " << v0;
-    CHECK_GT(indexed_weights[v0].count(v1), 0) << "v0: " << v0 << " v1: " << v1;
-    CHECK_LE(distances[dst], distances[src] + indexed_weights[v0][v1]);
+    CHECK_LT(v0, indexed_weights.size());
+    const auto it = indexed_weights[v0].find(v1);
+    CHECK(it != indexed_weights[v0].end()) << "v0: " << v0 << " v1: " << v1;
+    CHECK_LE(distances[dst], distances[src] + it->second);
   }
   parents_copy.reset();
 
@@ -135,15 +128,28 @@ int main(int argc, const char* argv[]) {
   vector<int64_t> degree_no_self_loop(vertex_count);  // For root sampling.
 
   Eid edge_count_no_self_loop = 0;
-  for (const auto& edge : edges_view) {
-    const auto v0 = edge.v0();
-    const auto v1 = edge.v1();
+
+  // Dedup edges.
+  vector<unordered_map<Vid, float>> indexed_weights(vertex_count);
+  for (Eid eid = 0; eid < edge_count; ++eid) {
+    const auto& edge = edges_view[eid];
+    auto v0 = edge.v0();
+    auto v1 = edge.v1();
     ++degree[v0];
     ++degree[v1];
     if (v0 != v1) {
-      ++degree_no_self_loop[v0];
-      ++degree_no_self_loop[v1];
-      ++edge_count_no_self_loop;
+      if (v0 > v1) std::swap(v0, v1);  // Use smaller vid as v0.
+      if (auto it = indexed_weights[v0].find(v1);
+          it != indexed_weights[v0].end()) {
+        // Do not update the weight if the new weight is larger.
+        if (weights_view[eid] > it->second) continue;
+      } else {
+        // Add a new edge if none exists.
+        ++degree_no_self_loop[v0];
+        ++degree_no_self_loop[v1];
+        ++edge_count_no_self_loop;
+      }
+      indexed_weights[v0][v1] = weights_view[eid];
     }
   }
 
@@ -159,19 +165,16 @@ int main(int argc, const char* argv[]) {
 
   {
     vector<Vid> vertex_counts(vertex_count);
-    for (Eid eid = 0; eid < edge_count; ++eid) {
-      const auto edge = edges_view[eid];
-      const auto v0 = edge.v0();
-      const auto v1 = edge.v1();
-      const auto weight = weights_view[eid];
-      if (v0 == v1) continue;
-
-      for (auto [src, dst] : {std::tie(v0, v1), std::tie(v1, v0)}) {
-        edges[indices[src].offset + vertex_counts[src]] = {
-            .dst = Vid(dst),
-            .weight = weight,
-        };
-        ++vertex_counts[src];
+    for (Vid v0 = 0; v0 < vertex_count; ++v0) {
+      for (auto [k, weight] : indexed_weights[v0]) {
+        Vid v1 = k;
+        for (auto [src, dst] : {std::tie(v0, v1), std::tie(v1, v0)}) {
+          edges[indices[src].offset + vertex_counts[src]] = {
+              .dst = Vid(dst),
+              .weight = weight,
+          };
+          ++vertex_counts[src];
+        }
       }
     }
 
@@ -249,8 +252,8 @@ int main(int argc, const char* argv[]) {
             << ")";
     VLOG(3) << "  queue operations:      " << queue_count;
 
-    if (!IsValid(root, edges_view, weights_view, parents.data(),
-                 distances.data(), vertex_count)) {
+    if (!IsValid(root, edges_view, weights_view, indexed_weights,
+                 parents.data(), distances.data(), vertex_count)) {
       return 1;
     }
   }
