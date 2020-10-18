@@ -149,6 +149,17 @@ inline void MemSet(T (&array)[N], T value) {
   MemSet((T(&)[N - N / 2])(array[N / 2]), value);
 }
 
+#ifdef __SYNTHESIS__
+#define CLEAN_UP(...)
+#else  // __SYNTHESIS__
+struct CleanUp {
+  ~CleanUp() { clean_up_(); }
+  std::function<void()> clean_up_;
+};
+#define CLEAN_UP(name, ...) \
+  CleanUp name { __VA_ARGS__ }
+#endif  // __SYNTHESIS__
+
 // Prints logging messages with tag and function name as prefix.
 #define LOG_F(level, tag) LOG(level) << #tag << "@" << __FUNCTION__ << ": "
 #define VLOG_F(level, tag) VLOG(level) << #tag << "@" << __FUNCTION__ << ": "

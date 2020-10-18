@@ -39,6 +39,18 @@ void TaskQueue(
   // Heap rule: child <= parent
   Vid heap_size = 0;
 
+  int64_t heapify_up_count = 0;
+  int64_t heapify_up_total = 0;
+  int64_t heapify_down_count = 0;
+  int64_t heapify_down_total = 0;
+
+  CLEAN_UP(clean_up, [&]() {
+    VLOG(3) << "average heapify up trip count: "
+            << 1. * heapify_up_total / heapify_up_count;
+    VLOG(3) << "average heapify down trip count: "
+            << 1. * heapify_down_total / heapify_down_count;
+  });
+
 spin:
   for (;;) {
     QueueOp req = queue_req_q.read();
@@ -71,21 +83,35 @@ spin:
 
         if (heapify) {
           // Increase the priority of heap_array[i] if necessary.
-        heapify_up:
-          for (Vid i = heapify_index;;) {
-#pragma HLS pipeline II = 1
-            const Vid parent = (i - 1) / 2;
-            const Task task_i = heap_array[i];
-            const Task task_parent = heap_array[parent];
-            if (task_i <= task_parent) break;
+          Vid i = heapify_index;
+          const Task task_i = heap_array[i];
+          VLOG_F(10, h_up) << "start: array[" << i << "]  -> " << task_i;
 
+          ++heapify_up_count;
+
+        heapify_up:
+          for (;;) {
+#pragma HLS pipeline II = 1
+#pragma HLS dependence false variable heap_array
+            ++heapify_up_total;
+            const Vid parent = (i - 1) / 2;
+            const Task task_parent = heap_array[parent];
+
+            if (i == 0 || task_i <= task_parent) break;
             heap_array[i] = task_parent;
-            heap_array[parent] = task_i;
-            heap_index[task_i.vid] = parent;
             heap_index[task_parent.vid] = i;
 
+            VLOG_F(10, h_up)
+                << "iter:  array[" << parent << "]  -> " << task_parent;
+            VLOG_F(10, h_up) << "       array[" << i << "] <-  " << task_parent;
+            VLOG_F(10, h_up)
+                << "       index[" << task_parent.vid << "] <-  " << i;
             i = parent;
           }
+          heap_array[i] = task_i;
+          heap_index[task_i.vid] = i;
+          VLOG_F(10, h_up) << "       array[" << i << "] <-  " << task_i;
+          VLOG_F(10, h_up) << "done:  index[" << task_i.vid << "] <-  " << i;
         }
         break;
       }
@@ -101,15 +127,21 @@ spin:
           resp.task_op = TaskOp::NEW;
           resp.task = front;
 
+          ++heapify_down_count;
+
           // Decrease the priority of heap_array[i] if necessary.
+          const Task task_i = back;
+          Vid i = 0;
+          constexpr Task kNullTask{.vid = kNullVertex,
+                                   .distance = kInfDistance};
+
         heapify_down:
-          for (Vid i = 0;;) {
+          for (;;) {
 #pragma HLS pipeline II = 1
+#pragma HLS dependence false variable heap_array
+            ++heapify_down_total;
             const Vid left = i * 2 + 1;
             const Vid right = i * 2 + 2;
-            const Task task_i = heap_array[i];
-            constexpr Task kNullTask{.vid = kNullVertex,
-                                     .distance = kInfDistance};
             const Task task_left =
                 left < heap_size ? heap_array[left] : kNullTask;
             const Task task_right =
@@ -124,12 +156,12 @@ spin:
             const Task task_max = left_is_max ? task_left : task_right;
 
             heap_array[i] = task_max;
-            heap_array[max] = task_i;
-            heap_index[task_i.vid] = max;
             heap_index[task_max.vid] = i;
 
             i = max;
           }
+          heap_array[i] = task_i;
+          heap_index[task_i.vid] = i;
         }
         break;
       }
