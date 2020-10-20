@@ -87,7 +87,7 @@ spin:
         if (task_index != kNullVertex) {
           const Task old_task = heap_array[task_index];
           CHECK_EQ(old_task.vid, new_task.vid);
-          if (old_task <= new_task) {
+          if (!(new_task <= old_task)) {
             heapify = true;
             heap_array[task_index] = new_task;
           }

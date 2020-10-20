@@ -50,9 +50,8 @@ inline std::ostream& operator<<(std::ostream& os, const Index& obj) {
 struct Task {
   Vid vid;
   float distance;
-  bool operator<(const Task& other) const { return other.distance < distance; }
   bool operator<=(const Task& other) const {
-    return other.distance <= distance;
+    return bit_cast<uint32_t>(other.distance) <= bit_cast<uint32_t>(distance);
   }
 };
 
