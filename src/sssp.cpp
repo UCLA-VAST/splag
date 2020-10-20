@@ -31,13 +31,31 @@ void TaskQueue(
     const Vid vertex_count, const Vid root,
     // Queue requests.
     tapa::istream<QueueOp>& queue_req_q,
-    tapa::ostream<QueueOpResp>& queue_resp_q, tapa::mmap<Task> heap_array,
-    tapa::mmap<Vid> heap_index) {
+    tapa::ostream<QueueOpResp>& queue_resp_q, tapa::mmap<Task> heap_array_spill,
+    tapa::mmap<Vid> heap_index_spill) {
 #pragma HLS inline recursive
   // Parent   of heap_array[i]: heap_array[(i - 1) / 2]
   // Children of heap_array[i]: heap_array[i * 2 + 1], heap_array[i * 2 + 2]
   // Heap rule: child <= parent
   Vid heap_size = 0;
+
+  constexpr int kMaxOnChipSize = 4096 * 16;
+#ifdef __SYNTHESIS__
+  Task heap_array[kMaxOnChipSize];
+  Vid heap_index[kMaxOnChipSize];
+heap_index_init:
+  for (Vid i = 0; i < kMaxOnChipSize; ++i) {
+#pragma HLS pipeline II = 1
+    heap_index[i] = kNullVertex;
+  }
+#else   // __SYNTHESIS__
+  auto heap_array = heap_array_spill;
+  auto heap_index = heap_index_spill;
+#endif  // __SYNTHESIS__
+#pragma HLS resource variable = heap_array core = RAM_2P_URAM
+#pragma HLS resource variable = heap_index core = RAM_2P_URAM
+#pragma HLS data_pack variable = heap_array
+#pragma HLS data_pack variable = heap_index
 
   int64_t heapify_up_count = 0;
   int64_t heapify_up_total = 0;
