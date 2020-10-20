@@ -52,8 +52,9 @@ heap_index_init:
   auto heap_array = heap_array_spill;
   auto heap_index = heap_index_spill;
 #endif  // __SYNTHESIS__
-#pragma HLS resource variable = heap_array core = RAM_2P_URAM
-#pragma HLS resource variable = heap_index core = RAM_2P_URAM
+#pragma HLS array_partition variable = heap_array cyclic factor = 2
+#pragma HLS resource variable = heap_array core = RAM_2P_URAM latency = 2
+#pragma HLS resource variable = heap_index core = RAM_2P_URAM latency = 2
 #pragma HLS data_pack variable = heap_array
 #pragma HLS data_pack variable = heap_index
 
@@ -67,6 +68,12 @@ heap_index_init:
             << 1. * heapify_up_total / heapify_up_count;
     VLOG(3) << "average heapify down trip count: "
             << 1. * heapify_down_total / heapify_down_count;
+
+    // Check that heap_index is restored to the initial state.
+    CHECK_EQ(heap_size, 0);
+    for (int i = 0; i < vertex_count; ++i) {
+      CHECK_EQ(heap_index[i], kNullVertex) << "i = " << i;
+    }
   });
 
 spin:
@@ -109,8 +116,7 @@ spin:
 
         heapify_up:
           for (;;) {
-#pragma HLS pipeline II = 1
-#pragma HLS dependence false variable heap_array
+#pragma HLS pipeline II = 3
             ++heapify_up_total;
             const Vid parent = (i - 1) / 2;
             const Task task_parent = heap_array[parent];
@@ -136,50 +142,48 @@ spin:
       case QueueOp::POP: {
         if (heap_size > 0) {
           const Task front = heap_array[0];
-          const Task back = heap_array[heap_size - 1];
-          heap_index[back.vid] = 0;
           heap_index[front.vid] = kNullVertex;
-          heap_array[0] = back;
           --heap_size;
 
           resp.task_op = TaskOp::NEW;
           resp.task = front;
 
-          ++heapify_down_count;
+          if (heap_size > 0) {
+            ++heapify_down_count;
 
-          // Decrease the priority of heap_array[i] if necessary.
-          const Task task_i = back;
-          Vid i = 0;
-          constexpr Task kNullTask{.vid = kNullVertex,
-                                   .distance = kInfDistance};
+            // Find proper index `i` for `task_i`.
+            const Task task_i = heap_array[heap_size];
+            Vid i = 0;
 
-        heapify_down:
-          for (;;) {
-#pragma HLS pipeline II = 1
-#pragma HLS dependence false variable heap_array
-            ++heapify_down_total;
-            const Vid left = i * 2 + 1;
-            const Vid right = i * 2 + 2;
-            const Task task_left =
-                left < heap_size ? heap_array[left] : kNullTask;
-            const Task task_right =
-                right < heap_size ? heap_array[right] : kNullTask;
-            const bool left_child_ok = task_left <= task_i;
-            const bool right_child_ok = task_right <= task_i;
-            if (left_child_ok && right_child_ok) break;
+          heapify_down:
+            for (;;) {
+#pragma HLS pipeline II = 3
+              ++heapify_down_total;
+              const Vid left = i * 2 + 1;
+              const Vid right = i * 2 + 2;
+              const bool left_is_valid = left < heap_size;
+              const bool right_is_valid = right < heap_size;
+              const Task task_left =
+                  heap_array[(left_is_valid ? left : 1) / 2 * 2 + 1];
+              const Task task_right =
+                  heap_array[(right_is_valid ? right : 2) / 2 * 2];
+              const bool left_is_ok = !left_is_valid || task_left <= task_i;
+              const bool right_is_ok = !right_is_valid || task_right <= task_i;
+              if (left_is_ok && right_is_ok) break;
 
-            const bool left_is_max =
-                right_child_ok || (!left_child_ok && task_right <= task_left);
-            const Vid max = left_is_max ? left : right;
-            const Task task_max = left_is_max ? task_left : task_right;
+              const bool left_is_max =
+                  !right_is_valid || (left_is_valid && task_right <= task_left);
+              const Vid max = left_is_max ? left : right;
+              const Task task_max = left_is_max ? task_left : task_right;
 
-            heap_array[i] = task_max;
-            heap_index[task_max.vid] = i;
+              heap_array[i] = task_max;
+              heap_index[task_max.vid] = i;
 
-            i = max;
+              i = max;
+            }
+            heap_array[i] = task_i;
+            heap_index[task_i.vid] = i;
           }
-          heap_array[i] = task_i;
-          heap_index[task_i.vid] = i;
         }
         break;
       }
