@@ -238,6 +238,7 @@ int main(int argc, const char* argv[]) {
     auto total_queue_size = metadata[1];
     auto queue_count = metadata[2];
     auto max_queue_size = metadata[3];
+    VLOG(3) << "  #edges connected:      " << connected_edge_count;
     VLOG(3) << "  #edges visited:        " << visited_edge_count << " ("
             << std::fixed << std::setprecision(1) << std::showpos
             << 100. * visited_edge_count / edges.size() - 100 << "% over "
