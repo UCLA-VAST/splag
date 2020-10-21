@@ -153,6 +153,30 @@ int main(int argc, const char* argv[]) {
     }
   }
 
+  if (VLOG_IS_ON(3)) {
+    vector<int64_t> bins(7);
+    constexpr int64_t kBase = 10;
+    for (auto d : degree_no_self_loop) {
+      int64_t bound = 1;
+      for (auto& bin : bins) {
+        if (d < bound) {
+          ++bin;
+          break;
+        }
+        bound *= kBase;
+      }
+    }
+    int64_t bound = 1;
+    int64_t last_bin = bins.back();
+    bins.pop_back();
+    for (auto bin : bins) {
+      VLOG(3) << "  degree in [" << bound / kBase << ", " << bound
+              << "): " << bin;
+      bound *= kBase;
+    }
+    VLOG(3) << "  degree in [" << bound / kBase << ", +∞): " << last_bin;
+  }
+
   // Allocate and fill edges and indices for the kernel.
   aligned_vector<Index> indices(vertex_count);
   aligned_vector<Edge> edges(edge_count_no_self_loop * 2);  // Undirected edge.
