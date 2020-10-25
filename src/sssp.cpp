@@ -285,7 +285,7 @@ void UpdateGen(
     tapa::istreams<float, kPeCount>& task_s1p1_q,
     tapa::ostreams<TaskOp, kPeCount>& task_resp_q,
     // Memory-maps.
-    tapa::mmap<Vid> parents, tapa::ostream<Vid>& write_addr_q,
+    tapa::async_mmap<Vid> parents, tapa::ostream<Vid>& write_addr_q,
     tapa::ostream<float>& write_data_q) {
   constexpr int pe = 0;
 spin:
@@ -307,7 +307,8 @@ spin:
                         << new_distance;
         write_addr_q.write(dst);
         write_data_q.write(new_distance);
-        parents[dst] = src;
+        parents.write_addr_write(dst);
+        parents.write_data_write(src);
         task_resp_q[pe].write({
             .op = TaskOp::NEW,
             .task = {.vid = dst, .distance = new_distance},
