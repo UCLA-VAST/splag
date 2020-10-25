@@ -219,7 +219,7 @@ int main(int argc, const char* argv[]) {
               std::back_inserter(sample_vertices), 64, std::mt19937());
 
   // Other kernel arguments.
-  aligned_vector<int64_t> metadata(4);
+  aligned_vector<int64_t> metadata(5);
   aligned_vector<Vid> parents(tapa::round_up<kVertexVecLen>(vertex_count));
   aligned_vector<float> distances(tapa::round_up<kVertexVecLen>(vertex_count));
   aligned_vector<Task> heap_array(vertex_count);
@@ -262,11 +262,16 @@ int main(int argc, const char* argv[]) {
     auto total_queue_size = metadata[1];
     auto queue_count = metadata[2];
     auto max_queue_size = metadata[3];
+    auto visited_vertex_count = metadata[4];
     VLOG(3) << "  #edges connected:      " << connected_edge_count;
     VLOG(3) << "  #edges visited:        " << visited_edge_count << " ("
             << std::fixed << std::setprecision(1) << std::showpos
             << 100. * visited_edge_count / edges.size() - 100 << "% over "
             << edges.size() << ")";
+    VLOG(3) << "  #vertices visited:     " << visited_vertex_count << " ("
+            << std::fixed << std::setprecision(1) << std::showpos
+            << 100. * visited_vertex_count / vertex_count - 100 << "% over "
+            << std::noshowpos << vertex_count << ")";
     VLOG(3) << "  average size of queue: " << std::fixed << std::setprecision(1)
             << 1. * total_queue_size / queue_count << " ("
             << 100. * total_queue_size / queue_count / vertex_count << "% of "

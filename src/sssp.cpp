@@ -301,6 +301,7 @@ void Dispatcher(
   busy[0] = true;
 
   // Statistics.
+  int64_t visited_vertex_count = 0;
   int64_t visited_edge_count = 0;
   int64_t queue_count = 0;
   int64_t total_queue_size = 0;
@@ -365,6 +366,7 @@ spin:
           busy[pe] = false;
 
           // Update statistics.
+          ++visited_vertex_count;
           visited_edge_count += task_buf.task.vid;
           STATS(9, recv, "TASK : DONE");
         }
@@ -390,6 +392,7 @@ spin:
   metadata[1] = total_queue_size;
   metadata[2] = queue_count;
   metadata[3] = max_queue_size;
+  metadata[4] = visited_vertex_count;
 }
 
 void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
