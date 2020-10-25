@@ -97,7 +97,7 @@ bool IsValid(int64_t root, PackedEdgesView edges, WeightsView weights,
 }
 
 void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
-          tapa::async_mmap<Edge> edges, tapa::mmap<Index> indices,
+          tapa::mmap<Edge> edges, tapa::mmap<Index> indices,
           tapa::mmap<Vid> parents, tapa::mmap<float> distances,
           tapa::mmap<Task> heap_array, tapa::mmap<Vid> heap_index);
 
