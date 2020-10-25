@@ -443,7 +443,7 @@ void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
           tapa::mmap<Edge> edges, tapa::mmap<Index> indices,
           tapa::mmap<Vid> parents, tapa::mmap<float> distances,
           tapa::mmap<Task> heap_array, tapa::mmap<Vid> heap_index) {
-  tapa::stream<QueueOp, 2> queue_req_q("queue_req");
+  tapa::stream<QueueOp, 256> queue_req_q("queue_req");
   tapa::stream<QueueOpResp, 2> queue_resp_q("queue_resp");
 
   tapa::streams<Vid, kPeCount, 2> task_req_q("task_req");
