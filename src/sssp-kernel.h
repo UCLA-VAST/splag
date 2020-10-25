@@ -8,11 +8,9 @@
 
 // Used in:
 //
-// VertexMem -> ProcElem
-// ProcElem  -> Dispatcher
+// UpdateGen -> Dispatcher
 struct TaskOp {
-  // VertexMem -> ProcElem: Valid values are NEW and NOOP.
-  // ProcElem  -> Dispatcher: Valid values are NEW and DONE.
+  // UpdateGen -> Dispatcher: Valid values are NEW and DONE.
   enum Op { NEW, NOOP, DONE = NOOP } op;
   Task task;  // Valid only when op is NEW.
 };
@@ -28,20 +26,20 @@ inline std::ostream& operator<<(std::ostream& os, const TaskOp& obj) {
 
 // Used in:
 //
-// ProcElem -> VertexMem
+// DistanceMan -> UpdateGen
 struct Update {
   Vid vid;
-  float weight;
+  float distance;
+  Vid count;
 };
 
 inline std::ostream& operator<<(std::ostream& os, const Update& obj) {
-  if (obj.weight < bit_cast<float>(0x10000000)) {
-    // Weights are evenly distributed between 0 and 1; if it is this small,
-    // almost certainly it should actually be interpreted as Vid.
-    return os << "{ src: " << obj.vid
-              << ", count: " << bit_cast<Vid>(obj.weight) << " }";
+  if (obj.count == 0) {
+    return os << "{ dst: " << obj.vid << ", dst_distance: " << obj.distance
+              << " }";
   }
-  return os << "{ dst: " << obj.vid << ", weight: " << obj.weight << " }";
+  return os << "{ src: " << obj.vid << ", src_distance: " << obj.distance
+            << ", count: " << obj.count << " }";
 }
 
 // Used in:
@@ -231,5 +229,70 @@ struct CleanUp {
 inline void ap_wait() {}
 inline void ap_wait_n(int) {}
 #endif  // __SYNTEHSIS__
+
+// A fully pipelined lightweight proxy for read-only tapa::async_mmap.
+template <typename data_t, typename addr_t>
+void ReadOnlyMem(tapa::istream<addr_t>& read_addr_q,
+                 tapa::ostream<data_t>& read_data_q,
+                 tapa::async_mmap<data_t>& mem) {
+#pragma HLS inline
+  DECL_BUF(addr_t, read_addr);
+  DECL_BUF(data_t, read_data);
+
+spin:
+  for (;;) {
+#pragma HLS pipeline II = 1
+    UPDATE(read_addr, read_addr_q.try_read(read_addr),
+           mem.read_addr_try_write(read_addr));
+    UPDATE(read_data, mem.read_data_try_read(read_data),
+           read_data_q.try_write(read_data));
+  }
+}
+
+// A fully pipelined lightweight proxy for write-only tapa::async_mmap.
+template <typename data_t, typename addr_t>
+void WriteOnlyMem(tapa::istream<addr_t>& write_addr_q,
+                  tapa::istream<data_t>& write_data_q,
+                  tapa::async_mmap<data_t>& mem) {
+#pragma HLS inline
+  DECL_BUF(addr_t, write_addr);
+  DECL_BUF(data_t, write_data);
+
+spin:
+  for (;;) {
+#pragma HLS pipeline II = 1
+    UPDATE(write_addr, write_addr_q.try_read(write_addr),
+           mem.write_addr_try_write(write_addr));
+    UPDATE(write_data, write_data_q.try_read(write_data),
+           mem.write_data_try_write(write_data));
+  }
+}
+
+// A fully pipelined lightweight proxy for read-write tapa::async_mmap.
+template <typename data_t, typename addr_t>
+void ReadWriteMem(tapa::istream<addr_t>& read_addr_q,
+                  tapa::ostream<data_t>& read_data_q,
+                  tapa::istream<addr_t>& write_addr_q,
+                  tapa::istream<data_t>& write_data_q,
+                  tapa::async_mmap<data_t>& mem) {
+#pragma HLS inline
+  DECL_BUF(addr_t, read_addr);
+  DECL_BUF(data_t, read_data);
+  DECL_BUF(addr_t, write_addr);
+  DECL_BUF(data_t, write_data);
+
+spin:
+  for (;;) {
+#pragma HLS pipeline II = 1
+    UPDATE(read_addr, read_addr_q.try_read(read_addr),
+           mem.read_addr_try_write(read_addr));
+    UPDATE(read_data, mem.read_data_try_read(read_data),
+           read_data_q.try_write(read_data));
+    UPDATE(write_addr, write_addr_q.try_read(write_addr),
+           mem.write_addr_try_write(write_addr));
+    UPDATE(write_data, write_data_q.try_read(write_data),
+           mem.write_data_try_write(write_data));
+  }
+}
 
 #endif  // TAPA_SSSP_KERNEL_H_

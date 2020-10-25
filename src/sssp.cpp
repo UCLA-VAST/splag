@@ -193,11 +193,11 @@ spin:
   }
 }
 
-void ProcElem(
+void EdgeMan(
     // Task requests.
-    tapa::istream<Vid>& task_req_q, tapa::ostream<TaskOp>& task_resp_q,
-    // Vertex requests.
-    tapa::ostream<Update>& update_req_q, tapa::istream<TaskOp>& update_resp_q,
+    tapa::istream<Vid>& task_req_q,
+    // Stage #0 of task data.
+    tapa::ostream<Edge>& task_s0_q,
     // Memory-maps.
     tapa::mmap<Index> indices, tapa::async_mmap<Edge> edges) {
   DECL_BUF(Edge, edge);
@@ -207,7 +207,7 @@ spin:
   for (;;) {
     const auto src = task_req_q.read();
     const Index index = indices[src];
-    update_req_q.write({.vid = src, .weight = bit_cast<float>(index.count)});
+    task_s0_q.write({.dst = src, .weight = bit_cast<float>(index.count)});
   read_edges:
     for (Eid eid_req = 0, eid_resp = 0; eid_resp < index.count;) {
       if (eid_req < index.count && eid_req < eid_resp + kMemLatency &&
@@ -215,64 +215,108 @@ spin:
         ++eid_req;
       }
 
-      UPDATE(edge, edges.read_data_try_read(edge),
-             update_req_q.try_write({.vid = edge.dst, .weight = edge.weight}));
-
-      if (UPDATE(resp, update_resp_q.try_read(resp),
-                 resp.op == TaskOp::NOOP || task_resp_q.try_write(resp))) {
+      if (UPDATE(edge, edges.read_data_try_read(edge),
+                 task_s0_q.try_write(edge))) {
         ++eid_resp;
       }
     }
-    task_resp_q.write({
-        .op = TaskOp::DONE,
-        .task = {.vid = index.count, .distance = 0.f},
-    });
   }
 }
 
-void VertexMem(
-    // Update requests.
-    tapa::istreams<Update, kPeCount>& req_q,
-    tapa::ostreams<TaskOp, kPeCount>& resp_q,
+void DistanceMem(
+    // Proxied streams.
+    tapa::istream<Vid>& read_addr_q, tapa::ostream<float>& read_data_q,
+    tapa::istream<Vid>& write_addr_q, tapa::istream<float>& write_data_q,
+    // Memory-map.
+    tapa::async_mmap<float> mem) {
+  ReadWriteMem(read_addr_q, read_data_q, write_addr_q, write_data_q, mem);
+}
+
+void DistanceMan(
+    // Task data.
+    tapa::istreams<Edge, kPeCount>& task_s0_q,
+    tapa::ostreams<Update, kPeCount>& task_s1p0_q,
+    tapa::ostreams<float, kPeCount>& task_s1p1_q,
     // Memory-maps.
-    tapa::mmap<Vid> parents, tapa::mmap<float> distances) {
+    tapa::ostream<Vid>& read_addr_q, tapa::istream<float>& read_data_q) {
   DECL_ARRAY(volatile Vid, active_srcs, kPeCount, kNullVertex);
   DECL_ARRAY(volatile Vid, active_dsts, kPeCount, kNullVertex);
 
   DECL_ARRAY(bool, valid, kPeCount, false);
-  DECL_ARRAY(Update, updates, kPeCount, Update());
+  DECL_ARRAY(Edge, updates, kPeCount, Edge());
 
 spin:
   for (;;) {
     RANGE(pe, kPeCount, {
-      Update update = req_q[pe].read();
-      const auto src = update.vid;
-      const auto count = bit_cast<Vid>(update.weight);
-      const auto src_distance = distances[src];
+      const auto task_s0 = task_s0_q[pe].read();
+      const auto src = task_s0.dst;
+      const auto count = bit_cast<Vid>(task_s0.weight);
+      const auto src_distance =
+          (read_addr_q.write(src), ap_wait(), read_data_q.read());
+      task_s1p0_q[pe].write({
+          .vid = src,
+          .distance = src_distance,
+          .count = count,
+      });
 
-      for (Vid i = 0; i < count; ++i) {
+    fwd:
+      for (Vid i_req = 0, i_resp = 0; i_resp < count;) {
         _Pragma("HLS pipeline II = 1");
-        _Pragma("HLS dependence false variable = distances");
-        const auto update = req_q[pe].read();
-        const auto dst = update.vid;
-        const auto weight = update.weight;
-        const auto dst_distance = distances[dst];
-        const auto new_distance = src_distance + weight;
-        TaskOp resp{.op = TaskOp::NOOP, .task = {}};
-        if (new_distance < dst_distance) {
-          VLOG_F(9, info) << "distances[" << dst << "] = " << dst_distance
-                          << " -> distances[" << src << "] + " << weight
-                          << " = " << new_distance;
-          distances[dst] = new_distance;
-          parents[dst] = src;
-          resp = {
-              .op = TaskOp::NEW,
-              .task = {.vid = dst, .distance = new_distance},
-          };
+        if (i_req < count && i_req < i_resp + kMemLatency) {
+          const auto task_s0 = task_s0_q[pe].read();
+          const auto dst = task_s0.dst;
+          task_s1p0_q[pe].write({.vid = dst, .distance = task_s0.weight});
+          read_addr_q.write(dst);
+          ++i_req;
         }
 
-        resp_q[pe].write(resp);
+        if (!read_data_q.empty()) {
+          task_s1p1_q[pe].write(read_data_q.read(nullptr));
+          ++i_resp;
+        }
       }
+    });
+  }
+}
+
+void UpdateGen(
+    // Task data.
+    tapa::istreams<Update, kPeCount>& task_s1p0_q,
+    tapa::istreams<float, kPeCount>& task_s1p1_q,
+    tapa::ostreams<TaskOp, kPeCount>& task_resp_q,
+    // Memory-maps.
+    tapa::mmap<Vid> parents, tapa::ostream<Vid>& write_addr_q,
+    tapa::ostream<float>& write_data_q) {
+  constexpr int pe = 0;
+spin:
+  for (;;) {
+    const auto task_s1p0 = task_s1p0_q[pe].read();
+    const auto src = task_s1p0.vid;
+    const auto src_distance = task_s1p0.distance;
+    const auto count = task_s1p0.count;
+    for (Vid i = 0; i < count; ++i) {
+      const auto task_s1p0 = task_s1p0_q[pe].read();
+      const auto dst = task_s1p0.vid;
+      const auto dst_distance = task_s1p1_q[pe].read();
+      const auto weight = task_s1p0.distance;
+
+      const auto new_distance = src_distance + weight;
+      if (new_distance < dst_distance) {
+        VLOG_F(9, info) << "distances[" << dst << "] = " << dst_distance
+                        << " -> distances[" << src << "] + " << weight << " = "
+                        << new_distance;
+        write_addr_q.write(dst);
+        write_data_q.write(new_distance);
+        parents[dst] = src;
+        task_resp_q[pe].write({
+            .op = TaskOp::NEW,
+            .task = {.vid = dst, .distance = new_distance},
+        });
+      }
+    }
+    task_resp_q[pe].write({
+        .op = TaskOp::DONE,
+        .task = {.vid = count, .distance = 0.f},
     });
   }
 }
@@ -401,17 +445,28 @@ void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
           tapa::mmap<Task> heap_array, tapa::mmap<Vid> heap_index) {
   tapa::stream<QueueOp, 2> queue_req_q("queue_req");
   tapa::stream<QueueOpResp, 2> queue_resp_q("queue_resp");
+
   tapa::streams<Vid, kPeCount, 2> task_req_q("task_req");
+  tapa::streams<Edge, kPeCount, 2> task_s0_q("task_stage0");
+  tapa::streams<Update, kPeCount, 64> task_s1p0_q("task_stage0_part0");
+  tapa::streams<float, kPeCount, 2> task_s1p1_q("task_stage0_part1");
   tapa::streams<TaskOp, kPeCount, 2> task_resp_q("task_resp");
-  tapa::streams<Update, kPeCount, 2> update_req_q("update_req");
-  tapa::streams<TaskOp, kPeCount, 2> update_resp_q("update_resp");
+
+  tapa::stream<Vid, 2> distances_read_addr_q("distances_read_addr");
+  tapa::stream<float, 2> distances_read_data_q("distances_read_data");
+  tapa::stream<Vid, 2> distances_write_addr_q("distances_write_addr");
+  tapa::stream<float, 2> distances_write_data_q("distances_write_data");
 
   tapa::task()
       .invoke<-1>(TaskQueue, vertex_count, root, queue_req_q, queue_resp_q,
                   heap_array, heap_index)
-      .invoke<-1, kPeCount>(ProcElem, task_req_q, task_resp_q, update_req_q,
-                            update_resp_q, indices, edges)
-      .invoke<-1>(VertexMem, update_req_q, update_resp_q, parents, distances)
+      .invoke<-1, kPeCount>(EdgeMan, task_req_q, task_s0_q, indices, edges)
+      .invoke<-1>(DistanceMem, distances_read_addr_q, distances_read_data_q,
+                  distances_write_addr_q, distances_write_data_q, distances)
+      .invoke<-1>(DistanceMan, task_s0_q, task_s1p0_q, task_s1p1_q,
+                  distances_read_addr_q, distances_read_data_q)
+      .invoke<-1>(UpdateGen, task_s1p0_q, task_s1p1_q, task_resp_q, parents,
+                  distances_write_addr_q, distances_write_data_q)
       .invoke<0>(Dispatcher, root, metadata, task_req_q, task_resp_q,
                  queue_req_q, queue_resp_q);
 }
