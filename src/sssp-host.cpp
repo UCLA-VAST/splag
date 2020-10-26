@@ -50,13 +50,13 @@ bool IsValid(int64_t root, PackedEdgesView edges, WeightsView weights,
   auto parents_copy = make_unique<vector<T>>(parents, parents + vertex_count);
   for (int64_t dst = 0; dst < vertex_count; ++dst) {
     auto& ancestor = (*parents_copy)[dst];
-    if (ancestor == kNullVertex) continue;
+    if (ancestor == kNullVid) continue;
 
     // Check that the SSSP tree does not contain cycles by traversing all the
     // way to the `root`. If there is no cycle, we should be able to reach
     // `root` in less than `vertex_count` hops.
     for (int64_t hop = 0; ancestor != root; ++hop) {
-      CHECK_NE(ancestor = (*parents_copy)[ancestor], kNullVertex);
+      CHECK_NE(ancestor = (*parents_copy)[ancestor], kNullVid);
       CHECK_LE(hop, vertex_count);
     }
 
@@ -79,11 +79,11 @@ bool IsValid(int64_t root, PackedEdgesView edges, WeightsView weights,
     const int64_t v1 = e.v1();
 
     // Check that the two vertices are both or neither in the SSSP tree.
-    if (parents[v0] == kNullVertex) {
-      CHECK_EQ(parents[v1], kNullVertex);
+    if (parents[v0] == kNullVid) {
+      CHECK_EQ(parents[v1], kNullVid);
       continue;
     }
-    CHECK_NE(parents[v1], kNullVertex);
+    CHECK_NE(parents[v1], kNullVid);
 
     // Check that every edge in the input list has vertices with distances that
     // differ by at most the weight of the edge or are not in the SSSP tree.
@@ -98,8 +98,8 @@ bool IsValid(int64_t root, PackedEdgesView edges, WeightsView weights,
 
 void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
           tapa::mmap<Edge> edges, tapa::mmap<Index> indices,
-          tapa::mmap<Vid> parents, tapa::mmap<float> distances,
-          tapa::mmap<Task> heap_array, tapa::mmap<Vid> heap_index);
+          tapa::mmap<Vertex> vertices, tapa::mmap<Task> heap_array,
+          tapa::mmap<Vid> heap_index);
 
 int main(int argc, const char* argv[]) {
   FLAGS_logtostderr = true;
@@ -220,8 +220,7 @@ int main(int argc, const char* argv[]) {
 
   // Other kernel arguments.
   aligned_vector<int64_t> metadata(5);
-  aligned_vector<Vid> parents(tapa::round_up<kVertexVecLen>(vertex_count));
-  aligned_vector<float> distances(tapa::round_up<kVertexVecLen>(vertex_count));
+  aligned_vector<Vertex> vertices(tapa::round_up<kVertexVecLen>(vertex_count));
   aligned_vector<Task> heap_array(vertex_count);
   aligned_vector<Vid> heap_index(vertex_count);
 
@@ -233,16 +232,15 @@ int main(int argc, const char* argv[]) {
     CHECK_LT(root, vertex_count) << "invalid root";
     LOG(INFO) << "root: " << root;
 
-    std::fill(parents.begin(), parents.end(), kNullVertex);
-    std::fill(distances.begin(), distances.end(), kInfDistance);
-    std::fill(heap_index.begin(), heap_index.end(), kNullVertex);
-    parents[root] = root;
-    distances[root] = 0.f;
+    std::fill(vertices.begin(), vertices.end(),
+              Vertex{.parent = kNullVid, .distance = kInfDistance});
+    std::fill(heap_index.begin(), heap_index.end(), kNullVid);
+    vertices[root] = {.parent = Vid(root), .distance = 0.f};
 
     unsetenv("KERNEL_TIME_NS");
     const auto tic = steady_clock::now();
-    SSSP(vertex_count, root, metadata, edges, indices, parents, distances,
-         heap_array, heap_index);
+    SSSP(vertex_count, root, metadata, edges, indices, vertices, heap_array,
+         heap_index);
     double elapsed_time =
         1e-9 * duration_cast<nanoseconds>(steady_clock::now() - tic).count();
     if (auto env = getenv("KERNEL_TIME_NS")) {
@@ -250,9 +248,16 @@ int main(int argc, const char* argv[]) {
       VLOG(3) << "using time reported by the kernel: " << elapsed_time << " s";
     }
 
+    vector<Vid> parents(vertex_count);
+    vector<float> distances(vertex_count);
+    for (int64_t vid = 0; vid < vertex_count; ++vid) {
+      parents[vid] = vertices[vid].parent;
+      distances[vid] = vertices[vid].distance;
+    }
+
     int64_t connected_edge_count = 0;
     for (int64_t vid = 0; vid < vertex_count; ++vid) {
-      if (parents[vid] != kNullVertex) {
+      if (parents[vid] != kNullVid) {
         connected_edge_count += degree[vid] / 2;
       }
     }

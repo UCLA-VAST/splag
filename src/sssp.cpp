@@ -46,7 +46,7 @@ void TaskQueue(
 heap_index_init:
   for (Vid i = 0; i < kMaxOnChipSize; ++i) {
 #pragma HLS pipeline II = 1
-    heap_index[i] = kNullVertex;
+    heap_index[i] = kNullVid;
   }
 #else   // __SYNTHESIS__
   auto heap_array = heap_array_spill;
@@ -72,7 +72,7 @@ heap_index_init:
     // Check that heap_index is restored to the initial state.
     CHECK_EQ(heap_size, 0);
     for (int i = 0; i < vertex_count; ++i) {
-      CHECK_EQ(heap_index[i], kNullVertex) << "i = " << i;
+      CHECK_EQ(heap_index[i], kNullVid) << "i = " << i;
     }
   });
 
@@ -91,7 +91,7 @@ spin:
         const Vid task_index = heap_index[new_task.vid];
         bool heapify = false;
         Vid heapify_index = task_index;
-        if (task_index != kNullVertex) {
+        if (task_index != kNullVid) {
           const Task old_task = heap_array[task_index];
           CHECK_EQ(old_task.vid, new_task.vid);
           if (!(new_task <= old_task)) {
@@ -142,7 +142,7 @@ spin:
       case QueueOp::POP: {
         if (heap_size > 0) {
           const Task front = heap_array[0];
-          heap_index[front.vid] = kNullVertex;
+          heap_index[front.vid] = kNullVid;
           --heap_size;
 
           resp.task_op = TaskOp::NEW;
@@ -225,10 +225,13 @@ spin:
 
 void DistanceMem(
     // Proxied streams.
-    tapa::istream<Vid>& read_addr_q, tapa::ostream<float>& read_data_q,
-    tapa::istream<Vid>& write_addr_q, tapa::istream<float>& write_data_q,
+    tapa::istream<Vid>& read_addr_q, tapa::ostream<Vertex>& read_data_q,
+    tapa::istream<Vid>& write_addr_q, tapa::istream<Vertex>& write_data_q,
     // Memory-map.
-    tapa::async_mmap<float> mem) {
+    tapa::async_mmap<Vertex> mem) {
+#pragma HLS data_pack variable = mem.read_data
+#pragma HLS data_pack variable = mem.read_peek
+#pragma HLS data_pack variable = mem.write_data
   ReadWriteMem(read_addr_q, read_data_q, write_addr_q, write_data_q, mem);
 }
 
@@ -238,9 +241,9 @@ void DistanceMan(
     tapa::ostreams<Update, kPeCount>& task_s1p0_q,
     tapa::ostreams<float, kPeCount>& task_s1p1_q,
     // Memory-maps.
-    tapa::ostream<Vid>& read_addr_q, tapa::istream<float>& read_data_q) {
-  DECL_ARRAY(volatile Vid, active_srcs, kPeCount, kNullVertex);
-  DECL_ARRAY(volatile Vid, active_dsts, kPeCount, kNullVertex);
+    tapa::ostream<Vid>& read_addr_q, tapa::istream<Vertex>& read_data_q) {
+  DECL_ARRAY(volatile Vid, active_srcs, kPeCount, kNullVid);
+  DECL_ARRAY(volatile Vid, active_dsts, kPeCount, kNullVid);
 
   DECL_ARRAY(bool, valid, kPeCount, false);
   DECL_ARRAY(Edge, updates, kPeCount, Edge());
@@ -252,7 +255,7 @@ spin:
       const auto src = task_s0.dst;
       const auto count = bit_cast<Vid>(task_s0.weight);
       const auto src_distance =
-          (read_addr_q.write(src), ap_wait(), read_data_q.read());
+          (read_addr_q.write(src), ap_wait(), read_data_q.read().distance);
       task_s1p0_q[pe].write({
           .vid = src,
           .distance = src_distance,
@@ -271,7 +274,7 @@ spin:
         }
 
         if (!read_data_q.empty()) {
-          task_s1p1_q[pe].write(read_data_q.read(nullptr));
+          task_s1p1_q[pe].write(read_data_q.read(nullptr).distance);
           ++i_resp;
         }
       }
@@ -285,8 +288,7 @@ void UpdateGen(
     tapa::istreams<float, kPeCount>& task_s1p1_q,
     tapa::ostreams<TaskOp, kPeCount>& task_resp_q,
     // Memory-maps.
-    tapa::async_mmap<Vid> parents, tapa::ostream<Vid>& write_addr_q,
-    tapa::ostream<float>& write_data_q) {
+    tapa::ostream<Vid>& write_addr_q, tapa::ostream<Vertex>& write_data_q) {
   constexpr int pe = 0;
 spin:
   for (;;) {
@@ -306,9 +308,7 @@ spin:
                         << " -> distances[" << src << "] + " << weight << " = "
                         << new_distance;
         write_addr_q.write(dst);
-        write_data_q.write(new_distance);
-        parents.write_addr_write(dst);
-        parents.write_data_write(src);
+        write_data_q.write({.parent = src, .distance = new_distance});
         task_resp_q[pe].write({
             .op = TaskOp::NEW,
             .task = {.vid = dst, .distance = new_distance},
@@ -442,8 +442,8 @@ spin:
 
 void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
           tapa::mmap<Edge> edges, tapa::mmap<Index> indices,
-          tapa::mmap<Vid> parents, tapa::mmap<float> distances,
-          tapa::mmap<Task> heap_array, tapa::mmap<Vid> heap_index) {
+          tapa::mmap<Vertex> vertices, tapa::mmap<Task> heap_array,
+          tapa::mmap<Vid> heap_index) {
   tapa::stream<QueueOp, 256> queue_req_q("queue_req");
   tapa::stream<QueueOpResp, 2> queue_resp_q("queue_resp");
 
@@ -454,19 +454,19 @@ void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
   tapa::streams<TaskOp, kPeCount, 2> task_resp_q("task_resp");
 
   tapa::stream<Vid, 2> distances_read_addr_q("distances_read_addr");
-  tapa::stream<float, 2> distances_read_data_q("distances_read_data");
+  tapa::stream<Vertex, 2> distances_read_data_q("distances_read_data");
   tapa::stream<Vid, 2> distances_write_addr_q("distances_write_addr");
-  tapa::stream<float, 2> distances_write_data_q("distances_write_data");
+  tapa::stream<Vertex, 2> distances_write_data_q("distances_write_data");
 
   tapa::task()
       .invoke<-1>(TaskQueue, vertex_count, root, queue_req_q, queue_resp_q,
                   heap_array, heap_index)
       .invoke<-1, kPeCount>(EdgeMan, task_req_q, task_s0_q, indices, edges)
       .invoke<-1>(DistanceMem, distances_read_addr_q, distances_read_data_q,
-                  distances_write_addr_q, distances_write_data_q, distances)
+                  distances_write_addr_q, distances_write_data_q, vertices)
       .invoke<-1>(DistanceMan, task_s0_q, task_s1p0_q, task_s1p1_q,
                   distances_read_addr_q, distances_read_data_q)
-      .invoke<-1>(UpdateGen, task_s1p0_q, task_s1p1_q, task_resp_q, parents,
+      .invoke<-1>(UpdateGen, task_s1p0_q, task_s1p1_q, task_resp_q,
                   distances_write_addr_q, distances_write_data_q)
       .invoke<0>(Dispatcher, root, metadata, task_req_q, task_resp_q,
                  queue_req_q, queue_resp_q);

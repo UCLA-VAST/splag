@@ -22,9 +22,14 @@ inline To bit_cast(const From& from) {
 using Vid = int32_t;  // Large enough to index all vertices.
 using Eid = int32_t;  // Large enough to index all edges.
 
-constexpr Vid kNullVertex = -1;
+constexpr Vid kNullVid = -1;
 constexpr float kInfDistance = std::numeric_limits<float>::infinity();
 constexpr int kVertexUpdateDepDist = 3 + 1;  // II + 1
+
+struct Vertex {
+  Vid parent;
+  float distance;
+};
 
 // Push-based.
 struct Edge {
@@ -33,7 +38,7 @@ struct Edge {
 };
 
 inline std::ostream& operator<<(std::ostream& os, const Edge& obj) {
-  if (obj.dst == kNullVertex) return os << "{}";
+  if (obj.dst == kNullVid) return os << "{}";
   if (obj.weight < bit_cast<float>(0x10000000)) {
     // Weights are evenly distributed between 0 and 1; if it is this small,
     // almost certainly it should actually be interpreted as Vid.

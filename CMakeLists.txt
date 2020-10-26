@@ -40,14 +40,12 @@ add_xocc_hw_link_targets(
   --sp=SSSP.metadata:PLRAM[0]
   --sp=SSSP.edges:HBM[16]
   --sp=SSSP.indices:HBM[17]
-  --sp=SSSP.parents:HBM[18]
-  --sp=SSSP.distances:HBM[19]
+  --sp=SSSP.vertices:HBM[18]
   --sp=SSSP.heap_array:HBM[20]
   --sp=SSSP.heap_index:HBM[21]
   --dk=chipscope:SSSP:m_axi_edges
   --dk=chipscope:SSSP:m_axi_indices
-  --dk=chipscope:SSSP:m_axi_parents
-  --dk=chipscope:SSSP:m_axi_distances
+  --dk=chipscope:SSSP:m_axi_vertices
   --dk=chipscope:SSSP:m_axi_heap_array
   --dk=chipscope:SSSP:m_axi_heap_index
   --vivado.prop=run.impl_1.STRATEGY=Performance_EarlyBlockPlacement

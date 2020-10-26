@@ -17,8 +17,8 @@
 
 void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
           tapa::mmap<Edge> edges, tapa::mmap<Index> indices,
-          tapa::mmap<Vid> parents, tapa::mmap<float> distances,
-          tapa::mmap<Task> heap_array, tapa::mmap<Vid> heap_index) {
+          tapa::mmap<Vertex> vertices, tapa::mmap<Task> heap_array,
+          tapa::mmap<Vid> heap_index) {
   auto kernel_time_ns_raw =
       mmap(nullptr, sizeof(int64_t), PROT_READ | PROT_WRITE,
            MAP_SHARED | MAP_ANONYMOUS, /*fd=*/-1, /*offset=*/0);
@@ -44,8 +44,7 @@ void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
   auto metadata_arg = fpga::ReadWrite(metadata.get(), metadata.size());
   auto edges_arg = fpga::WriteOnly(edges.get(), edges.size());
   auto indices_arg = fpga::WriteOnly(indices.get(), indices.size());
-  auto parents_arg = fpga::ReadWrite(parents.get(), parents.size());
-  auto distances_arg = fpga::ReadWrite(distances.get(), distances.size());
+  auto vertices_arg = fpga::ReadWrite(vertices.get(), vertices.size());
   auto heap_array_arg = fpga::Placeholder(heap_array.get(), heap_array.size());
   auto heap_index_arg = fpga::Placeholder(heap_index.get(), heap_index.size());
 
@@ -58,10 +57,8 @@ void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
   instance.SetArg(arg_idx++, edges_arg);
   instance.AllocBuf(arg_idx, indices_arg);
   instance.SetArg(arg_idx++, indices_arg);
-  instance.AllocBuf(arg_idx, parents_arg);
-  instance.SetArg(arg_idx++, parents_arg);
-  instance.AllocBuf(arg_idx, distances_arg);
-  instance.SetArg(arg_idx++, distances_arg);
+  instance.AllocBuf(arg_idx, vertices_arg);
+  instance.SetArg(arg_idx++, vertices_arg);
   instance.AllocBuf(arg_idx, heap_array_arg);
   instance.SetArg(arg_idx++, heap_array_arg);
   instance.AllocBuf(arg_idx, heap_index_arg);
