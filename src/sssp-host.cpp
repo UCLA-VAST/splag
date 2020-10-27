@@ -262,17 +262,18 @@ int main(int argc, const char* argv[]) {
       }
     }
     teps.push_back(connected_edge_count / elapsed_time);
-    VLOG(3) << "  TEPS:                  " << *teps.rbegin();
     auto visited_edge_count = metadata[0];
     auto total_queue_size = metadata[1];
     auto queue_count = metadata[2];
     auto max_queue_size = metadata[3];
     auto visited_vertex_count = metadata[4];
+    VLOG(3) << "  TEPS:                  " << *teps.rbegin() << " ("
+            << 1e9 * elapsed_time / visited_edge_count << " ns/edge visited)";
     VLOG(3) << "  #edges connected:      " << connected_edge_count;
     VLOG(3) << "  #edges visited:        " << visited_edge_count << " ("
             << std::fixed << std::setprecision(1) << std::showpos
             << 100. * visited_edge_count / edges.size() - 100 << "% over "
-            << edges.size() << ")";
+            << edges.size() << ") ";
     VLOG(3) << "  #vertices visited:     " << visited_vertex_count << " ("
             << std::fixed << std::setprecision(1) << std::showpos
             << 100. * visited_vertex_count / vertex_count - 100 << "% over "
