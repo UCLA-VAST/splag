@@ -96,6 +96,21 @@ bool IsValid(int64_t root, PackedEdgesView edges, WeightsView weights,
   return true;
 }
 
+vector<int64_t> SampleVertices(const vector<int64_t>& degree_no_self_loop) {
+  // Sample root vertices.
+  const int64_t vertex_count = degree_no_self_loop.size();
+  vector<int64_t> population_vertices;
+  population_vertices.reserve(vertex_count);
+  vector<int64_t> sample_vertices;
+  sample_vertices.reserve(64);
+  for (int64_t i = 0; i < vertex_count; ++i) {
+    if (degree_no_self_loop[i] > 0) population_vertices.push_back(i);
+  }
+  std::sample(population_vertices.begin(), population_vertices.end(),
+              std::back_inserter(sample_vertices), 64, std::mt19937());
+  return sample_vertices;
+}
+
 void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
           tapa::mmap<Edge> edges, tapa::mmap<Index> indices,
           tapa::mmap<Vertex> vertices, tapa::mmap<Task> heap_array,
@@ -207,17 +222,6 @@ int main(int argc, const char* argv[]) {
     }
   }
 
-  // Sample root vertices.
-  vector<int64_t> population_vertices;
-  population_vertices.reserve(vertex_count);
-  vector<int64_t> sample_vertices;
-  sample_vertices.reserve(64);
-  for (int64_t i = 0; i < vertex_count; ++i) {
-    if (degree_no_self_loop[i] > 0) population_vertices.push_back(i);
-  }
-  std::sample(population_vertices.begin(), population_vertices.end(),
-              std::back_inserter(sample_vertices), 64, std::mt19937());
-
   // Other kernel arguments.
   aligned_vector<int64_t> metadata(5);
   aligned_vector<Vertex> vertices(tapa::round_up<kVertexVecLen>(vertex_count));
@@ -227,7 +231,7 @@ int main(int argc, const char* argv[]) {
   // Statistics.
   vector<double> teps;
 
-  for (const auto root : sample_vertices) {
+  for (const auto root : SampleVertices(degree_no_self_loop)) {
     CHECK_GE(root, 0) << "invalid root";
     CHECK_LT(root, vertex_count) << "invalid root";
     LOG(INFO) << "root: " << root;
