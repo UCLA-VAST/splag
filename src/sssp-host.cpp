@@ -26,6 +26,10 @@ template <typename T>
 using aligned_vector = std::vector<T, mmap_allocator<T>>;
 
 DEFINE_int64(root, kNullVid, "optionally specifiy a single root vertex");
+DEFINE_bool(sort, false, "sort edges for each vertex; may override --shuffle");
+DEFINE_bool(
+    shuffle, false,
+    "randomly shuffle edges for each vertex; may be overridden by --sort");
 
 template <typename T>
 bool IsValid(int64_t root, PackedEdgesView edges, WeightsView weights,
@@ -216,6 +220,18 @@ int main(int argc, char* argv[]) {
 
     for (Vid vid = 0; vid < vertex_count; ++vid) {
       CHECK_EQ(vertex_counts[vid], indices[vid].count);
+    }
+  }
+
+  if (FLAGS_sort || FLAGS_shuffle) {
+    for (Vid vid = 0; vid < vertex_count; ++vid) {
+      const auto first = edges.begin() + indices[vid].offset;
+      const auto last = first + indices[vid].count;
+      if (FLAGS_sort) {
+        std::sort(first, last, [](auto& a, auto& b) { return a.dst < b.dst; });
+      } else {
+        std::random_shuffle(first, last);
+      }
     }
   }
 
