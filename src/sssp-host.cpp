@@ -22,7 +22,7 @@ using std::chrono::duration_cast;
 using std::chrono::nanoseconds;
 using std::chrono::steady_clock;
 
-DEFINE_int64(root, kNullVid, "Optionally specifiy a root vertex");
+DEFINE_int64(root, kNullVid, "optionally specifiy a single root vertex");
 
 template <typename T>
 struct mmap_allocator {
@@ -102,6 +102,14 @@ bool IsValid(int64_t root, PackedEdgesView edges, WeightsView weights,
 vector<int64_t> SampleVertices(const vector<int64_t>& degree_no_self_loop) {
   // Sample root vertices.
   const int64_t vertex_count = degree_no_self_loop.size();
+  if (FLAGS_root != kNullVid) {
+    if (FLAGS_root < vertex_count && degree_no_self_loop[FLAGS_root] > 0) {
+      LOG(INFO) << "respecting flag: --root=" << FLAGS_root;
+      return {FLAGS_root};
+    } else {
+      LOG(WARNING) << "ignoring invalid flag: --root=" << FLAGS_root;
+    }
+  }
   vector<int64_t> population_vertices;
   population_vertices.reserve(vertex_count);
   vector<int64_t> sample_vertices;
