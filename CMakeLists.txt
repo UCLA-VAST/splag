@@ -3,6 +3,7 @@ cmake_policy(SET CMP0076 NEW)
 
 project(sssp)
 
+find_package(gflags REQUIRED)
 find_package(TAPA REQUIRED)
 find_package(FRT REQUIRED)
 find_package(OpenMP)
@@ -15,7 +16,7 @@ target_link_libraries(sssp_kernel PUBLIC tapa::tapa)
 add_executable(sssp)
 target_sources(sssp PRIVATE src/sssp-host.cpp)
 target_compile_features(sssp PRIVATE cxx_std_17)
-target_link_libraries(sssp PRIVATE sssp_kernel tapa::tapa)
+target_link_libraries(sssp PRIVATE sssp_kernel tapa::tapa gflags)
 if(OpenMP_CXX_FOUND)
   target_link_libraries(sssp PRIVATE OpenMP::OpenMP_CXX)
   target_link_libraries(sssp_kernel PRIVATE OpenMP::OpenMP_CXX)
@@ -57,7 +58,7 @@ add_xocc_hw_link_targets(
 add_executable(sssp-frt)
 target_compile_features(sssp-frt PRIVATE cxx_std_17)
 target_sources(sssp-frt PRIVATE src/sssp-frt.cpp src/sssp-host.cpp)
-target_link_libraries(sssp-frt PRIVATE frt::frt tapa::tapa)
+target_link_libraries(sssp-frt PRIVATE frt::frt tapa::tapa gflags)
 
 add_custom_target(
   sssp-cosim

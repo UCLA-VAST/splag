@@ -9,6 +9,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include <gflags/gflags.h>
 #include <tapa.h>
 
 #include "sssp.h"
@@ -20,6 +21,8 @@ using std::vector;
 using std::chrono::duration_cast;
 using std::chrono::nanoseconds;
 using std::chrono::steady_clock;
+
+DEFINE_int64(root, kNullVid, "Optionally specifiy a root vertex");
 
 template <typename T>
 struct mmap_allocator {
@@ -116,8 +119,10 @@ void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
           tapa::mmap<Vertex> vertices, tapa::mmap<Task> heap_array,
           tapa::mmap<Vid> heap_index);
 
-int main(int argc, const char* argv[]) {
+int main(int argc, char* argv[]) {
   FLAGS_logtostderr = true;
+  FLAGS_colorlogtostderr = true;
+  gflags::ParseCommandLineFlags(&argc, &argv, true);
   google::InitGoogleLogging(argv[0]);
 
   if (argc != 2) {
