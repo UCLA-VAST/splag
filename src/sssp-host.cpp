@@ -22,26 +22,10 @@ using std::chrono::duration_cast;
 using std::chrono::nanoseconds;
 using std::chrono::steady_clock;
 
-DEFINE_int64(root, kNullVid, "optionally specifiy a single root vertex");
-
-template <typename T>
-struct mmap_allocator {
-  using value_type = T;
-  using size_type = std::size_t;
-  using difference_type = std::ptrdiff_t;
-  T* allocate(size_t count) {
-    void* ptr = mmap(nullptr, count * sizeof(T), PROT_READ | PROT_WRITE,
-                     MAP_SHARED | MAP_ANONYMOUS, /*fd=*/-1, /*offset=*/0);
-    if (ptr == MAP_FAILED) throw std::bad_alloc();
-    return reinterpret_cast<T*>(ptr);
-  }
-  void deallocate(T* ptr, std::size_t count) {
-    if (munmap(ptr, count * sizeof(T)) != 0) throw std::bad_alloc();
-  }
-};
-
 template <typename T>
 using aligned_vector = std::vector<T, mmap_allocator<T>>;
+
+DEFINE_int64(root, kNullVid, "optionally specifiy a single root vertex");
 
 template <typename T>
 bool IsValid(int64_t root, PackedEdgesView edges, WeightsView weights,

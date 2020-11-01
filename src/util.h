@@ -139,3 +139,19 @@ inline T average(const Container& container) {
   }
   return sum / count;
 }
+
+template <typename T>
+struct mmap_allocator {
+  using value_type = T;
+  using size_type = std::size_t;
+  using difference_type = std::ptrdiff_t;
+  T* allocate(size_t count) {
+    void* ptr = mmap(nullptr, count * sizeof(T), PROT_READ | PROT_WRITE,
+                     MAP_SHARED | MAP_ANONYMOUS, /*fd=*/-1, /*offset=*/0);
+    if (ptr == MAP_FAILED) throw std::bad_alloc();
+    return reinterpret_cast<T*>(ptr);
+  }
+  void deallocate(T* ptr, std::size_t count) {
+    if (munmap(ptr, count * sizeof(T)) != 0) throw std::bad_alloc();
+  }
+};
