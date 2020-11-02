@@ -35,6 +35,7 @@ template <typename T>
 bool IsValid(int64_t root, PackedEdgesView edges, WeightsView weights,
              const vector<unordered_map<T, float>>& indexed_weights,
              const T* parents, const float* distances, int64_t vertex_count) {
+  constexpr auto kEpsilon = std::numeric_limits<float>::epsilon();
   // Check that the parent of root is root.
   CHECK_EQ(parents[root], root);
 
@@ -60,7 +61,7 @@ bool IsValid(int64_t root, PackedEdgesView edges, WeightsView weights,
     CHECK_LT(v0, indexed_weights.size());
     const auto it = indexed_weights[v0].find(v1);
     CHECK(it != indexed_weights[v0].end()) << "v0: " << v0 << " v1: " << v1;
-    CHECK_LE(distances[dst], distances[src] + it->second);
+    CHECK_LE(distances[dst], distances[src] + it->second + kEpsilon);
   }
   parents_copy.reset();
 
@@ -78,11 +79,8 @@ bool IsValid(int64_t root, PackedEdgesView edges, WeightsView weights,
 
     // Check that every edge in the input list has vertices with distances that
     // differ by at most the weight of the edge or are not in the SSSP tree.
-    if (distances[v0] < distances[v1]) {
-      CHECK_LE(distances[v1], distances[v0] + weights[eid]);
-    } else {
-      CHECK_LE(distances[v0], distances[v1] + weights[eid]);
-    }
+    CHECK_LE(std::abs(distances[v0] - distances[v1]), weights[eid] + kEpsilon)
+        << ": v0 = " << v0 << ", v1 = " << v1;
   }
   return true;
 }
