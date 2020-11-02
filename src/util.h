@@ -140,6 +140,10 @@ inline T average(const Container& container) {
   return sum / count;
 }
 
+inline bool almost_equal(float x, float y, float relative_error = 1e-5) {
+  return std::abs(x - y) < relative_error * std::max(std::abs(x), std::abs(y));
+}
+
 template <typename T>
 struct mmap_allocator {
   using value_type = T;

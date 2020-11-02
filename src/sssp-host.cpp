@@ -1,12 +1,14 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <deque>
 #include <iomanip>
 #include <memory>
 #include <random>
 #include <string>
 #include <tuple>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <gflags/gflags.h>
@@ -15,8 +17,10 @@
 #include "sssp.h"
 #include "util.h"
 
+using std::deque;
 using std::make_unique;
 using std::unordered_map;
+using std::unordered_set;
 using std::vector;
 using std::chrono::duration_cast;
 using std::chrono::nanoseconds;
@@ -30,6 +34,7 @@ DEFINE_bool(sort, false, "sort edges for each vertex; may override --shuffle");
 DEFINE_bool(
     shuffle, false,
     "randomly shuffle edges for each vertex; may be overridden by --sort");
+DEFINE_int64(coarsen, 0, "remove vertices whose degree <= this value");
 
 template <typename T>
 bool IsValid(int64_t root, PackedEdgesView edges, WeightsView weights,
@@ -106,6 +111,173 @@ vector<int64_t> SampleVertices(const vector<int64_t>& degree_no_self_loop) {
   std::sample(population_vertices.begin(), population_vertices.end(),
               std::back_inserter(sample_vertices), 64, std::mt19937());
   return sample_vertices;
+}
+
+// Coarsen graph specified in `indexed_weights` and `degrees` and populate
+// `indices` and `edges` accordingly. `degrees` will be updated to reflect the
+// degrees of the coarsened graph for sampling vertices.
+deque<std::pair<Vid, unordered_map<Vid, float>>> Coarsen(
+    vector<unordered_map<Vid, float>> indexed_weights, vector<int64_t>& degrees,
+    aligned_vector<Index>& indices, aligned_vector<Edge>& edges) {
+  const int64_t vertex_count = degrees.size();
+  CHECK_EQ(vertex_count, indexed_weights.size());
+  const int64_t edge_count = vertex_count * 16;
+  unordered_map<int64_t, unordered_set<Vid>> degree_map;
+  vector<unordered_map<Vid, float>> rindexed_weights(vertex_count);
+  for (int64_t v0 = 0; v0 < vertex_count; ++v0) {
+    degree_map[degrees[v0]].insert(v0);
+    for (auto [v1, weight] : indexed_weights[v0]) {
+      rindexed_weights[v1][v0] = weight;
+    }
+  }
+
+  int64_t edge_count_delta = 0;
+
+  auto get_edges = [&](int64_t v0) {
+    vector<Edge> edges;
+    edges.reserve(indexed_weights[v0].size() + rindexed_weights[v0].size());
+    for (auto [v1, weight] : indexed_weights[v0]) {
+      edges.push_back({.dst = v1, .weight = weight});
+    }
+    for (auto [v1, weight] : rindexed_weights[v0]) {
+      edges.push_back({.dst = v1, .weight = weight});
+    }
+    return edges;
+  };
+
+  auto delete_edge = [&](int64_t v0, int64_t v1) {
+    CHECK_NE(v0, v1);
+    if (v0 > v1) std::swap(v0, v1);  // Use smaller vid as v0.
+    indexed_weights[v0].erase(v1);
+    rindexed_weights[v1].erase(v0);
+    degree_map[degrees[v0]].erase(v0);
+    CHECK_GE(--degrees[v0], 0);
+    degree_map[degrees[v0]].insert(v0);
+    degree_map[degrees[v1]].erase(v1);
+    CHECK_GE(--degrees[v1], 0);
+    degree_map[degrees[v1]].insert(v1);
+    --edge_count_delta;
+  };
+
+  auto add_edge = [&](int64_t v0, int64_t v1, float weight) {
+    CHECK_NE(v0, v1);
+    if (v0 > v1) std::swap(v0, v1);  // Use smaller vid as v0.
+    if (auto it = indexed_weights[v0].find(v1);
+        it != indexed_weights[v0].end()) {
+      // Edge already exists.
+      CHECK(rindexed_weights[v1].find(v0) != rindexed_weights[v1].end());
+      if (it->second < weight) return;
+      indexed_weights[v0][v1] = weight;
+      rindexed_weights[v1][v0] = weight;
+      return;
+    }
+    CHECK(rindexed_weights[v1].find(v0) == rindexed_weights[v1].end());
+    indexed_weights[v0][v1] = weight;
+    rindexed_weights[v1][v0] = weight;
+    degree_map[degrees[v0]].erase(v0);
+    ++degrees[v0];
+    degree_map[degrees[v0]].insert(v0);
+    degree_map[degrees[v1]].erase(v1);
+    ++degrees[v1];
+    degree_map[degrees[v1]].insert(v1);
+    ++edge_count_delta;
+  };
+
+  auto done = [&degree_map] {
+    for (int64_t i = 1; i <= FLAGS_coarsen; ++i) {
+      if (!degree_map[i].empty()) return false;
+    }
+    return true;
+  };
+
+  deque<std::pair<Vid, unordered_map<Vid, float>>> coarsen_records;
+  while (!done()) {
+    for (int64_t i = 1; i <= FLAGS_coarsen; ++i) {
+      auto vertices = degree_map[i];
+      for (auto v0 : vertices) {
+        if (auto edges = get_edges(v0); edges.size() == i) {
+          for (auto [v1, weight] : edges) delete_edge(v0, v1);
+          for (int64_t a = 0; a < i; ++a) {
+            for (int64_t b = a + 1; b < i; ++b) {
+              add_edge(edges[a].dst, edges[b].dst,
+                       edges[a].weight + edges[b].weight);
+            }
+          }
+          // Prepend to make sure new records are replayed eariler when
+          // traversed.
+          unordered_map<Vid, float> neighbor_map;
+          for (auto& [dst, weight] : edges) neighbor_map[dst] = weight;
+          coarsen_records.emplace_front(v0, std::move(neighbor_map));
+        }
+      }
+    }
+  }
+
+  LOG_IF(INFO, coarsen_records.size() != 0 || edge_count_delta != 0)
+      << "coarsening removed " << coarsen_records.size() << " ("
+      << std::setprecision(2) << 100. * coarsen_records.size() / vertex_count
+      << "% of " << vertex_count << ") degree<=" << FLAGS_coarsen
+      << " vertices, " << (edge_count_delta > 0 ? "added" : "removed") << " "
+      << std::abs(edge_count_delta) << " (" << std::setprecision(2)
+      << 100. * std::abs(edge_count_delta) / edge_count << "% of " << edge_count
+      << ") edges";
+
+  indices.resize(vertex_count);
+  Eid offset = 0;
+  for (Vid vid = 0; vid < vertex_count; ++vid) {
+    const Vid count = degrees[vid];
+    indices[vid] = {.offset = offset, .count = count};
+    offset += count;
+  }
+
+  edges.resize(offset);
+  vector<Vid> vertex_counts(vertex_count);
+  for (Vid v0 = 0; v0 < vertex_count; ++v0) {
+    for (auto [k, weight] : indexed_weights[v0]) {
+      Vid v1 = k;
+      for (auto [src, dst] : {std::tie(v0, v1), std::tie(v1, v0)}) {
+        edges[indices[src].offset + vertex_counts[src]] = {
+            .dst = Vid(dst),
+            .weight = weight,
+        };
+        ++vertex_counts[src];
+      }
+    }
+  }
+
+  for (Vid vid = 0; vid < vertex_count; ++vid) {
+    CHECK_EQ(vertex_counts[vid], indices[vid].count);
+  }
+
+  return coarsen_records;
+}
+
+void Refine(
+    const deque<std::pair<Vid, unordered_map<Vid, float>>>& coarsen_records,
+    aligned_vector<Vertex>& vertices) {
+  for (auto& [v0, edges] : coarsen_records) {
+    // All neighbors must be in or not in the SSSP tree at the same time.
+    // So if the first one is not, skip this coarsened vertex.
+    if (vertices[edges.begin()->first].parent == kNullVid) continue;
+
+    auto& attr0 = vertices[v0];
+    for (auto& [v1, weight] : edges) {
+      auto& attr1 = vertices[v1];
+      if (edges.count(attr1.parent) &&
+          almost_equal(attr1.distance, edges.at(attr1.parent) +
+                                           vertices[attr1.parent].distance +
+                                           weight)) {
+        // Parent of v1 is v0.
+        attr1.parent = v0;
+      } else {
+        // Parent of v1 is external; parent of v0 may be v1.
+        const auto new_distance = attr1.distance + weight;
+        if (new_distance < attr0.distance) {
+          attr0 = {.parent = v1, .distance = new_distance};
+        }
+      }
+    }
+  }
 }
 
 void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
@@ -192,34 +364,10 @@ int main(int argc, char* argv[]) {
   }
 
   // Allocate and fill edges and indices for the kernel.
-  aligned_vector<Index> indices(vertex_count);
-  aligned_vector<Edge> edges(edge_count_no_self_loop * 2);  // Undirected edge.
-  Eid offset = 0;
-  for (Vid vid = 0; vid < vertex_count; ++vid) {
-    const Vid count = degree_no_self_loop[vid];
-    indices[vid] = {.offset = offset, .count = count};
-    offset += count;
-  }
-
-  {
-    vector<Vid> vertex_counts(vertex_count);
-    for (Vid v0 = 0; v0 < vertex_count; ++v0) {
-      for (auto [k, weight] : indexed_weights[v0]) {
-        Vid v1 = k;
-        for (auto [src, dst] : {std::tie(v0, v1), std::tie(v1, v0)}) {
-          edges[indices[src].offset + vertex_counts[src]] = {
-              .dst = Vid(dst),
-              .weight = weight,
-          };
-          ++vertex_counts[src];
-        }
-      }
-    }
-
-    for (Vid vid = 0; vid < vertex_count; ++vid) {
-      CHECK_EQ(vertex_counts[vid], indices[vid].count);
-    }
-  }
+  aligned_vector<Index> indices;
+  aligned_vector<Edge> edges;
+  auto coarsen_records =
+      Coarsen(indexed_weights, degree_no_self_loop, indices, edges);
 
   if (FLAGS_sort || FLAGS_shuffle) {
     for (Vid vid = 0; vid < vertex_count; ++vid) {
@@ -253,7 +401,7 @@ int main(int argc, char* argv[]) {
     vertices[root] = {.parent = Vid(root), .distance = 0.f};
 
     unsetenv("KERNEL_TIME_NS");
-    const auto tic = steady_clock::now();
+    auto tic = steady_clock::now();
     SSSP(vertex_count, root, metadata, edges, indices, vertices, heap_array,
          heap_index);
     double elapsed_time =
@@ -262,6 +410,11 @@ int main(int argc, char* argv[]) {
       elapsed_time = 1e-9 * atoll(env);
       VLOG(3) << "using time reported by the kernel: " << elapsed_time << " s";
     }
+
+    tic = steady_clock::now();
+    Refine(coarsen_records, vertices);
+    const double refine_time =
+        1e-9 * duration_cast<nanoseconds>(steady_clock::now() - tic).count();
 
     vector<Vid> parents(vertex_count);
     vector<float> distances(vertex_count);
@@ -276,14 +429,15 @@ int main(int argc, char* argv[]) {
         connected_edge_count += degree[vid] / 2;
       }
     }
-    teps.push_back(connected_edge_count / elapsed_time);
+    teps.push_back(connected_edge_count / (elapsed_time + refine_time));
     auto visited_edge_count = metadata[0];
     auto total_queue_size = metadata[1];
     auto queue_count = metadata[2];
     auto max_queue_size = metadata[3];
     auto visited_vertex_count = metadata[4];
     VLOG(3) << "  TEPS:                  " << *teps.rbegin() << " ("
-            << 1e9 * elapsed_time / visited_edge_count << " ns/edge visited)";
+            << 1e9 * elapsed_time / visited_edge_count << " ns/edge visited + "
+            << refine_time << " s refinement)";
     VLOG(3) << "  #edges connected:      " << connected_edge_count;
     VLOG(3) << "  #edges visited:        " << visited_edge_count << " ("
             << std::fixed << std::setprecision(1) << std::showpos
