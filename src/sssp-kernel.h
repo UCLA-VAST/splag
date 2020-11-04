@@ -6,11 +6,13 @@
 
 #include "sssp.h"
 
+using PeId = uint8_t;
+
 // Used in:
 //
-// UpdateGen -> Dispatcher
+// ProcElemS2 -> Dispatcher
 struct TaskOp {
-  // UpdateGen -> Dispatcher: Valid values are NEW and DONE.
+  // ProcElemS2 -> Dispatcher: Valid values are NEW and DONE.
   enum Op { NEW, NOOP, DONE = NOOP } op;
   Task task;  // Valid only when op is NEW.
 };
@@ -26,7 +28,7 @@ inline std::ostream& operator<<(std::ostream& os, const TaskOp& obj) {
 
 // Used in:
 //
-// DistanceMan -> UpdateGen
+// ProcElemS1 -> ProcElemS2
 struct Update {
   Vid vid;
   float distance;
@@ -232,9 +234,9 @@ inline void ap_wait_n(int) {}
 
 // A fully pipelined lightweight proxy for read-only tapa::async_mmap.
 template <typename data_t, typename addr_t>
-void ReadOnlyMem(tapa::istream<addr_t>& read_addr_q,
-                 tapa::ostream<data_t>& read_data_q,
-                 tapa::async_mmap<data_t>& mem) {
+inline void ReadOnlyMem(tapa::istream<addr_t>& read_addr_q,
+                        tapa::ostream<data_t>& read_data_q,
+                        tapa::async_mmap<data_t>& mem) {
 #pragma HLS inline
   DECL_BUF(addr_t, read_addr);
   DECL_BUF(data_t, read_data);
@@ -251,9 +253,9 @@ spin:
 
 // A fully pipelined lightweight proxy for write-only tapa::async_mmap.
 template <typename data_t, typename addr_t>
-void WriteOnlyMem(tapa::istream<addr_t>& write_addr_q,
-                  tapa::istream<data_t>& write_data_q,
-                  tapa::async_mmap<data_t>& mem) {
+inline void WriteOnlyMem(tapa::istream<addr_t>& write_addr_q,
+                         tapa::istream<data_t>& write_data_q,
+                         tapa::async_mmap<data_t>& mem) {
 #pragma HLS inline
   DECL_BUF(addr_t, write_addr);
   DECL_BUF(data_t, write_data);
@@ -270,11 +272,11 @@ spin:
 
 // A fully pipelined lightweight proxy for read-write tapa::async_mmap.
 template <typename data_t, typename addr_t>
-void ReadWriteMem(tapa::istream<addr_t>& read_addr_q,
-                  tapa::ostream<data_t>& read_data_q,
-                  tapa::istream<addr_t>& write_addr_q,
-                  tapa::istream<data_t>& write_data_q,
-                  tapa::async_mmap<data_t>& mem) {
+inline void ReadWriteMem(tapa::istream<addr_t>& read_addr_q,
+                         tapa::ostream<data_t>& read_data_q,
+                         tapa::istream<addr_t>& write_addr_q,
+                         tapa::istream<data_t>& write_data_q,
+                         tapa::async_mmap<data_t>& mem) {
 #pragma HLS inline
   DECL_BUF(addr_t, read_addr);
   DECL_BUF(data_t, read_data);
@@ -292,6 +294,19 @@ spin:
            mem.write_addr_try_write(write_addr));
     UPDATE(write_data, write_data_q.try_read(write_data),
            mem.write_data_try_write(write_data));
+  }
+}
+
+template <typename data_t, typename id_t, uint64_t N>
+inline void ReadDataArbiter(tapa::istream<id_t>& id_q,
+                            tapa::istream<data_t>& data_in_q,
+                            tapa::ostreams<data_t, N>& data_out_q) {
+#pragma HLS inline
+  static_assert(N < std::numeric_limits<id_t>::max(), "invalid id type");
+spin:
+  for (;;) {
+#pragma HLS pipeline II = 1
+    data_out_q[id_q.read()].write(data_in_q.read());
   }
 }
 

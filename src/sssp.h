@@ -29,7 +29,17 @@ constexpr int kVertexUpdateDepDist = 3 + 1;  // II + 1
 struct Vertex {
   Vid parent;
   float distance;
+
+  // Compares distance.
+  bool operator<=(const Vertex& other) const {
+    return bit_cast<uint32_t>(distance) <= bit_cast<uint32_t>(other.distance);
+  }
 };
+
+inline std::ostream& operator<<(std::ostream& os, const Vertex& obj) {
+  return os << "{parent: " << obj.parent << ", distance: " << obj.distance
+            << "}";
+}
 
 // Push-based.
 struct Edge {
@@ -60,14 +70,15 @@ inline std::ostream& operator<<(std::ostream& os, const Index& obj) {
 
 struct Task {
   Vid vid;
-  float distance;
-  bool operator<=(const Task& other) const {
-    return bit_cast<uint32_t>(other.distance) <= bit_cast<uint32_t>(distance);
-  }
+  Vertex vertex;
+  uint32_t padding;
+
+  // Compares priority.
+  bool operator<=(const Task& other) const { return other.vertex <= vertex; }
 };
 
 inline std::ostream& operator<<(std::ostream& os, const Task& obj) {
-  return os << "{vid: " << obj.vid << ", distance: " << obj.distance << "}";
+  return os << "{vid: " << obj.vid << ", vertex: " << obj.vertex << "}";
 }
 
 // Platform-specific constants and types.
