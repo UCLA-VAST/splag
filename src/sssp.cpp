@@ -190,7 +190,7 @@ spin:
           if (!(read_data_q.read() <= front.vertex)) {
             write_addr_q.write(front.vid);
             write_data_q.write(front.vertex);
-            ap_wait_n(80);
+            ap_wait_n(8);
           }
         }
         break;
