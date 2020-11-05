@@ -82,7 +82,7 @@ inline std::ostream& operator<<(std::ostream& os, const Task& obj) {
 }
 
 // Platform-specific constants and types.
-constexpr int kPeCount = 1;
+constexpr int kPeCount = 2;
 constexpr int kVecLenBytes = 64;  // 512 bits
 constexpr int kVertexVecLen = kVecLenBytes / sizeof(float);
 static_assert(sizeof(float) == sizeof(Vid), "Vid must be 32-bit");
