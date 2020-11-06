@@ -431,7 +431,9 @@ void Dispatcher(
   } while (0)
 
 spin:
-  for (; queue_size > 0 || task_count > 0 || !queue_resp_q.empty();) {
+  for (uint8_t pe = 0;
+       queue_size > 0 || task_count > 0 || !queue_resp_q.empty();
+       pe = pe == kPeCount - 1 ? 0 : pe + 1) {
 #pragma HLS pipeline II = 1
     // Process response messages from the queue.
     if (SET(queue_buf_valid, queue_resp_q.try_read(queue_buf))) {
@@ -465,26 +467,22 @@ spin:
     }
 
     // Assign tasks to PEs.
-    RANGE(pe, kPeCount,
-          UNUSED SET(busy[pe],
-                     RESET(queue_buf_valid,
-                           task_req_q[pe].try_write(queue_buf.task.vid))));
+    UNUSED SET(busy[pe], RESET(queue_buf_valid,
+                               task_req_q[pe].try_write(queue_buf.task.vid)));
 
     // Receive tasks generated from PEs.
-    RANGE(pe, kPeCount, {
-      if (SET(task_buf_valid, task_resp_q[pe].try_read(task_buf))) {
-        if (task_buf.op == TaskOp::DONE) {
-          task_buf_valid = false;
-          --task_count;
-          busy[pe] = false;
+    if (SET(task_buf_valid, task_resp_q[pe].try_read(task_buf))) {
+      if (task_buf.op == TaskOp::DONE) {
+        task_buf_valid = false;
+        --task_count;
+        busy[pe] = false;
 
-          // Update statistics.
-          ++visited_vertex_count;
-          visited_edge_count += task_buf.task.vid;
-          STATS(9, recv, "TASK : DONE");
-        }
+        // Update statistics.
+        ++visited_vertex_count;
+        visited_edge_count += task_buf.task.vid;
+        STATS(9, recv, "TASK : DONE");
       }
-    });
+    }
 
     if (task_count < kPeCount && queue_size > 0) {
       // Dequeue tasks from the queue.
