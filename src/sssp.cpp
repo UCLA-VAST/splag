@@ -33,7 +33,7 @@ void TaskQueue(
     tapa::istream<QueueOp>& queue_req_q,
     tapa::ostream<QueueOpResp>& queue_resp_q, tapa::ostream<Vid>& write_addr_q,
     tapa::ostream<Vertex>& write_data_q, tapa::mmap<Vertex> vertex_dup,
-    tapa::mmap<Task> heap_array_spill, tapa::mmap<Vid> heap_index) {
+    tapa::mmap<Task> heap_array_spill, tapa::async_mmap<Vid> heap_index) {
 #pragma HLS inline recursive
   // Parent   of heap_array[i]: heap_array[(i - 1) / 2]
   // Children of heap_array[i]: heap_array[i * 2 + 1], heap_array[i * 2 + 2]
@@ -56,10 +56,15 @@ heap_index_cache_init:
     if (entry.addr != vid) {
       if (entry.addr != kNullVid) {
         ++write_miss;
-        heap_index[entry.addr] = entry.payload;
+        heap_index.write_addr_write(entry.addr);
+        heap_index.write_data_write(entry.payload);
       }
+      heap_index.read_addr_write(vid);
       entry.addr = vid;
-      entry.payload = heap_index[vid];
+    read_heap_index:
+      while (!heap_index.read_data_try_read(entry.payload)) {
+#pragma HLS pipeline II = 1
+      }
       ++read_miss;
     } else {
       ++read_hit;
@@ -75,14 +80,16 @@ heap_index_cache_init:
       entry.payload = index;
     } else {
       ++write_miss;
-      heap_index[vid] = index;
+      heap_index.write_addr_write(vid);
+      heap_index.write_data_write(index);
     }
   };
   auto set_heap_index = [&](Vid vid, Vid index) {
     CHECK_NE(vid, kNullVid);
     auto& entry = heap_index_cache[vid % kMaxOnChipSize];
     if (entry.addr != vid && entry.addr != kNullVid) {
-      heap_index[entry.addr] = entry.payload;
+      heap_index.write_addr_write(entry.addr);
+      heap_index.write_data_write(entry.payload);
       ++write_miss;
     } else {
       ++write_hit;
@@ -96,7 +103,8 @@ heap_index_cache_init:
     if (entry.addr == vid) {
       entry.addr = kNullVid;
     }
-    heap_index[vid] = kNullVid;
+    heap_index.write_addr_write(vid);
+    heap_index.write_data_write(kNullVid);
   };
 
 #ifdef __SYNTHESIS__
@@ -128,7 +136,7 @@ heap_index_cache_init:
     // Check that heap_index is restored to the initial state.
     CHECK_EQ(heap_size, 0);
     for (int i = 0; i < vertex_count; ++i) {
-      CHECK_EQ(heap_index[i], kNullVid) << "i = " << i;
+      CHECK_EQ(heap_index.get()[i], kNullVid) << "i = " << i;
     }
     for (int i = 0; i < kMaxOnChipSize; ++i) {
       CHECK_EQ(heap_index_cache[i].addr, kNullVid) << "i = " << i;
