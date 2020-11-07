@@ -33,7 +33,7 @@ void TaskQueue(
     tapa::istream<QueueOp>& queue_req_q,
     tapa::ostream<QueueOpResp>& queue_resp_q, tapa::ostream<Vid>& write_addr_q,
     tapa::ostream<Vertex>& write_data_q, tapa::mmap<Vertex> vertex_dup,
-    tapa::mmap<Task> heap_array_spill, tapa::mmap<Vid> heap_index_spill) {
+    tapa::mmap<Task> heap_array_spill, tapa::mmap<Vid> heap_index) {
 #pragma HLS inline recursive
   // Parent   of heap_array[i]: heap_array[(i - 1) / 2]
   // Children of heap_array[i]: heap_array[i * 2 + 1], heap_array[i * 2 + 2]
@@ -41,23 +41,74 @@ void TaskQueue(
   Vid heap_size = 0;
 
   constexpr int kMaxOnChipSize = 4096 * 16;
-#ifdef __SYNTHESIS__
-  Task heap_array[kMaxOnChipSize];
-  Vid heap_index[kMaxOnChipSize];
-heap_index_init:
+  tapa::packet<Vid, Vid> heap_index_cache[kMaxOnChipSize];
+  int64_t read_hit = 0;
+  int64_t read_miss = 0;
+  int64_t write_hit = 0;
+  int64_t write_miss = 0;
+heap_index_cache_init:
   for (Vid i = 0; i < kMaxOnChipSize; ++i) {
 #pragma HLS pipeline II = 1
-    heap_index[i] = kNullVid;
+    heap_index_cache[i].addr = kNullVid;
   }
+  auto get_heap_index = [&](Vid vid) -> Vid {
+    auto& entry = heap_index_cache[vid % kMaxOnChipSize];
+    if (entry.addr != vid) {
+      if (entry.addr != kNullVid) {
+        ++write_miss;
+        heap_index[entry.addr] = entry.payload;
+      }
+      entry.addr = vid;
+      entry.payload = heap_index[vid];
+      ++read_miss;
+    } else {
+      ++read_hit;
+    }
+    return entry.payload;
+  };
+  auto set_heap_index_noalloc = [&](Vid vid, Vid index) {
+    CHECK_NE(vid, kNullVid);
+    auto& entry = heap_index_cache[vid % kMaxOnChipSize];
+    if (entry.addr == vid) {
+      ++write_hit;
+      entry.addr = vid;
+      entry.payload = index;
+    } else {
+      ++write_miss;
+      heap_index[vid] = index;
+    }
+  };
+  auto set_heap_index = [&](Vid vid, Vid index) {
+    CHECK_NE(vid, kNullVid);
+    auto& entry = heap_index_cache[vid % kMaxOnChipSize];
+    if (entry.addr != vid && entry.addr != kNullVid) {
+      heap_index[entry.addr] = entry.payload;
+      ++write_miss;
+    } else {
+      ++write_hit;
+    }
+    entry.addr = vid;
+    entry.payload = index;
+  };
+  auto clear_heap_index = [&](Vid vid) {
+    auto& entry = heap_index_cache[vid % kMaxOnChipSize];
+    ++write_miss;
+    if (entry.addr == vid) {
+      entry.addr = kNullVid;
+    }
+    heap_index[vid] = kNullVid;
+  };
+
+#ifdef __SYNTHESIS__
+  Task heap_array[kMaxOnChipSize];
 #else   // __SYNTHESIS__
   auto heap_array = heap_array_spill;
-  auto heap_index = heap_index_spill;
 #endif  // __SYNTHESIS__
 #pragma HLS array_partition variable = heap_array cyclic factor = 2
 #pragma HLS resource variable = heap_array core = RAM_2P_URAM latency = 2
-#pragma HLS resource variable = heap_index core = RAM_2P_URAM latency = 2
+#pragma HLS resource variable = heap_index_cache core = RAM_2P_URAM latency = 2
 #pragma HLS data_pack variable = heap_array
-#pragma HLS data_pack variable = heap_index
+#pragma HLS data_pack variable = heap_index_cache
 
   int64_t heapify_up_count = 0;
   int64_t heapify_up_total = 0;
@@ -69,11 +120,18 @@ heap_index_init:
             << 1. * heapify_up_total / heapify_up_count;
     VLOG(3) << "average heapify down trip count: "
             << 1. * heapify_down_total / heapify_down_count;
+    VLOG(3) << "read hit rate: " << read_hit * 100. / (read_hit + read_miss)
+            << "%";
+    VLOG(3) << "write hit rate: " << write_hit * 100. / (write_hit + write_miss)
+            << "%";
 
     // Check that heap_index is restored to the initial state.
     CHECK_EQ(heap_size, 0);
     for (int i = 0; i < vertex_count; ++i) {
       CHECK_EQ(heap_index[i], kNullVid) << "i = " << i;
+    }
+    for (int i = 0; i < kMaxOnChipSize; ++i) {
+      CHECK_EQ(heap_index_cache[i].addr, kNullVid) << "i = " << i;
     }
   });
 
@@ -89,7 +147,7 @@ spin:
     switch (req.op) {
       case QueueOp::PUSH: {
         const auto new_task = req.task;
-        const Vid task_index = heap_index[new_task.vid];
+        const Vid task_index = get_heap_index(new_task.vid);
         bool heapify = false;
         Vid heapify_index = task_index;
         if (task_index != kNullVid) {
@@ -103,7 +161,8 @@ spin:
           if (!(vertex_dup[new_task.vid] <= new_task.vertex)) {
             heapify = true;
             heap_array[heap_size] = new_task;
-            heap_index[new_task.vid] = heapify_index = heap_size;
+            heapify_index = heap_size;
+            set_heap_index(new_task.vid, heap_size);
             ++heap_size;
             resp.task_op = TaskOp::NEW;
           }
@@ -129,7 +188,7 @@ spin:
 
             if (i == 0 || task_i <= task_parent) break;
             heap_array[i] = task_parent;
-            heap_index[task_parent.vid] = i;
+            set_heap_index(task_parent.vid, i);
 
             VLOG_F(10, h_up)
                 << "iter:  array[" << parent << "]  -> " << task_parent;
@@ -139,7 +198,7 @@ spin:
             i = parent;
           }
           heap_array[i] = task_i;
-          heap_index[task_i.vid] = i;
+          set_heap_index(task_i.vid, i);
           VLOG_F(10, h_up) << "       array[" << i << "] <-  " << task_i;
           VLOG_F(10, h_up) << "done:  index[" << task_i.vid << "] <-  " << i;
         }
@@ -148,7 +207,7 @@ spin:
       case QueueOp::POP: {
         if (heap_size > 0) {
           const Task front = heap_array[0];
-          heap_index[front.vid] = kNullVid;
+          clear_heap_index(front.vid);
           --heap_size;
 
           resp.task_op = TaskOp::NEW;
@@ -183,12 +242,12 @@ spin:
               const Task task_max = left_is_max ? task_left : task_right;
 
               heap_array[i] = task_max;
-              heap_index[task_max.vid] = i;
+              set_heap_index(task_max.vid, i);
 
               i = max;
             }
             heap_array[i] = task_i;
-            heap_index[task_i.vid] = i;
+            set_heap_index(task_i.vid, i);
           }
         }
         break;
