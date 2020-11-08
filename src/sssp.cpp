@@ -33,7 +33,7 @@ void TaskQueue(
     tapa::istream<QueueOp>& queue_req_q,
     tapa::ostream<QueueOpResp>& queue_resp_q, tapa::ostream<Vid>& write_addr_q,
     tapa::ostream<Vertex>& write_data_q, tapa::mmap<Vertex> vertex_dup,
-    tapa::mmap<Task> heap_array_spill, tapa::async_mmap<Vid> heap_index) {
+    tapa::mmap<Task> heap_array, tapa::async_mmap<Vid> heap_index) {
 #pragma HLS inline recursive
   // Parent   of heap_array[i]: heap_array[(i - 1) / 2]
   // Children of heap_array[i]: heap_array[i * 2 + 1], heap_array[i * 2 + 2]
@@ -42,6 +42,8 @@ void TaskQueue(
 
   constexpr int kMaxOnChipSize = 4096 * 16;
   tapa::packet<Vid, Vid> heap_index_cache[kMaxOnChipSize];
+#pragma HLS resource variable = heap_index_cache core = RAM_2P_URAM latency = 2
+#pragma HLS data_pack variable = heap_index_cache
   int64_t read_hit = 0;
   int64_t read_miss = 0;
   int64_t write_hit = 0;
@@ -107,27 +109,40 @@ heap_index_cache_init:
     heap_index.write_data_write(kNullVid);
   };
 
-#ifdef __SYNTHESIS__
-  Task heap_array[kMaxOnChipSize];
-#else   // __SYNTHESIS__
-  auto heap_array = heap_array_spill;
-#endif  // __SYNTHESIS__
-#pragma HLS array_partition variable = heap_array cyclic factor = 2
-#pragma HLS resource variable = heap_array core = RAM_2P_URAM latency = 2
-#pragma HLS resource variable = heap_index_cache core = RAM_2P_URAM latency = 2
-#pragma HLS data_pack variable = heap_array
-#pragma HLS data_pack variable = heap_index_cache
+  Task heap_array_cache[kMaxOnChipSize];
+#pragma HLS array_partition variable = heap_array_cache cyclic factor = 2
+#pragma HLS resource variable = heap_array_cache core = RAM_2P_URAM latency = 2
+#pragma HLS data_pack variable = heap_array_cache
 
+  auto get_heap_elem = [&](Vid vid) {
+    return vid < kMaxOnChipSize ? heap_array_cache[vid]
+                                : heap_array[vid - kMaxOnChipSize];
+  };
+  auto set_heap_elem = [&](Vid vid, Task task) {
+    if (vid < kMaxOnChipSize) {
+      heap_array_cache[vid] = task;
+    } else {
+      heap_array[vid - kMaxOnChipSize] = task;
+    }
+  };
+
+  // Performance counters.
   int64_t heapify_up_count = 0;
-  int64_t heapify_up_total = 0;
+  int64_t heapify_up_on_chip = 0;
+  int64_t heapify_up_off_chip = 0;
   int64_t heapify_down_count = 0;
-  int64_t heapify_down_total = 0;
+  int64_t heapify_down_on_chip = 0;
+  int64_t heapify_down_off_chip = 0;
 
   CLEAN_UP(clean_up, [&]() {
-    VLOG(3) << "average heapify up trip count: "
-            << 1. * heapify_up_total / heapify_up_count;
-    VLOG(3) << "average heapify down trip count: "
-            << 1. * heapify_down_total / heapify_down_count;
+    VLOG(3) << "average heapify up trip count (on-chip): "
+            << 1. * heapify_up_on_chip / heapify_up_count;
+    VLOG(3) << "average heapify up trip count (off-chip): "
+            << 1. * heapify_up_off_chip / heapify_up_count;
+    VLOG(3) << "average heapify down trip count (on-chip): "
+            << 1. * heapify_down_on_chip / heapify_down_count;
+    VLOG(3) << "average heapify down trip count (off-chip): "
+            << 1. * heapify_down_off_chip / heapify_down_count;
     VLOG(3) << "read hit rate: " << read_hit * 100. / (read_hit + read_miss)
             << "%";
     VLOG(3) << "write hit rate: " << write_hit * 100. / (write_hit + write_miss)
@@ -159,18 +174,15 @@ spin:
         bool heapify = false;
         Vid heapify_index = task_index;
         if (task_index != kNullVid) {
-          const Task old_task = heap_array[task_index];
+          const Task old_task = get_heap_elem(task_index);
           CHECK_EQ(old_task.vid, new_task.vid);
           if (!(new_task <= old_task)) {
             heapify = true;
-            heap_array[task_index] = new_task;
           }
         } else {
           if (!(vertex_dup[new_task.vid] <= new_task.vertex)) {
             heapify = true;
-            heap_array[heap_size] = new_task;
             heapify_index = heap_size;
-            set_heap_index(new_task.vid, heap_size);
             ++heap_size;
             resp.task_op = TaskOp::NEW;
           }
@@ -182,39 +194,52 @@ spin:
           vertex_dup[new_task.vid] = new_task.vertex;
           // Increase the priority of heap_array[i] if necessary.
           Vid i = heapify_index;
-          const Task task_i = heap_array[i];
-          VLOG_F(10, h_up) << "start: array[" << i << "]  -> " << task_i;
+          const Task task_i = new_task;
 
           ++heapify_up_count;
 
-        heapify_up:
-          for (;;) {
-#pragma HLS pipeline II = 3
-            ++heapify_up_total;
-            const Vid parent = (i - 1) / 2;
-            const Task task_parent = heap_array[parent];
+          auto get_parent = [](Vid i) { return (i - 1) / 2; };
+          Vid parent = get_parent(i);
+          Task task_parent = get_heap_elem(parent);
 
-            if (i == 0 || task_i <= task_parent) break;
-            heap_array[i] = task_parent;
+        heapify_up_off_chip:
+          for (; !(get_parent(parent) < kMaxOnChipSize) &&
+                 !(task_i <= task_parent);) {
+#pragma HLS pipeline
+            ++heapify_up_off_chip;
+
+            CHECK_GE(i, kMaxOnChipSize);
+            heap_array[i - kMaxOnChipSize] = task_parent;
             set_heap_index(task_parent.vid, i);
 
-            VLOG_F(10, h_up)
-                << "iter:  array[" << parent << "]  -> " << task_parent;
-            VLOG_F(10, h_up) << "       array[" << i << "] <-  " << task_parent;
-            VLOG_F(10, h_up)
-                << "       index[" << task_parent.vid << "] <-  " << i;
             i = parent;
+            parent = get_parent(parent);
+            CHECK_GE(parent, kMaxOnChipSize);
+            task_parent = heap_array[parent - kMaxOnChipSize];
           }
-          heap_array[i] = task_i;
+
+        heapify_up_on_chip:
+          for (; i > 0 && !(task_i <= task_parent);) {
+#pragma HLS pipeline II = 3
+            ++heapify_up_on_chip;
+
+            set_heap_elem(i, task_parent);
+            set_heap_index(task_parent.vid, i);
+
+            i = parent;
+            parent = get_parent(parent);
+            CHECK_LT(parent, kMaxOnChipSize);
+            task_parent = heap_array_cache[parent];
+          }
+
+          set_heap_elem(i, task_i);
           set_heap_index(task_i.vid, i);
-          VLOG_F(10, h_up) << "       array[" << i << "] <-  " << task_i;
-          VLOG_F(10, h_up) << "done:  index[" << task_i.vid << "] <-  " << i;
         }
         break;
       }
       case QueueOp::POP: {
         if (heap_size > 0) {
-          const Task front = heap_array[0];
+          const Task front = heap_array_cache[0];
           clear_heap_index(front.vid);
           --heap_size;
 
@@ -225,36 +250,57 @@ spin:
             ++heapify_down_count;
 
             // Find proper index `i` for `task_i`.
-            const Task task_i = heap_array[heap_size];
+            const Task task_i = get_heap_elem(heap_size);
             Vid i = 0;
 
-          heapify_down:
-            for (;;) {
+            auto left_is_valid = [&] { return i * 2 + 1 < heap_size; };
+            auto right_is_valid = [&] { return i * 2 + 2 < heap_size; };
+            auto left = [&] { return (left_is_valid() ? i : 0) * 2 + 1; };
+            auto right = [&] { return (right_is_valid() ? i + 1 : 1) * 2; };
+            Task task_left = get_heap_elem(left());
+            Task task_right = get_heap_elem(right());
+            auto left_is_max = [&] {
+              return !right_is_valid() ||
+                     (left_is_valid() && task_right <= task_left);
+            };
+            auto max = [&] { return left_is_max() ? left() : right(); };
+            Task task_max = left_is_max() ? task_left : task_right;
+            auto not_heapified = [&] {
+              return ((left_is_valid() && !(task_left <= task_i)) ||
+                      (right_is_valid() && !(task_right <= task_i)));
+            };
+
+          heapify_down_on_chip:
+            for (; max() * 2 + 2 < kMaxOnChipSize && not_heapified();) {
 #pragma HLS pipeline II = 3
-              ++heapify_down_total;
-              const Vid left = i * 2 + 1;
-              const Vid right = i * 2 + 2;
-              const bool left_is_valid = left < heap_size;
-              const bool right_is_valid = right < heap_size;
-              const Task task_left =
-                  heap_array[(left_is_valid ? left : 1) / 2 * 2 + 1];
-              const Task task_right =
-                  heap_array[(right_is_valid ? right : 2) / 2 * 2];
-              const bool left_is_ok = !left_is_valid || task_left <= task_i;
-              const bool right_is_ok = !right_is_valid || task_right <= task_i;
-              if (left_is_ok && right_is_ok) break;
+              ++heapify_down_on_chip;
 
-              const bool left_is_max =
-                  !right_is_valid || (left_is_valid && task_right <= task_left);
-              const Vid max = left_is_max ? left : right;
-              const Task task_max = left_is_max ? task_left : task_right;
-
-              heap_array[i] = task_max;
+              CHECK_LT(i, kMaxOnChipSize);
+              heap_array_cache[i] = task_max;
               set_heap_index(task_max.vid, i);
 
-              i = max;
+              i = max();
+              CHECK_LT(right(), kMaxOnChipSize);
+              task_left = heap_array_cache[left()];
+              task_right = heap_array_cache[right()];
+              task_max = left_is_max() ? task_left : task_right;
             }
-            heap_array[i] = task_i;
+
+          heapify_down_off_chip:
+            for (; not_heapified();) {
+#pragma HLS pipeline
+              ++heapify_down_off_chip;
+
+              set_heap_elem(i, task_max);
+              set_heap_index(task_max.vid, i);
+
+              i = max();
+              task_left = get_heap_elem(left());
+              task_right = get_heap_elem(right());
+              task_max = left_is_max() ? task_left : task_right;
+            }
+
+            set_heap_elem(i, task_i);
             set_heap_index(task_i.vid, i);
           }
         }
