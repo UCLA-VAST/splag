@@ -29,11 +29,6 @@ constexpr int kVertexUpdateDepDist = 3 + 1;  // II + 1
 struct Vertex {
   Vid parent;
   float distance;
-
-  // Compares distance.
-  bool operator<=(const Vertex& other) const {
-    return bit_cast<uint32_t>(distance) <= bit_cast<uint32_t>(other.distance);
-  }
 };
 
 inline std::ostream& operator<<(std::ostream& os, const Vertex& obj) {
@@ -74,7 +69,10 @@ struct Task {
   uint32_t padding;
 
   // Compares priority.
-  bool operator<=(const Task& other) const { return other.vertex <= vertex; }
+  bool operator<=(const Task& other) const {
+    return bit_cast<uint32_t>(vertex.distance) >=
+           bit_cast<uint32_t>(other.vertex.distance);
+  }
 };
 
 inline std::ostream& operator<<(std::ostream& os, const Task& obj) {

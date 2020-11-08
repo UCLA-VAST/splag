@@ -32,7 +32,7 @@ void TaskQueue(
     // Queue requests.
     tapa::istream<QueueOp>& queue_req_q,
     tapa::ostream<QueueOpResp>& queue_resp_q, tapa::ostream<Vid>& write_addr_q,
-    tapa::ostream<Vertex>& write_data_q, tapa::mmap<Vertex> vertex_dup,
+    tapa::ostream<Vertex>& write_data_q, tapa::mmap<float> distances,
     tapa::mmap<Task> heap_array, tapa::async_mmap<Vid> heap_index) {
 #pragma HLS inline recursive
   // Parent   of heap_array[i]: heap_array[(i - 1) / 2]
@@ -180,7 +180,8 @@ spin:
             heapify = true;
           }
         } else {
-          if (!(vertex_dup[new_task.vid] <= new_task.vertex)) {
+          if (!(bit_cast<uint32_t>(distances[new_task.vid]) <=
+                bit_cast<uint32_t>(new_task.vertex.distance))) {
             heapify = true;
             heapify_index = heap_size;
             ++heap_size;
@@ -191,7 +192,7 @@ spin:
         if (heapify) {
           write_addr_q.write(new_task.vid);
           write_data_q.write(new_task.vertex);
-          vertex_dup[new_task.vid] = new_task.vertex;
+          distances[new_task.vid] = new_task.vertex.distance;
           // Increase the priority of heap_array[i] if necessary.
           Vid i = heapify_index;
           const Task task_i = new_task;
@@ -621,7 +622,7 @@ spin:
 
 void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
           tapa::mmap<Edge> edges, tapa::mmap<Index> indices,
-          tapa::mmap<Vertex> vertices, tapa::mmap<Vertex> vertex_dup,
+          tapa::mmap<Vertex> vertices, tapa::mmap<float> distances,
           tapa::mmap<Task> heap_array, tapa::mmap<Vid> heap_index) {
   tapa::stream<QueueOp, 256> queue_req_q("queue_req");
   tapa::stream<QueueOpResp, 2> queue_resp_q("queue_resp");
@@ -659,7 +660,7 @@ void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
       .invoke<0>(Dispatcher, root, metadata, task_req_q, task_resp_q,
                  queue_req_q, queue_resp_q)
       .invoke<-1>(TaskQueue, vertex_count, root, queue_req_q, queue_resp_q,
-                  vertex_write_addr_q, vertex_write_data_q, vertex_dup,
+                  vertex_write_addr_q, vertex_write_data_q, distances,
                   heap_array, heap_index)
 
       // For edges.

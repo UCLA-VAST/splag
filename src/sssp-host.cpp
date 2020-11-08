@@ -282,7 +282,7 @@ void Refine(
 
 void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
           tapa::mmap<Edge> edges, tapa::mmap<Index> indices,
-          tapa::mmap<Vertex> vertices, tapa::mmap<Vertex> vertices_dup,
+          tapa::mmap<Vertex> vertices, tapa::mmap<float> vertices_dup,
           tapa::mmap<Task> heap_array, tapa::mmap<Vid> heap_index);
 
 int main(int argc, char* argv[]) {
@@ -384,8 +384,7 @@ int main(int argc, char* argv[]) {
   // Other kernel arguments.
   aligned_vector<int64_t> metadata(5);
   aligned_vector<Vertex> vertices(tapa::round_up<kVertexVecLen>(vertex_count));
-  aligned_vector<Vertex> vertex_dup(
-      tapa::round_up<kVertexVecLen>(vertex_count));
+  aligned_vector<float> distances(vertex_count);
   aligned_vector<Task> heap_array(vertex_count);
   aligned_vector<Vid> heap_index(vertex_count);
 
@@ -399,14 +398,13 @@ int main(int argc, char* argv[]) {
 
     std::fill(vertices.begin(), vertices.end(),
               Vertex{.parent = kNullVid, .distance = kInfDistance});
-    std::fill(vertex_dup.begin(), vertex_dup.end(),
-              Vertex{.parent = kNullVid, .distance = kInfDistance});
+    std::fill(distances.begin(), distances.end(), kInfDistance);
     std::fill(heap_index.begin(), heap_index.end(), kNullVid);
     vertices[root] = {.parent = Vid(root), .distance = 0.f};
 
     unsetenv("KERNEL_TIME_NS");
     auto tic = steady_clock::now();
-    SSSP(vertex_count, root, metadata, edges, indices, vertices, vertex_dup,
+    SSSP(vertex_count, root, metadata, edges, indices, vertices, distances,
          heap_array, heap_index);
     double elapsed_time =
         1e-9 * duration_cast<nanoseconds>(steady_clock::now() - tic).count();
