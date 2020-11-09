@@ -520,12 +520,10 @@ void Dispatcher(
   bool queue_buf_valid = false;
   QueueOpResp queue_buf;
 
-  int task_count = 1;                       // Number of active tasks.
-  int queue_size = 0;                       // Number of tasks in the queue.
-  DECL_ARRAY(bool, busy, kPeCount, false);  // Busy state of each PE.
+  int task_count = 1;  // Number of active tasks.
+  int queue_size = 0;  // Number of tasks in the queue.
 
   task_req_q[0].write(root);
-  busy[0] = true;
 
   // Statistics.
   int64_t visited_vertex_count = 0;
@@ -581,15 +579,13 @@ spin:
     }
 
     // Assign tasks to PEs.
-    UNUSED SET(busy[pe], RESET(queue_buf_valid,
-                               task_req_q[pe].try_write(queue_buf.task.vid)));
+    UNUSED RESET(queue_buf_valid, task_req_q[pe].try_write(queue_buf.task.vid));
 
     // Receive tasks generated from PEs.
     if (SET(task_buf_valid, task_resp_q[pe].try_read(task_buf))) {
       if (task_buf.op == TaskOp::DONE) {
         task_buf_valid = false;
         --task_count;
-        busy[pe] = false;
 
         // Update statistics.
         ++visited_vertex_count;
@@ -598,7 +594,7 @@ spin:
       }
     }
 
-    if (task_count < kPeCount && queue_size > 0) {
+    if (task_count < kPeCount * 2 && queue_size > 0) {
       // Dequeue tasks from the queue.
       if (queue_req_q.try_write({.op = QueueOp::POP, .task = {}})) {
         ++task_count;
