@@ -218,7 +218,7 @@ spin:
           }
 
         heapify_up_on_chip:
-          for (; i > 0 && !(task_i <= task_parent);) {
+          for (; i != 0 && !(task_i <= task_parent);) {
 #pragma HLS pipeline II = 3
             ++heapify_up_on_chip;
 
@@ -237,7 +237,7 @@ spin:
         break;
       }
       case QueueOp::POP: {
-        if (heap_size > 0) {
+        if (heap_size != 0) {
           const Task front = heap_array_cache[0];
           clear_heap_index(front.vid);
           --heap_size;
@@ -245,7 +245,7 @@ spin:
           resp.task_op = TaskOp::NEW;
           resp.task = front;
 
-          if (heap_size > 0) {
+          if (heap_size != 0) {
             ++heapify_down_count;
 
             // Find proper index `i` for `task_i`.
@@ -542,7 +542,7 @@ void Dispatcher(
 
 spin:
   for (uint8_t pe = 0;
-       queue_size > 0 || task_count > 0 || !queue_resp_q.empty();
+       queue_size != 0 || task_count != 0 || !queue_resp_q.empty();
        pe = pe == kPeCount - 1 ? 0 : pe + 1) {
 #pragma HLS pipeline II = 1
     // Process response messages from the queue.
