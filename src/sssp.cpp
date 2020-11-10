@@ -527,7 +527,7 @@ void Dispatcher(
   int32_t visited_vertex_count = 0;
   int32_t visited_edge_count = 0;
   int32_t queue_count = 0;
-  int32_t total_queue_size = 0;
+  int64_t total_queue_size = 0;
   int32_t max_queue_size = 0;
 
   // Format log messages.
