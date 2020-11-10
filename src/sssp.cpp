@@ -44,10 +44,10 @@ void TaskQueue(
   tapa::packet<Vid, Vid> heap_index_cache[kMaxOnChipSize];
 #pragma HLS resource variable = heap_index_cache core = RAM_2P_URAM latency = 2
 #pragma HLS data_pack variable = heap_index_cache
-  int64_t read_hit = 0;
-  int64_t read_miss = 0;
-  int64_t write_hit = 0;
-  int64_t write_miss = 0;
+  int32_t read_hit = 0;
+  int32_t read_miss = 0;
+  int32_t write_hit = 0;
+  int32_t write_miss = 0;
 heap_index_cache_init:
   for (Vid i = 0; i < kMaxOnChipSize; ++i) {
 #pragma HLS pipeline II = 1
@@ -127,12 +127,12 @@ heap_index_cache_init:
   };
 
   // Performance counters.
-  int64_t heapify_up_count = 0;
-  int64_t heapify_up_on_chip = 0;
-  int64_t heapify_up_off_chip = 0;
-  int64_t heapify_down_count = 0;
-  int64_t heapify_down_on_chip = 0;
-  int64_t heapify_down_off_chip = 0;
+  int32_t heapify_up_count = 0;
+  int32_t heapify_up_on_chip = 0;
+  int32_t heapify_up_off_chip = 0;
+  int32_t heapify_down_count = 0;
+  int32_t heapify_down_on_chip = 0;
+  int32_t heapify_down_off_chip = 0;
 
   CLEAN_UP(clean_up, [&]() {
     VLOG(3) << "average heapify up trip count (on-chip): "
@@ -520,17 +520,17 @@ void Dispatcher(
   bool queue_buf_valid = false;
   QueueOpResp queue_buf;
 
-  int task_count = 1;  // Number of active tasks.
-  int queue_size = 0;  // Number of tasks in the queue.
+  int32_t task_count = 1;  // Number of active tasks.
+  int32_t queue_size = 0;  // Number of tasks in the queue.
 
   task_req_q[0].write(root);
 
   // Statistics.
-  int64_t visited_vertex_count = 0;
-  int64_t visited_edge_count = 0;
-  int64_t queue_count = 0;
-  int64_t total_queue_size = 0;
-  int64_t max_queue_size = 0;
+  int32_t visited_vertex_count = 0;
+  int32_t visited_edge_count = 0;
+  int32_t queue_count = 0;
+  int32_t total_queue_size = 0;
+  int32_t max_queue_size = 0;
 
   // Format log messages.
 #define STATS(leve, tag, content)                                              \
