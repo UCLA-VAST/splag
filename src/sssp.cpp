@@ -627,7 +627,7 @@ void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
   tapa::streams<Edge, kPeCount, 2> task_s0_q("task_stage0");
   tapa::streams<Update, kPeCount, 64> task_s1p0_q("task_stage1_part0");
   tapa::streams<float, kPeCount, 2> task_s1p1_q("task_stage1_part1");
-  tapa::streams<TaskOp, kPeCount, 2> task_resp_q("task_resp");
+  tapa::streams<TaskOp, kPeCount, 256> task_resp_q("task_resp");
 
   // For edges.
   tapa::streams<Vid, kPeCount, 2> edge_read_addr_q("edge_read_addr");
