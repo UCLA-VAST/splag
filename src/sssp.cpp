@@ -576,6 +576,18 @@ spin:
           }
           break;
       }
+    } else if (task_count < kPeCount * 2 && queue_size != 0) {
+      // Dequeue tasks from the queue.
+      if (queue_req_q.try_write({.op = QueueOp::POP, .task = {}})) {
+        ++task_count;
+        STATS(9, send, "QUEUE: POP ");
+      }
+    } else if (RESET(task_buf_valid,
+                     queue_req_q.try_write(
+                         {.op = QueueOp::PUSH, .task = task_buf.task}))) {
+      // Enqueue tasks generated from PEs.
+      ++queue_size;
+      STATS(9, send, "QUEUE: PUSH");
     }
 
     // Assign tasks to PEs.
@@ -592,20 +604,6 @@ spin:
         visited_edge_count += task_buf.task.vid;
         STATS(9, recv, "TASK : DONE");
       }
-    }
-
-    if (task_count < kPeCount * 2 && queue_size > 0) {
-      // Dequeue tasks from the queue.
-      if (queue_req_q.try_write({.op = QueueOp::POP, .task = {}})) {
-        ++task_count;
-        STATS(9, send, "QUEUE: POP ");
-      }
-    } else if (RESET(task_buf_valid,
-                     queue_req_q.try_write(
-                         {.op = QueueOp::PUSH, .task = task_buf.task}))) {
-      // Enqueue tasks generated from PEs.
-      ++queue_size;
-      STATS(9, send, "QUEUE: PUSH");
     }
   }
 
