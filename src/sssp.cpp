@@ -27,8 +27,6 @@ constexpr int kMemLatency = 50;
 // Each pop removes a task if the queue is not empty, otherwise the response
 // indicates that the queue is empty.
 void TaskQueue(
-    // Scalars.
-    const Vid vertex_count, const Vid root,
     // Queue requests.
     tapa::istream<QueueOp>& queue_req_q,
     tapa::ostream<QueueOpResp>& queue_resp_q, tapa::ostream<Vid>& write_addr_q,
@@ -150,7 +148,7 @@ heap_index_cache_init:
 
     // Check that heap_index is restored to the initial state.
     CHECK_EQ(heap_size, 0);
-    for (int i = 0; i < vertex_count; ++i) {
+    for (int i = 0; i < heap_index.size(); ++i) {
       CHECK_EQ(heap_index.get()[i], kNullVid) << "i = " << i;
     }
     for (int i = 0; i < kMaxOnChipSize; ++i) {
@@ -653,9 +651,8 @@ void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
   tapa::task()
       .invoke<0>(Dispatcher, root, metadata, task_req_q, task_resp_q,
                  queue_req_q, queue_resp_q)
-      .invoke<-1>(TaskQueue, vertex_count, root, queue_req_q, queue_resp_q,
-                  vertex_write_addr_q, vertex_write_data_q, distances,
-                  heap_array, heap_index)
+      .invoke<-1>(TaskQueue, queue_req_q, queue_resp_q, vertex_write_addr_q,
+                  vertex_write_data_q, distances, heap_array, heap_index)
 
       // For edges.
       .invoke<-1>(EdgeMem, edge_read_addr_qi, edge_read_data_qi, edges)
