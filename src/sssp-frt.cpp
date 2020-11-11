@@ -17,8 +17,10 @@
 
 void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
           tapa::mmap<Edge> edges, tapa::mmap<Index> indices,
-          tapa::mmap<Vertex> vertices, tapa::mmap<float> distances,
-          tapa::mmap<Task> heap_array, tapa::mmap<Vid> heap_index) {
+          tapa::mmap<Vertex> vertices, tapa::mmap<float> distances_0,
+          tapa::mmap<float> distances_1, tapa::mmap<Task> heap_array_0,
+          tapa::mmap<Task> heap_array_1, tapa::mmap<Vid> heap_index_0,
+          tapa::mmap<Vid> heap_index_1) {
   auto kernel_time_ns_raw =
       mmap(nullptr, sizeof(int64_t), PROT_READ | PROT_WRITE,
            MAP_SHARED | MAP_ANONYMOUS, /*fd=*/-1, /*offset=*/0);
@@ -45,9 +47,16 @@ void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
   auto edges_arg = fpga::WriteOnly(edges.get(), edges.size());
   auto indices_arg = fpga::WriteOnly(indices.get(), indices.size());
   auto vertices_arg = fpga::ReadWrite(vertices.get(), vertices.size());
-  auto distances_arg = fpga::WriteOnly(distances.get(), distances.size());
-  auto heap_array_arg = fpga::Placeholder(heap_array.get(), heap_array.size());
-  auto heap_index_arg = fpga::Placeholder(heap_index.get(), heap_index.size());
+  auto distances_arg_0 = fpga::WriteOnly(distances_0.get(), distances_0.size());
+  auto distances_arg_1 = fpga::WriteOnly(distances_1.get(), distances_1.size());
+  auto heap_array_arg_0 =
+      fpga::Placeholder(heap_array_0.get(), heap_array_0.size());
+  auto heap_array_arg_1 =
+      fpga::Placeholder(heap_array_1.get(), heap_array_1.size());
+  auto heap_index_arg_0 =
+      fpga::Placeholder(heap_index_0.get(), heap_index_0.size());
+  auto heap_index_arg_1 =
+      fpga::Placeholder(heap_index_1.get(), heap_index_1.size());
 
   int arg_idx = 0;
   instance.SetArg(arg_idx++, vertex_count);
@@ -60,12 +69,18 @@ void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
   instance.SetArg(arg_idx++, indices_arg);
   instance.AllocBuf(arg_idx, vertices_arg);
   instance.SetArg(arg_idx++, vertices_arg);
-  instance.AllocBuf(arg_idx, distances_arg);
-  instance.SetArg(arg_idx++, distances_arg);
-  instance.AllocBuf(arg_idx, heap_array_arg);
-  instance.SetArg(arg_idx++, heap_array_arg);
-  instance.AllocBuf(arg_idx, heap_index_arg);
-  instance.SetArg(arg_idx++, heap_index_arg);
+  instance.AllocBuf(arg_idx, distances_arg_0);
+  instance.SetArg(arg_idx++, distances_arg_0);
+  instance.AllocBuf(arg_idx, distances_arg_1);
+  instance.SetArg(arg_idx++, distances_arg_1);
+  instance.AllocBuf(arg_idx, heap_array_arg_0);
+  instance.SetArg(arg_idx++, heap_array_arg_0);
+  instance.AllocBuf(arg_idx, heap_array_arg_1);
+  instance.SetArg(arg_idx++, heap_array_arg_1);
+  instance.AllocBuf(arg_idx, heap_index_arg_0);
+  instance.SetArg(arg_idx++, heap_index_arg_0);
+  instance.AllocBuf(arg_idx, heap_index_arg_1);
+  instance.SetArg(arg_idx++, heap_index_arg_1);
 
   instance.WriteToDevice();
   instance.Exec();

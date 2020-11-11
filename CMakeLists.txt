@@ -42,9 +42,12 @@ add_xocc_hw_link_targets(
   --sp=SSSP.edges:HBM[16]
   --sp=SSSP.indices:HBM[17]
   --sp=SSSP.vertices:HBM[18]
-  --sp=SSSP.distances:HBM[19]
-  --sp=SSSP.heap_array:HBM[20]
-  --sp=SSSP.heap_index:HBM[21]
+  --sp=SSSP.distances_0:HBM[19]
+  --sp=SSSP.distances_1:HBM[19]
+  --sp=SSSP.heap_array_0:HBM[20]
+  --sp=SSSP.heap_array_1:HBM[20]
+  --sp=SSSP.heap_index_0:HBM[21]
+  --sp=SSSP.heap_index_1:HBM[21]
   --vivado.prop=run.impl_1.STRATEGY=Performance_EarlyBlockPlacement
   --vivado.prop=run.impl_1.STEPS.OPT_DESIGN.TCL.PRE=${CMAKE_CURRENT_SOURCE_DIR}/constraint.tcl
   INPUT sssp-hw-xo

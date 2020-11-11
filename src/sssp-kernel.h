@@ -89,6 +89,7 @@ inline std::ostream& operator<<(std::ostream& os, const QueueOpResp& obj) {
   if (obj.queue_op == QueueOp::POP && obj.task_op == TaskOp::NEW) {
     os << ", task: " << obj.task;
   }
+  os << ", queue_size: " << obj.queue_size;
   return os << "}";
 }
 

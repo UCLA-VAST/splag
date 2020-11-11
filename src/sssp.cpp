@@ -11,6 +11,8 @@
 // Estimated DRAM latency.
 constexpr int kMemLatency = 50;
 
+constexpr int kQueueCount = 2;
+
 // Verbosity definitions:
 //   v=5: O(1)
 //   v=8: O(#vertex)
@@ -27,18 +29,21 @@ constexpr int kMemLatency = 50;
 // Each pop removes a task if the queue is not empty, otherwise the response
 // indicates that the queue is empty.
 void TaskQueue(
+    // Scalar
+    Vid qid,
     // Queue requests.
     tapa::istream<QueueOp>& queue_req_q,
-    tapa::ostream<QueueOpResp>& queue_resp_q, tapa::ostream<Vid>& write_addr_q,
-    tapa::ostream<Vertex>& write_data_q, tapa::mmap<float> distances,
-    tapa::mmap<Task> heap_array, tapa::mmap<Vid> heap_index) {
+    tapa::ostream<QueueOpResp>& queue_resp_q,
+    tapa::ostream<tapa::packet<Vid, Vertex>>& write_q,
+    tapa::mmap<float> distances, tapa::mmap<Task> heap_array,
+    tapa::mmap<Vid> heap_index) {
 #pragma HLS inline recursive
   // Parent   of heap_array[i]: heap_array[(i - 1) / 2]
   // Children of heap_array[i]: heap_array[i * 2 + 1], heap_array[i * 2 + 2]
   // Heap rule: child <= parent
   Vid heap_size = 0;
 
-  constexpr int kMaxOnChipSize = 4096 * 16;
+  constexpr int kMaxOnChipSize = 4096 * 8;
   tapa::packet<Vid, Vid> heap_index_cache[kMaxOnChipSize];
 #pragma HLS resource variable = heap_index_cache core = RAM_2P_URAM latency = 2
 #pragma HLS data_pack variable = heap_index_cache
@@ -52,7 +57,7 @@ heap_index_cache_init:
     heap_index_cache[i].addr = kNullVid;
   }
   auto get_heap_index = [&](Vid vid) -> Vid {
-    auto& entry = heap_index_cache[vid % kMaxOnChipSize];
+    auto& entry = heap_index_cache[vid / kQueueCount % kMaxOnChipSize];
     if (entry.addr != vid) {
       if (entry.addr != kNullVid) {
         ++write_miss;
@@ -68,7 +73,7 @@ heap_index_cache_init:
   };
   auto set_heap_index_noalloc = [&](Vid vid, Vid index) {
     CHECK_NE(vid, kNullVid);
-    auto& entry = heap_index_cache[vid % kMaxOnChipSize];
+    auto& entry = heap_index_cache[vid / kQueueCount % kMaxOnChipSize];
     if (entry.addr == vid) {
       ++write_hit;
       entry.addr = vid;
@@ -80,7 +85,7 @@ heap_index_cache_init:
   };
   auto set_heap_index = [&](Vid vid, Vid index) {
     CHECK_NE(vid, kNullVid);
-    auto& entry = heap_index_cache[vid % kMaxOnChipSize];
+    auto& entry = heap_index_cache[vid / kQueueCount % kMaxOnChipSize];
     if (entry.addr != vid && entry.addr != kNullVid) {
       heap_index[entry.addr] = entry.payload;
       ++write_miss;
@@ -91,7 +96,7 @@ heap_index_cache_init:
     entry.payload = index;
   };
   auto clear_heap_index = [&](Vid vid) {
-    auto& entry = heap_index_cache[vid % kMaxOnChipSize];
+    auto& entry = heap_index_cache[vid / kQueueCount % kMaxOnChipSize];
     ++write_miss;
     if (entry.addr == vid) {
       entry.addr = kNullVid;
@@ -104,15 +109,18 @@ heap_index_cache_init:
 #pragma HLS resource variable = heap_array_cache core = RAM_2P_URAM latency = 2
 #pragma HLS data_pack variable = heap_array_cache
 
-  auto get_heap_elem = [&](Vid vid) {
-    return vid < kMaxOnChipSize ? heap_array_cache[vid]
-                                : heap_array[vid - kMaxOnChipSize];
+  auto get_heap_array_index = [&](Vid i) {
+    return (i - kMaxOnChipSize) * kQueueCount + qid;
   };
-  auto set_heap_elem = [&](Vid vid, Task task) {
-    if (vid < kMaxOnChipSize) {
-      heap_array_cache[vid] = task;
+  auto get_heap_elem = [&](Vid i) {
+    return i < kMaxOnChipSize ? heap_array_cache[i]
+                              : heap_array[get_heap_array_index(i)];
+  };
+  auto set_heap_elem = [&](Vid i, Task task) {
+    if (i < kMaxOnChipSize) {
+      heap_array_cache[i] = task;
     } else {
-      heap_array[vid - kMaxOnChipSize] = task;
+      heap_array[get_heap_array_index(i)] = task;
     }
   };
 
@@ -182,8 +190,7 @@ spin:
         }
 
         if (heapify) {
-          write_addr_q.write(new_task.vid);
-          write_data_q.write(new_task.vertex);
+          write_q.write({new_task.vid, new_task.vertex});
           distances[new_task.vid] = new_task.vertex.distance;
           // Increase the priority of heap_array[i] if necessary.
           Vid i = heapify_index;
@@ -202,13 +209,13 @@ spin:
             ++heapify_up_off_chip;
 
             CHECK_GE(i, kMaxOnChipSize);
-            heap_array[i - kMaxOnChipSize] = task_parent;
+            heap_array[get_heap_array_index(i)] = task_parent;
             set_heap_index(task_parent.vid, i);
 
             i = parent;
             parent = get_parent(parent);
             CHECK_GE(parent, kMaxOnChipSize);
-            task_parent = heap_array[parent - kMaxOnChipSize];
+            task_parent = heap_array[get_heap_array_index(parent)];
           }
 
         heapify_up_on_chip:
@@ -496,6 +503,59 @@ spin:
   }
 }
 
+void QueueReqArbiter(tapa::istream<QueueOp>& req_in_q,
+                     tapa::ostreams<QueueOp, kQueueCount>& req_out_q) {
+  DECL_BUF(QueueOp, req);
+spin:
+  for (;;) {
+#pragma HLS pipeline II = 1
+    UNUSED SET(req_valid, req_in_q.try_read(req));
+    if (req_valid) {
+      switch (req.op) {
+        case QueueOp::PUSH:
+          UNUSED RESET(req_valid,
+                       req_out_q[req.task.vid % kQueueCount].try_write(req));
+          break;
+        case QueueOp::POP:
+          RANGE(q, kQueueCount, req_out_q[q].write(req));
+          req_valid = false;
+          break;
+      }
+    }
+  }
+}
+
+void QueueRespArbiter(tapa::istreams<QueueOpResp, kQueueCount>& resp_in_q,
+                      tapa::ostream<QueueOpResp>& resp_out_q) {
+  DECL_BUF(QueueOpResp, resp);
+  DECL_ARRAY(int32_t, queue_size, kQueueCount, 0);
+  int32_t total_queue_size = 0;
+spin:
+  for (uint8_t q = 0;; ++q) {
+#pragma HLS pipeline II = 1
+    if (SET(resp_valid, resp_in_q[q % kQueueCount].try_read(resp))) {
+      total_queue_size += resp.queue_size - queue_size[q % kQueueCount];
+      queue_size[q % kQueueCount] = resp.queue_size;
+      resp.queue_size = total_queue_size;
+    }
+    RESET(resp_valid, resp_out_q.try_write(resp));
+  }
+}
+
+void WriteAribter(
+    tapa::istreams<tapa::packet<Vid, Vertex>, kQueueCount>& pkt_in_q,
+    tapa::ostream<Vid>& addr_out_q, tapa::ostream<Vertex>& data_out_q) {
+spin:
+  for (uint8_t q = 0;; ++q) {
+#pragma HLS pipeline II = 1
+    tapa::packet<Vid, Vertex> pkt;
+    if (pkt_in_q[q % kQueueCount].try_read(pkt)) {
+      addr_out_q.write(pkt.addr);
+      data_out_q.write(pkt.payload);
+    }
+  }
+}
+
 void Dispatcher(
     // Scalar.
     const Vid root,
@@ -571,7 +631,7 @@ spin:
     } else if (task_count < kPeCount * 2 && queue_size != 0) {
       // Dequeue tasks from the queue.
       if (queue_req_q.try_write({.op = QueueOp::POP, .task = {}})) {
-        ++task_count;
+        task_count += kQueueCount;
         STATS(9, send, "QUEUE: POP ");
       }
     } else if (RESET(task_buf_valid,
@@ -608,10 +668,14 @@ spin:
 
 void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
           tapa::mmap<Edge> edges, tapa::mmap<Index> indices,
-          tapa::mmap<Vertex> vertices, tapa::mmap<float> distances,
-          tapa::mmap<Task> heap_array, tapa::mmap<Vid> heap_index) {
+          tapa::mmap<Vertex> vertices, tapa::mmap<float> distances_0,
+          tapa::mmap<float> distances_1, tapa::mmap<Task> heap_array_0,
+          tapa::mmap<Task> heap_array_1, tapa::mmap<Vid> heap_index_0,
+          tapa::mmap<Vid> heap_index_1) {
   tapa::stream<QueueOp, 256> queue_req_q("queue_req");
   tapa::stream<QueueOpResp, 2> queue_resp_q("queue_resp");
+  tapa::streams<QueueOp, kQueueCount, 2> queue_req_qi("queue_req_i");
+  tapa::streams<QueueOpResp, kQueueCount, 2> queue_resp_qi("queue_resp_i");
 
   tapa::streams<Vid, kPeCount, 2> task_req_q("task_req");
   tapa::streams<Edge, kPeCount, 2> task_s0_q("task_stage0");
@@ -640,13 +704,21 @@ void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
   tapa::stream<Vertex, 2> vertex_write_data_q("vertex_write_data");
   tapa::stream<Vid, 2> vertex_read_addr_qi("vertices.read_addr");
   tapa::stream<Vertex, 2> vertex_read_data_qi("vertices.read_data");
+  tapa::streams<tapa::packet<Vid, Vertex>, kQueueCount, 2> vertex_write_qi(
+      "vertices.write");
   tapa::stream<PeId, 64> vertex_pe_qi("vertices.pe");
 
   tapa::task()
       .invoke<0>(Dispatcher, root, metadata, task_req_q, task_resp_q,
                  queue_req_q, queue_resp_q)
-      .invoke<-1>(TaskQueue, queue_req_q, queue_resp_q, vertex_write_addr_q,
-                  vertex_write_data_q, distances, heap_array, heap_index)
+      .invoke<-1>(TaskQueue, 0, queue_req_qi[0], queue_resp_qi[0],
+                  vertex_write_qi[0], distances_0, heap_array_0, heap_index_0)
+      .invoke<-1>(TaskQueue, 1, queue_req_qi[1], queue_resp_qi[1],
+                  vertex_write_qi[1], distances_1, heap_array_1, heap_index_1)
+      .invoke<-1>(QueueReqArbiter, queue_req_q, queue_req_qi)
+      .invoke<-1>(QueueRespArbiter, queue_resp_qi, queue_resp_q)
+      .invoke<-1>(WriteAribter, vertex_write_qi, vertex_write_addr_q,
+                  vertex_write_data_q)
 
       // For edges.
       .invoke<-1>(EdgeMem, edge_read_addr_qi, edge_read_data_qi, edges)

@@ -282,8 +282,10 @@ void Refine(
 
 void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
           tapa::mmap<Edge> edges, tapa::mmap<Index> indices,
-          tapa::mmap<Vertex> vertices, tapa::mmap<float> vertices_dup,
-          tapa::mmap<Task> heap_array, tapa::mmap<Vid> heap_index);
+          tapa::mmap<Vertex> vertices, tapa::mmap<float> distances_0,
+          tapa::mmap<float> distances_1, tapa::mmap<Task> heap_array_0,
+          tapa::mmap<Task> heap_array_1, tapa::mmap<Vid> heap_index_0,
+          tapa::mmap<Vid> heap_index_1);
 
 int main(int argc, char* argv[]) {
   FLAGS_logtostderr = true;
@@ -405,7 +407,7 @@ int main(int argc, char* argv[]) {
     unsetenv("KERNEL_TIME_NS");
     auto tic = steady_clock::now();
     SSSP(vertex_count, root, metadata, edges, indices, vertices, distances,
-         heap_array, heap_index);
+         distances, heap_array, heap_array, heap_index, heap_index);
     double elapsed_time =
         1e-9 * duration_cast<nanoseconds>(steady_clock::now() - tic).count();
     if (auto env = getenv("KERNEL_TIME_NS")) {
