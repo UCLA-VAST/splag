@@ -18,9 +18,12 @@
 void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
           tapa::mmap<Edge> edges, tapa::mmap<Index> indices,
           tapa::mmap<Vertex> vertices, tapa::mmap<float> distances_0,
-          tapa::mmap<float> distances_1, tapa::mmap<Task> heap_array_0,
-          tapa::mmap<Task> heap_array_1, tapa::mmap<Vid> heap_index_0,
-          tapa::mmap<Vid> heap_index_1) {
+          tapa::mmap<float> distances_1, tapa::mmap<float> distances_2,
+          tapa::mmap<float> distances_3, tapa::mmap<Task> heap_array_0,
+          tapa::mmap<Task> heap_array_1, tapa::mmap<Task> heap_array_2,
+          tapa::mmap<Task> heap_array_3, tapa::mmap<Vid> heap_index_0,
+          tapa::mmap<Vid> heap_index_1, tapa::mmap<Vid> heap_index_2,
+          tapa::mmap<Vid> heap_index_3) {
   auto kernel_time_ns_raw =
       mmap(nullptr, sizeof(int64_t), PROT_READ | PROT_WRITE,
            MAP_SHARED | MAP_ANONYMOUS, /*fd=*/-1, /*offset=*/0);
@@ -49,14 +52,24 @@ void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
   auto vertices_arg = fpga::ReadWrite(vertices.get(), vertices.size());
   auto distances_arg_0 = fpga::WriteOnly(distances_0.get(), distances_0.size());
   auto distances_arg_1 = fpga::WriteOnly(distances_1.get(), distances_1.size());
+  auto distances_arg_2 = fpga::WriteOnly(distances_2.get(), distances_2.size());
+  auto distances_arg_3 = fpga::WriteOnly(distances_3.get(), distances_3.size());
   auto heap_array_arg_0 =
       fpga::Placeholder(heap_array_0.get(), heap_array_0.size());
   auto heap_array_arg_1 =
       fpga::Placeholder(heap_array_1.get(), heap_array_1.size());
+  auto heap_array_arg_2 =
+      fpga::Placeholder(heap_array_2.get(), heap_array_2.size());
+  auto heap_array_arg_3 =
+      fpga::Placeholder(heap_array_3.get(), heap_array_3.size());
   auto heap_index_arg_0 =
       fpga::Placeholder(heap_index_0.get(), heap_index_0.size());
   auto heap_index_arg_1 =
       fpga::Placeholder(heap_index_1.get(), heap_index_1.size());
+  auto heap_index_arg_2 =
+      fpga::Placeholder(heap_index_2.get(), heap_index_2.size());
+  auto heap_index_arg_3 =
+      fpga::Placeholder(heap_index_3.get(), heap_index_3.size());
 
   int arg_idx = 0;
   instance.SetArg(arg_idx++, vertex_count);
@@ -73,14 +86,26 @@ void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
   instance.SetArg(arg_idx++, distances_arg_0);
   instance.AllocBuf(arg_idx, distances_arg_1);
   instance.SetArg(arg_idx++, distances_arg_1);
+  instance.AllocBuf(arg_idx, distances_arg_2);
+  instance.SetArg(arg_idx++, distances_arg_2);
+  instance.AllocBuf(arg_idx, distances_arg_3);
+  instance.SetArg(arg_idx++, distances_arg_3);
   instance.AllocBuf(arg_idx, heap_array_arg_0);
   instance.SetArg(arg_idx++, heap_array_arg_0);
   instance.AllocBuf(arg_idx, heap_array_arg_1);
   instance.SetArg(arg_idx++, heap_array_arg_1);
+  instance.AllocBuf(arg_idx, heap_array_arg_2);
+  instance.SetArg(arg_idx++, heap_array_arg_2);
+  instance.AllocBuf(arg_idx, heap_array_arg_3);
+  instance.SetArg(arg_idx++, heap_array_arg_3);
   instance.AllocBuf(arg_idx, heap_index_arg_0);
   instance.SetArg(arg_idx++, heap_index_arg_0);
   instance.AllocBuf(arg_idx, heap_index_arg_1);
   instance.SetArg(arg_idx++, heap_index_arg_1);
+  instance.AllocBuf(arg_idx, heap_index_arg_2);
+  instance.SetArg(arg_idx++, heap_index_arg_2);
+  instance.AllocBuf(arg_idx, heap_index_arg_3);
+  instance.SetArg(arg_idx++, heap_index_arg_3);
 
   instance.WriteToDevice();
   instance.Exec();
