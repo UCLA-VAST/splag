@@ -176,6 +176,8 @@ spin:
             heapify_index = heap_size;
             ++heap_size;
             resp.task_op = TaskOp::NEW;
+          } else {
+            clear_heap_index(new_task.vid);
           }
         }
 
