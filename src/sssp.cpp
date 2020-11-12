@@ -43,7 +43,7 @@ void TaskQueue(
   // Heap rule: child <= parent
   Vid heap_size = 0;
 
-  constexpr int kMaxOnChipSize = 4096 * 8;
+  constexpr int kMaxOnChipSize = 4096 * 4;
   tapa::packet<Vid, Vid> heap_index_cache[kMaxOnChipSize];
 #pragma HLS resource variable = heap_index_cache core = RAM_2P_URAM latency = 2
 #pragma HLS data_pack variable = heap_index_cache
