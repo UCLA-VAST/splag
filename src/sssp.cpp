@@ -123,10 +123,10 @@ heap_index_cache_init:
    *      (i-1)/2                                           {on-chip}
    *    elif i < kHeapOffChipBound                        {off-chip}
    *      (i-kHeapDiff-1)/kHeapWidth+kHeapDiff              {on-chip}
-   *        = (i-(kHeapDiff*(kHeapWidth+1)+1))/kHeapWidth
+   *        = (i+(kHeapDiff*(kHeapWidth-1)-1))/kHeapWidth
    *    else:                                             {off-chip}
    *      (i-kHeapDiff-1)/kHeapWidth+kHeapDiff              {off-chip}
-   *        = (i-(kHeapDiff*(kHeapWidth+1)+1))/kHeapWidth
+   *        = (i+(kHeapDiff*(kHeapWidth-1)-1))/kHeapWidth
    *
    *  children of i:
    *    if i < kHeapOnChipBound:                                    {on-chip}
@@ -250,7 +250,7 @@ spin:
           for (; !(i < kHeapOffChipBound); ++heapify_up_off_chip) {
 #pragma HLS pipeline
             const auto parent =
-                (i - (kHeapDiff * (kHeapWidth + 1) + 1)) / kHeapWidth;
+                (i + (kHeapDiff * (kHeapWidth - 1) - 1)) / kHeapWidth;
             const auto task_parent = get_heap_elem_off_chip(parent);
             if (task_i <= task_parent) break;
 
@@ -261,7 +261,7 @@ spin:
 
           if (!(i < kHeapOnChipSize) && i < kHeapOffChipBound) {
             const auto parent =
-                (i - (kHeapDiff * (kHeapWidth + 1) + 1)) / kHeapWidth;
+                (i + (kHeapDiff * (kHeapWidth - 1) - 1)) / kHeapWidth;
             const auto task_parent = get_heap_elem_on_chip(parent);
             if (!(task_i <= task_parent)) {
               set_heap_elem_off_chip(i, task_parent);
