@@ -247,8 +247,10 @@ spin:
           ++heapify_up_count;
 
         heapify_up_off_chip:
-          for (; !(i < kHeapOffChipBound); ++heapify_up_off_chip) {
+          for (; !(i < kHeapOffChipBound);) {
 #pragma HLS pipeline
+            ++heapify_up_off_chip;
+
             const auto parent =
                 (i + (kHeapDiff * (kHeapWidth - 1) - 1)) / kHeapWidth;
             const auto task_parent = get_heap_elem_off_chip(parent);
@@ -264,15 +266,21 @@ spin:
                 (i + (kHeapDiff * (kHeapWidth - 1) - 1)) / kHeapWidth;
             const auto task_parent = get_heap_elem_on_chip(parent);
             if (!(task_i <= task_parent)) {
+              ++heapify_up_off_chip;
+
               set_heap_elem_off_chip(i, task_parent);
               set_heap_index(task_parent.vid, i);
               i = parent;
+            } else {
+              ++heapify_up_on_chip;
             }
           }
 
         heapify_up_on_chip:
-          for (; i != 0 && i < kHeapOnChipSize; ++heapify_up_on_chip) {
+          for (; i != 0 && i < kHeapOnChipSize;) {
 #pragma HLS pipeline II = 3
+            ++heapify_up_on_chip;
+
             const auto parent = (i - 1) / 2;
             const auto task_parent = get_heap_elem_on_chip(parent);
             if (task_i <= task_parent) break;
@@ -304,8 +312,9 @@ spin:
             Vid i = 0;
 
           heapify_down_on_chip:
-            for (; i < kHeapOnChipBound; ++heapify_down_on_chip) {
+            for (; i < kHeapOnChipBound;) {
 #pragma HLS pipeline II = 3
+              ++heapify_down_on_chip;
 
               Vid max = -1;
               Task task_max = task_i;
@@ -328,6 +337,8 @@ spin:
             }
 
             if (!(i < kHeapOnChipBound) && i < kHeapOnChipSize) {
+              ++heapify_down_off_chip;
+
               Vid max = -1;
               Task task_max = task_i;
               for (int j = 1; j <= kHeapWidth; ++j) {
@@ -350,8 +361,10 @@ spin:
             }
 
           heapify_down_off_chip:
-            for (; !(i < kHeapOnChipSize); ++heapify_down_off_chip) {
+            for (; !(i < kHeapOnChipSize);) {
 #pragma HLS pipeline
+              ++heapify_down_off_chip;
+
               Vid max = -1;
               Task task_max = task_i;
               for (int j = 1; j <= kHeapWidth; ++j) {
