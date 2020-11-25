@@ -756,12 +756,8 @@ void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
           tapa::mmap<Edge> edges, tapa::mmap<Index> indices,
           tapa::mmap<Vertex> vertices,
           // For queues.
-          tapa::mmap<float> distances_0, tapa::mmap<float> distances_1,
-          tapa::mmap<float> distances_2, tapa::mmap<float> distances_3,
-          tapa::mmap<Task> heap_array_0, tapa::mmap<Task> heap_array_1,
-          tapa::mmap<Task> heap_array_2, tapa::mmap<Task> heap_array_3,
-          tapa::mmap<Vid> heap_index_0, tapa::mmap<Vid> heap_index_1,
-          tapa::mmap<Vid> heap_index_2, tapa::mmap<Vid> heap_index_3) {
+          tapa::mmap<float> distances, tapa::mmap<Task> heap_array,
+          tapa::mmap<Vid> heap_index) {
   tapa::stream<QueueOp, 256> queue_req_q("queue_req");
   tapa::stream<QueueOpResp, 2> queue_resp_q("queue_resp");
   tapa::streams<QueueOp, kQueueCount, 2> queue_req_qi("queue_req_i");
@@ -802,13 +798,13 @@ void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
       .invoke<0>(Dispatcher, root, metadata, task_req_q, task_resp_q,
                  queue_req_q, queue_resp_q)
       .invoke<-1>(TaskQueue, 0, queue_req_qi[0], queue_resp_qi[0],
-                  vertex_write_qi[0], distances_0, heap_array_0, heap_index_0)
+                  vertex_write_qi[0], distances, heap_array, heap_index)
       .invoke<-1>(TaskQueue, 1, queue_req_qi[1], queue_resp_qi[1],
-                  vertex_write_qi[1], distances_1, heap_array_1, heap_index_1)
+                  vertex_write_qi[1], distances, heap_array, heap_index)
       .invoke<-1>(TaskQueue, 2, queue_req_qi[2], queue_resp_qi[2],
-                  vertex_write_qi[2], distances_2, heap_array_2, heap_index_2)
+                  vertex_write_qi[2], distances, heap_array, heap_index)
       .invoke<-1>(TaskQueue, 3, queue_req_qi[3], queue_resp_qi[3],
-                  vertex_write_qi[3], distances_3, heap_array_3, heap_index_3)
+                  vertex_write_qi[3], distances, heap_array, heap_index)
       .invoke<-1>(QueueReqArbiter, queue_req_q, queue_req_qi)
       .invoke<-1>(QueueRespArbiter, queue_resp_qi, queue_resp_q)
       .invoke<-1>(WriteAribter, vertex_write_qi, vertex_write_addr_q,
