@@ -40,11 +40,10 @@ add_xocc_hw_link_targets(
   --remote_ip_cache=$ENV{HOME}/.remote_ip_cache
   --sp=SSSP.metadata:PLRAM[0]
   --sp=SSSP.edges:HBM[16]
-  --sp=SSSP.indices:HBM[17]
-  --sp=SSSP.vertices:HBM[18]
-  --sp=SSSP.distances:HBM[19]
-  --sp=SSSP.heap_array:HBM[20]
-  --sp=SSSP.heap_index:HBM[21]
+  --sp=SSSP.vertices:HBM[17]
+  --sp=SSSP.distances:HBM[18]
+  --sp=SSSP.heap_array:HBM[19]
+  --sp=SSSP.heap_index:HBM[20]
   --vivado.prop=run.impl_1.STRATEGY=Performance_EarlyBlockPlacement
   --vivado.prop=run.impl_1.STEPS.OPT_DESIGN.TCL.PRE=${CMAKE_CURRENT_SOURCE_DIR}/constraint.tcl
   INPUT sssp-hw-xo

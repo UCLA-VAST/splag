@@ -114,11 +114,11 @@ vector<int64_t> SampleVertices(const vector<int64_t>& degree_no_self_loop) {
 }
 
 // Coarsen graph specified in `indexed_weights` and `degrees` and populate
-// `indices` and `edges` accordingly. `degrees` will be updated to reflect the
+// `edges` accordingly. `degrees` will be updated to reflect the
 // degrees of the coarsened graph for sampling vertices.
 deque<std::pair<Vid, unordered_map<Vid, float>>> Coarsen(
     vector<unordered_map<Vid, float>> indexed_weights, vector<int64_t>& degrees,
-    aligned_vector<Index>& indices, aligned_vector<Edge>& edges) {
+    aligned_vector<Edge>& edges) {
   const int64_t vertex_count = degrees.size();
   CHECK_EQ(vertex_count, indexed_weights.size());
   const int64_t edge_count = vertex_count * 16;
@@ -222,11 +222,11 @@ deque<std::pair<Vid, unordered_map<Vid, float>>> Coarsen(
       << 100. * std::abs(edge_count_delta) / edge_count << "% of " << edge_count
       << ") edges";
 
-  indices.resize(vertex_count);
-  Eid offset = 0;
+  edges.resize(vertex_count);
+  Eid offset = vertex_count;
   for (Vid vid = 0; vid < vertex_count; ++vid) {
     const Vid count = degrees[vid];
-    indices[vid] = {.offset = offset, .count = count};
+    edges[vid] = bit_cast<Edge>(Index{.offset = offset, .count = count});
     offset += count;
   }
 
@@ -236,7 +236,7 @@ deque<std::pair<Vid, unordered_map<Vid, float>>> Coarsen(
     for (auto [k, weight] : indexed_weights[v0]) {
       Vid v1 = k;
       for (auto [src, dst] : {std::tie(v0, v1), std::tie(v1, v0)}) {
-        edges[indices[src].offset + vertex_counts[src]] = {
+        edges[bit_cast<Index>(edges[src]).offset + vertex_counts[src]] = {
             .dst = Vid(dst),
             .weight = weight,
         };
@@ -246,7 +246,7 @@ deque<std::pair<Vid, unordered_map<Vid, float>>> Coarsen(
   }
 
   for (Vid vid = 0; vid < vertex_count; ++vid) {
-    CHECK_EQ(vertex_counts[vid], indices[vid].count);
+    CHECK_EQ(vertex_counts[vid], bit_cast<Index>(edges[vid]).count);
   }
 
   return coarsen_records;
@@ -281,9 +281,9 @@ void Refine(
 }
 
 void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
-          tapa::mmap<Edge> edges, tapa::mmap<Index> indices,
-          tapa::mmap<Vertex> vertices, tapa::mmap<float> distances,
-          tapa::mmap<Task> heap_array, tapa::mmap<Vid> heap_index);
+          tapa::mmap<Edge> edges, tapa::mmap<Vertex> vertices,
+          tapa::mmap<float> distances, tapa::mmap<Task> heap_array,
+          tapa::mmap<Vid> heap_index);
 
 int main(int argc, char* argv[]) {
   FLAGS_logtostderr = true;
@@ -363,16 +363,15 @@ int main(int argc, char* argv[]) {
     VLOG(3) << "  degree in [" << bound / kBase << ", +∞): " << last_bin;
   }
 
-  // Allocate and fill edges and indices for the kernel.
-  aligned_vector<Index> indices;
+  // Allocate and fill edges for the kernel.
   aligned_vector<Edge> edges;
-  auto coarsen_records =
-      Coarsen(indexed_weights, degree_no_self_loop, indices, edges);
+  auto coarsen_records = Coarsen(indexed_weights, degree_no_self_loop, edges);
 
   if (FLAGS_sort || FLAGS_shuffle) {
     for (Vid vid = 0; vid < vertex_count; ++vid) {
-      const auto first = edges.begin() + indices[vid].offset;
-      const auto last = first + indices[vid].count;
+      const auto index = bit_cast<Index>(edges[vid]);
+      const auto first = edges.begin() + index.offset;
+      const auto last = first + index.count;
       if (FLAGS_sort) {
         std::sort(first, last, [](auto& a, auto& b) { return a.dst < b.dst; });
       } else {
@@ -404,8 +403,8 @@ int main(int argc, char* argv[]) {
 
     unsetenv("KERNEL_TIME_NS");
     auto tic = steady_clock::now();
-    SSSP(vertex_count, root, metadata, edges, indices, vertices, distances,
-         heap_array, heap_index);
+    SSSP(vertex_count, root, metadata, edges, vertices, distances, heap_array,
+         heap_index);
     double elapsed_time =
         1e-9 * duration_cast<nanoseconds>(steady_clock::now() - tic).count();
     if (auto env = getenv("KERNEL_TIME_NS")) {

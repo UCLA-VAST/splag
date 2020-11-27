@@ -421,12 +421,6 @@ void EdgeReadDataArbiter(tapa::istream<PeId>& id_q,
   ReadDataArbiter(id_q, data_in_q, data_out_q);
 }
 
-void IndexReadDataArbiter(tapa::istream<PeId>& id_q,
-                          tapa::istream<Index>& data_in_q,
-                          tapa::ostreams<Index, kPeCount>& data_out_q) {
-  ReadDataArbiter(id_q, data_in_q, data_out_q);
-}
-
 void VertexReadDataArbiter(tapa::istream<PeId>& id_q,
                            tapa::istream<Vertex>& data_in_q,
                            tapa::ostreams<Vertex, kPeCount>& data_out_q) {
@@ -435,13 +429,6 @@ void VertexReadDataArbiter(tapa::istream<PeId>& id_q,
 
 void EdgeMem(tapa::istream<Vid>& read_addr_q, tapa::ostream<Edge>& read_data_q,
              tapa::async_mmap<Edge> mem) {
-#pragma HLS data_pack variable = mem.read_data
-#pragma HLS data_pack variable = mem.read_peek
-  ReadOnlyMem(read_addr_q, read_data_q, mem);
-}
-
-void IndexMem(tapa::istream<Vid>& read_addr_q,
-              tapa::ostream<Index>& read_data_q, tapa::async_mmap<Index> mem) {
 #pragma HLS data_pack variable = mem.read_data
 #pragma HLS data_pack variable = mem.read_peek
   ReadOnlyMem(read_addr_q, read_data_q, mem);
@@ -465,16 +452,14 @@ void ProcElemS0(
     tapa::ostream<Edge>& task_s0_q,
     // Memory-maps.
     tapa::ostream<Vid>& edges_read_addr_q,
-    tapa::istream<Edge>& edges_read_data_q,
-    tapa::ostream<Vid>& indices_read_addr_q,
-    tapa::istream<Index>& indices_read_data_q) {
+    tapa::istream<Edge>& edges_read_data_q) {
   DECL_BUF(Edge, edge);
 
 spin:
   for (;;) {
     const auto src = task_req_q.read();
-    const Index index =
-        (indices_read_addr_q.write(src), ap_wait(), indices_read_data_q.read());
+    const Index index = (edges_read_addr_q.write(src), ap_wait(),
+                         bit_cast<Index>(edges_read_data_q.read()));
     task_s0_q.write({.dst = src, .weight = bit_cast<float>(index.count)});
   read_edges:
     for (Eid eid_req = 0, eid_resp = 0; eid_resp < index.count;) {
@@ -753,8 +738,7 @@ spin:
 }
 
 void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
-          tapa::mmap<Edge> edges, tapa::mmap<Index> indices,
-          tapa::mmap<Vertex> vertices,
+          tapa::mmap<Edge> edges, tapa::mmap<Vertex> vertices,
           // For queues.
           tapa::mmap<float> distances, tapa::mmap<Task> heap_array,
           tapa::mmap<Vid> heap_index) {
@@ -775,13 +759,6 @@ void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
   tapa::stream<Vid, 2> edge_read_addr_qi("edges.read_addr");
   tapa::stream<Edge, 2> edge_read_data_qi("edges.read_data");
   tapa::stream<PeId, 64> edge_pe_qi("edges.pe");
-
-  // For indices.
-  tapa::streams<Vid, kPeCount, 2> index_read_addr_q("index_read_addr");
-  tapa::streams<Index, kPeCount, 2> index_read_data_q("index_read_data");
-  tapa::stream<Vid, 2> index_read_addr_qi("indices.read_addr");
-  tapa::stream<Index, 2> index_read_data_qi("indices.read_data");
-  tapa::stream<PeId, 64> index_pe_qi("indices.pe");
 
   // For vertices.
   tapa::streams<Vid, kPeCount, 2> vertex_read_addr_q("vertex_read_addr");
@@ -817,13 +794,6 @@ void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
       .invoke<-1>(EdgeReadDataArbiter, edge_pe_qi, edge_read_data_qi,
                   edge_read_data_q)
 
-      // For indices.
-      .invoke<-1>(IndexMem, index_read_addr_qi, index_read_data_qi, indices)
-      .invoke<-1>(ReadAddrArbiter, index_read_addr_q, index_pe_qi,
-                  index_read_addr_qi)
-      .invoke<-1>(IndexReadDataArbiter, index_pe_qi, index_read_data_qi,
-                  index_read_data_q)
-
       // For vertices.
       .invoke<-1>(VertexMem, vertex_read_addr_qi, vertex_read_data_qi,
                   vertex_write_addr_q, vertex_write_data_q, vertices)
@@ -834,8 +804,7 @@ void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
 
       // PEs.
       .invoke<-1, kPeCount>(ProcElemS0, task_req_q, task_s0_q, edge_read_addr_q,
-                            edge_read_data_q, index_read_addr_q,
-                            index_read_data_q)
+                            edge_read_data_q)
       .invoke<-1, kPeCount>(ProcElemS1, task_s0_q, task_s1p0_q, task_s1p1_q,
                             vertex_read_addr_q, vertex_read_data_q)
       .invoke<-1, kPeCount>(ProcElemS2, task_s1p0_q, task_s1p1_q, task_resp_q);
