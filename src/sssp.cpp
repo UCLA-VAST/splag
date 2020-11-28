@@ -102,8 +102,6 @@ heap_index_cache_init:
     heap_index[vid] = kNullVid;
   };
 
-  // #children per heap element.
-  constexpr int kHeapWidth = 2;
   // #elements in the on-chip heap.
   constexpr int kHeapOnChipSize = 8191;
   // #elements whose children are on chip.
