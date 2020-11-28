@@ -81,7 +81,7 @@ inline std::ostream& operator<<(std::ostream& os, const Task& obj) {
 
 // Platform-specific constants and types.
 constexpr int kPeCount = 4;
-constexpr int kHeapWidth = 4;     // #children per heap element.
+constexpr int kHeapWidth = 8;     // #children per heap element.
 constexpr int kVecLenBytes = 64;  // 512 bits
 constexpr int kVertexVecLen = kVecLenBytes / sizeof(float);
 static_assert(sizeof(float) == sizeof(Vid), "Vid must be 32-bit");
