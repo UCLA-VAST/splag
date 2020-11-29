@@ -18,6 +18,21 @@ inline To bit_cast(const From& from) {
   return u.to;
 }
 
+// Test power-of-k.
+template <int N, int K>
+struct is_power_of_t {
+  constexpr static bool value =
+      N > 0 ? N % K == 0 && is_power_of_t<N / K, K>::value : false;
+};
+template <int K>
+struct is_power_of_t<1, K> {
+  constexpr static bool value = true;
+};
+template <int N, int K>
+inline constexpr bool is_power_of() {
+  return is_power_of_t<N, K>::value;
+}
+
 // Application-specific constants and type definitions.
 using Vid = int32_t;  // Large enough to index all vertices.
 using Eid = int32_t;  // Large enough to index all edges.
@@ -80,7 +95,7 @@ inline std::ostream& operator<<(std::ostream& os, const Task& obj) {
 
 // Platform-specific constants and types.
 constexpr int kPeCount = 4;
-constexpr int kHeapWidth = 8;     // #children per heap element.
-
+constexpr int kHeapOnChipWidth = 2;   // #children per on-heap element.
+constexpr int kHeapOffChipWidth = 8;  // #children per off-heap element.
 
 #endif  // TAPA_SSSP_H_

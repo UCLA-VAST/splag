@@ -102,39 +102,50 @@ heap_index_cache_init:
     heap_index[vid] = kNullVid;
   };
 
+  // #elements shared by the on-chip heap and the off-chip heap.
+  constexpr int kHeapSharedSize = 4096;
+  static_assert(is_power_of<kHeapSharedSize, kHeapOnChipWidth>(),
+                "invalid heap configuration");
+  static_assert(is_power_of<kHeapSharedSize, kHeapOffChipWidth>(),
+                "invalid heap configuration");
   // #elements in the on-chip heap.
-  constexpr int kHeapOnChipSize = 8191;
+  constexpr int kHeapOnChipSize =
+      (kHeapSharedSize * kHeapOnChipWidth - 1) / (kHeapOnChipWidth - 1);
   // #elements whose children are on chip.
-  constexpr int kHeapOnChipBound = (kHeapOnChipSize - 1) / 2;
+  constexpr int kHeapOnChipBound = (kHeapOnChipSize - 1) / kHeapOnChipWidth;
   // #elements skipped in the off-chip heap (because they are on-chip).
   constexpr int kHeapOffChipSkipped =
-      (kHeapWidth * (kHeapOnChipSize + 1) - 2) / (kHeapWidth - 1) / 2;
+      (kHeapOffChipWidth * kHeapOnChipSize * (kHeapOnChipWidth - 1) +
+       kHeapOffChipWidth - kHeapOnChipWidth) /
+      (kHeapOffChipWidth - 1) / kHeapOnChipWidth;
   // #elements difference between off-chip indices and mixed indices.
   constexpr int kHeapDiff = kHeapOnChipSize - kHeapOffChipSkipped;
   // #elements in the mixed heap whose parent is on chip.
   constexpr int kHeapOffChipBound =
-      kHeapOnChipSize + kHeapWidth * (kHeapOnChipSize + 1) / 2;
+      kHeapOnChipSize +
+      kHeapOffChipWidth *
+          (kHeapOnChipSize - (kHeapOnChipSize - 1) / kHeapOnChipWidth);
 
   /*
    *  parent of i:
    *    if i < kHeapOnChipSize:                           {on-chip}
-   *      (i-1)/2                                           {on-chip}
+   *      (i-1)/kHeapOnChipWidth                            {on-chip}
    *    elif i < kHeapOffChipBound                        {off-chip}
-   *      (i-kHeapDiff-1)/kHeapWidth+kHeapDiff              {on-chip}
-   *        = (i+(kHeapDiff*(kHeapWidth-1)-1))/kHeapWidth
+   *      (i-kHeapDiff-1)/kHeapOffChipWidth+kHeapDiff       {on-chip}
+   *        = (i+(kHeapDiff*(kHeapOffChipWidth-1)-1))/kHeapOffChipWidth
    *    else:                                             {off-chip}
-   *      (i-kHeapDiff-1)/kHeapWidth+kHeapDiff              {off-chip}
-   *        = (i+(kHeapDiff*(kHeapWidth-1)-1))/kHeapWidth
+   *      (i-kHeapDiff-1)/kHeapOffChipWidth+kHeapDiff       {off-chip}
+   *        = (i+(kHeapDiff*(kHeapOffChipWidth-1)-1))/kHeapOffChipWidth
    *
-   *  children of i:
+   *  first child of i:
    *    if i < kHeapOnChipBound:                                    {on-chip}
-   *      i*2+[1:2]                                                   {on-chip}
+   *      i*kHeapOnChipWidth+1                                        {on-chip}
    *    elif i < kHeapOnChipSize:                                   {on-chip}
-   *      (i-kHeapDiff)*kHeapWidth+kHeapDiff+[1:kHeapWidth]           {off-chip}
-   *        = i*kHeapWidth-kHeapDiff*(kHeapWidth-1)+[1:kHeapWidth]
+   *      (i-kHeapDiff)*kHeapOffChipWidth+kHeapDiff+1                 {off-chip}
+   *        = i*kHeapOffChipWidth-kHeapDiff*(kHeapOffChipWidth-1)+1
    *    else:                                                       {off-chip}
-   *      (i-kHeapDiff)*kHeapWidth+kHeapDiff+[1:kHeapWidth]           {off-chip}
-   *        = i*kHeapWidth-kHeapDiff*(kHeapWidth-1)+[1:kHeapWidth]
+   *      (i-kHeapDiff)*kHeapOffChipWidth+kHeapDiff+1                 {off-chip}
+   *        = i*kHeapOffChipWidth-kHeapDiff*(kHeapOffChipWidth-1)+1
    */
 
   TaskOnChip heap_array_cache[kHeapOnChipSize];
@@ -250,7 +261,8 @@ spin:
             ++heapify_up_off_chip;
 
             const auto parent =
-                (i + (kHeapDiff * (kHeapWidth - 1) - 1)) / kHeapWidth;
+                (i + (kHeapDiff * (kHeapOffChipWidth - 1) - 1)) /
+                kHeapOffChipWidth;
             const auto task_parent = get_heap_elem_off_chip(parent);
             if (task_i <= task_parent) break;
 
@@ -261,7 +273,8 @@ spin:
 
           if (!(i < kHeapOnChipSize) && i < kHeapOffChipBound) {
             const auto parent =
-                (i + (kHeapDiff * (kHeapWidth - 1) - 1)) / kHeapWidth;
+                (i + (kHeapDiff * (kHeapOffChipWidth - 1) - 1)) /
+                kHeapOffChipWidth;
             const auto task_parent = get_heap_elem_on_chip(parent);
             if (!(task_i <= task_parent)) {
               ++heapify_up_off_chip;
@@ -276,10 +289,10 @@ spin:
 
         heapify_up_on_chip:
           for (; i != 0 && i < kHeapOnChipSize;) {
-#pragma HLS pipeline II = 3
+#pragma HLS pipeline
             ++heapify_up_on_chip;
 
-            const auto parent = (i - 1) / 2;
+            const auto parent = (i - 1) / kHeapOnChipWidth;
             const auto task_parent = get_heap_elem_on_chip(parent);
             if (task_i <= task_parent) break;
 
@@ -311,14 +324,14 @@ spin:
 
           heapify_down_on_chip:
             for (; i < kHeapOnChipBound;) {
-#pragma HLS pipeline II = 3
+#pragma HLS pipeline
               ++heapify_down_on_chip;
 
               Vid max = -1;
               Task task_max = task_i;
-              for (int j = 1; j <= 2; ++j) {
+              for (int j = 1; j <= kHeapOnChipWidth; ++j) {
 #pragma HLS unroll
-                const Vid child = i * 2 + j;
+                const Vid child = i * kHeapOnChipWidth + j;
                 if (child < heap_size) {
                   const auto task_child = get_heap_elem_on_chip(child);
                   if (!(task_child <= task_max)) {
@@ -339,10 +352,10 @@ spin:
 
               Vid max = -1;
               Task task_max = task_i;
-              for (int j = 1; j <= kHeapWidth; ++j) {
+              for (int j = 1; j <= kHeapOffChipWidth; ++j) {
 #pragma HLS unroll
-                const Vid child =
-                    i * kHeapWidth - kHeapDiff * (kHeapWidth - 1) + j;
+                const Vid child = i * kHeapOffChipWidth -
+                                  kHeapDiff * (kHeapOffChipWidth - 1) + j;
                 if (child < heap_size) {
                   const auto task_child = get_heap_elem_off_chip(child);
                   if (!(task_child <= task_max)) {
@@ -365,10 +378,10 @@ spin:
 
               Vid max = -1;
               Task task_max = task_i;
-              for (int j = 1; j <= kHeapWidth; ++j) {
+              for (int j = 1; j <= kHeapOffChipWidth; ++j) {
 #pragma HLS unroll
-                const Vid child =
-                    i * kHeapWidth - kHeapDiff * (kHeapWidth - 1) + j;
+                const Vid child = i * kHeapOffChipWidth -
+                                  kHeapDiff * (kHeapOffChipWidth - 1) + j;
                 if (child < heap_size) {
                   const auto task_child = get_heap_elem_off_chip(child);
                   if (!(task_child <= task_max)) {
