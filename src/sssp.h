@@ -95,7 +95,7 @@ inline std::ostream& operator<<(std::ostream& os, const Task& obj) {
 
 // Platform-specific constants and types.
 constexpr int kPeCount = 4;
-constexpr int kHeapOnChipWidth = 2;   // #children per on-heap element.
+constexpr int kHeapOnChipWidth = 4;   // #children per on-heap element.
 constexpr int kHeapOffChipWidth = 8;  // #children per off-heap element.
 
 #endif  // TAPA_SSSP_H_
