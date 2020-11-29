@@ -137,7 +137,7 @@ heap_index_cache_init:
    *        = i*kHeapWidth-kHeapDiff*(kHeapWidth-1)+[1:kHeapWidth]
    */
 
-  Task heap_array_cache[kHeapOnChipSize];
+  TaskOnChip heap_array_cache[kHeapOnChipSize];
 #pragma HLS array_partition variable = heap_array_cache cyclic factor = 2
 #pragma HLS resource variable = heap_array_cache core = RAM_2P_URAM
 #pragma HLS data_pack variable = heap_array_cache
@@ -147,7 +147,7 @@ heap_index_cache_init:
   };
   auto get_heap_elem_on_chip = [&](Vid i) {
     CHECK_LT(i, kHeapOnChipSize);
-    return heap_array_cache[i];
+    return Task(heap_array_cache[i]);
   };
   auto get_heap_elem_off_chip = [&](Vid i) {
     CHECK_GE(i, kHeapOnChipSize);
@@ -159,7 +159,7 @@ heap_index_cache_init:
   };
   auto set_heap_elem_on_chip = [&](Vid i, Task task) {
     CHECK_LT(i, kHeapOnChipSize);
-    heap_array_cache[i] = task;
+    heap_array_cache[i] = TaskOnChip(task);
   };
   auto set_heap_elem_off_chip = [&](Vid i, Task task) {
     CHECK_GE(i, kHeapOnChipSize);
@@ -295,7 +295,7 @@ spin:
       }
       case QueueOp::POP: {
         if (heap_size != 0) {
-          const Task front = heap_array_cache[0];
+          const Task front(heap_array_cache[0]);
           clear_heap_index(front.vid);
           --heap_size;
 

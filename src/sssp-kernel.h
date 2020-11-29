@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <type_traits>
 
+#include <ap_int.h>
+
 #include "sssp.h"
 
 using PeId = uint8_t;
@@ -92,6 +94,50 @@ inline std::ostream& operator<<(std::ostream& os, const QueueOpResp& obj) {
   os << ", queue_size: " << obj.queue_size;
   return os << "}";
 }
+
+class TaskOnChip {
+ public:
+  TaskOnChip() {}
+  explicit TaskOnChip(const Task& task) {
+    data.range(vid_msb, vid_lsb) = task.vid;
+    data.range(parent_msb, parent_lsb) = task.vertex.parent;
+    data.range(distance_msb, distance_lsb) =
+        ap_uint<32>(bit_cast<uint32_t>(task.vertex.distance))
+            .range(kFloatMsb, kFloatMsb - kFloatWidth + 1);
+  }
+  explicit operator Task() {
+    ap_uint<32> distance;
+    distance.range(kFloatMsb, kFloatMsb - kFloatWidth + 1) =
+        data.range(distance_msb, distance_lsb);
+    return {
+        .vid = Vid(data.range(vid_msb, vid_lsb)),
+        .vertex =
+            {
+                .parent = Vid(data.range(parent_msb, parent_lsb)),
+                .distance = bit_cast<float>(distance.to_uint()),
+            },
+    };
+  }
+
+ private:
+  ap_uint<72> data;
+  static constexpr int kVidWidth = 24;
+  static constexpr int kFloatWidth = 24;
+  static_assert(kVidWidth * 2 + kFloatWidth == decltype(data)::width,
+                "invalid TaskOnChip configuration");
+
+  // kFloatWidth bits from kFloatMsb is used.
+  static constexpr int kFloatMsb = 30;
+  static_assert(kFloatMsb + 1 >= kFloatWidth,
+                "invalid TaskOnChip configuration");
+
+  static constexpr int vid_lsb = 0;
+  static constexpr int vid_msb = vid_lsb + kVidWidth - 1;
+  static constexpr int parent_lsb = vid_msb + 1;
+  static constexpr int parent_msb = parent_lsb + kVidWidth - 1;
+  static constexpr int distance_lsb = parent_msb + 1;
+  static constexpr int distance_msb = distance_lsb + kFloatWidth - 1;
+};
 
 // Convenient functions and macros.
 
