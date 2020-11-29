@@ -24,7 +24,6 @@ using Eid = int32_t;  // Large enough to index all edges.
 
 constexpr Vid kNullVid = -1;
 constexpr float kInfDistance = std::numeric_limits<float>::infinity();
-constexpr int kVertexUpdateDepDist = 3 + 1;  // II + 1
 
 struct Vertex {
   Vid parent;
@@ -82,25 +81,6 @@ inline std::ostream& operator<<(std::ostream& os, const Task& obj) {
 // Platform-specific constants and types.
 constexpr int kPeCount = 4;
 constexpr int kHeapWidth = 8;     // #children per heap element.
-constexpr int kVecLenBytes = 64;  // 512 bits
-constexpr int kVertexVecLen = kVecLenBytes / sizeof(float);
-static_assert(sizeof(float) == sizeof(Vid), "Vid must be 32-bit");
-constexpr int kEdgeVecLen = kVecLenBytes / sizeof(Edge);
 
-// The host-kernel interface requires type with power-of-2 widths.
-template <int N>
-inline constexpr bool IsPowerOf2() {
-  return N > 0 ? N % 2 == 0 && IsPowerOf2<N / 2>() : false;
-}
-template <>
-inline constexpr bool IsPowerOf2<1>() {
-  return true;
-}
-static_assert(IsPowerOf2<sizeof(Edge)>(),
-              "Edge is not aligned to a power of 2");
-
-using VidVec = tapa::vec_t<Vid, kVertexVecLen>;
-using FloatVec = tapa::vec_t<float, kVertexVecLen>;
-using EdgeVec = tapa::vec_t<Edge, kEdgeVecLen>;
 
 #endif  // TAPA_SSSP_H_

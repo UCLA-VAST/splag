@@ -307,7 +307,6 @@ int main(int argc, char* argv[]) {
 
   // Determine vertex intervals.
   const int64_t vertex_count = edge_count / 16;
-  CHECK_GE(vertex_count, kVertexVecLen);
 
   // Validate inputs and collect degree.
   vector<int64_t> degree(vertex_count);               // For TEPS calculation.
@@ -382,7 +381,7 @@ int main(int argc, char* argv[]) {
 
   // Other kernel arguments.
   aligned_vector<int64_t> metadata(5);
-  aligned_vector<Vertex> vertices(tapa::round_up<kVertexVecLen>(vertex_count));
+  aligned_vector<Vertex> vertices(vertex_count);
   aligned_vector<float> distances(vertex_count);
   aligned_vector<Task> heap_array(vertex_count);
   aligned_vector<Vid> heap_index(vertex_count);

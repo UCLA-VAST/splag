@@ -93,10 +93,6 @@ inline std::ostream& operator<<(std::ostream& os, const QueueOpResp& obj) {
   return os << "}";
 }
 
-// Constants and types.
-constexpr int kVertexPartitionFactor =
-    kEdgeVecLen > kVertexVecLen ? kEdgeVecLen : kVertexVecLen;
-
 // Convenient functions and macros.
 
 /// Returns whether singleton @p array contains @p value.
