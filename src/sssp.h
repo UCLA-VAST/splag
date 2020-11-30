@@ -23,6 +23,11 @@ inline constexpr bool is_power_of(int64_t n, int64_t b) {
   return n == 0 ? false : n == 1 ? true : n % b == 0 && is_power_of(n / b, b);
 }
 
+// Compile-time integer logarithm.
+inline constexpr int64_t log(int64_t n, int64_t b) {
+  return n == 1 ? 0 : log(n / b, b) + 1;
+}
+
 // Application-specific constants and type definitions.
 using Vid = int32_t;  // Large enough to index all vertices.
 using Eid = int32_t;  // Large enough to index all edges.
