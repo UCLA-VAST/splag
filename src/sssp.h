@@ -19,18 +19,8 @@ inline To bit_cast(const From& from) {
 }
 
 // Test power-of-k.
-template <int N, int K>
-struct is_power_of_t {
-  constexpr static bool value =
-      N > 0 ? N % K == 0 && is_power_of_t<N / K, K>::value : false;
-};
-template <int K>
-struct is_power_of_t<1, K> {
-  constexpr static bool value = true;
-};
-template <int N, int K>
-inline constexpr bool is_power_of() {
-  return is_power_of_t<N, K>::value;
+inline constexpr bool is_power_of(int64_t n, int64_t b) {
+  return n == 0 ? false : n == 1 ? true : n % b == 0 && is_power_of(n / b, b);
 }
 
 // Application-specific constants and type definitions.

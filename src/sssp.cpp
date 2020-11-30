@@ -104,9 +104,9 @@ heap_index_cache_init:
 
   // #elements shared by the on-chip heap and the off-chip heap.
   constexpr int kHeapSharedSize = 4096;
-  static_assert(is_power_of<kHeapSharedSize, kHeapOnChipWidth>(),
+  static_assert(is_power_of(kHeapSharedSize, kHeapOnChipWidth),
                 "invalid heap configuration");
-  static_assert(is_power_of<kHeapSharedSize, kHeapOffChipWidth>(),
+  static_assert(is_power_of(kHeapSharedSize, kHeapOffChipWidth),
                 "invalid heap configuration");
   // #elements in the on-chip heap.
   constexpr int kHeapOnChipSize =
