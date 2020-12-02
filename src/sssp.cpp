@@ -656,6 +656,7 @@ void Dispatcher(
 
   int32_t task_count = 1;  // Number of active tasks.
   int32_t queue_size = 0;  // Number of tasks in the queue.
+  int32_t pop_count = 0;   // Number of POP requests sent but not acknowledged.
 
   task_req_q[0].write(root);
 
@@ -677,19 +678,18 @@ void Dispatcher(
   } while (0)
 
 spin:
-  for (uint8_t pe = 0;
-       queue_size != 0 || task_count != 0 || !queue_resp_q.empty();
+  for (uint8_t pe = 0; queue_size != 0 || task_count != 0 || pop_count != 0;
        pe = pe == kPeCount - 1 ? 0 : pe + 1) {
 #pragma HLS pipeline II = 1
     // Process response messages from the queue.
     if (SET(queue_buf_valid, queue_resp_q.try_read(queue_buf))) {
-      queue_size = queue_buf.queue_size;
       switch (queue_buf.queue_op) {
         case QueueOp::PUSH:
           // PUSH requests do not need further processing.
           queue_buf_valid = false;
           if (queue_buf.task_op == TaskOp::NOOP) {
             // PUSH request updated priority of existing tasks.
+            --queue_size;
             STATS(recv, "QUEUE: DECR");
           }
 
@@ -699,28 +699,30 @@ spin:
           if (queue_size > max_queue_size) max_queue_size = queue_size;
           break;
         case QueueOp::POP:
+          --pop_count;
           if (queue_buf.task_op == TaskOp::NEW) {
             // POP request returned a new task.
+            ++task_count;
+            --queue_size;
             STATS(recv, "QUEUE: NEW ");
           } else {
             // The queue is empty.
             queue_buf_valid = false;
-            --task_count;
             STATS(recv, "QUEUE: NOOP");
           }
           break;
       }
-    } else if (task_count < kPeCount * 2 && queue_size != 0) {
+    } else if (task_count < kPeCount * 2 && pop_count < kPeCount &&
+               queue_size != 0) {
       // Dequeue tasks from the queue.
       if (queue_req_q.try_write({.op = QueueOp::POP, .task = {}})) {
-        ++task_count;
+        ++pop_count;
         STATS(send, "QUEUE: POP ");
       }
     } else if (RESET(task_buf_valid,
                      queue_req_q.try_write(
                          {.op = QueueOp::PUSH, .task = task_buf.task}))) {
       // Enqueue tasks generated from PEs.
-      ++queue_size;
       STATS(send, "QUEUE: PUSH");
     }
 
@@ -737,6 +739,9 @@ spin:
         ++visited_vertex_count;
         visited_edge_count += task_buf.task.vid;
         STATS(recv, "TASK : DONE");
+      } else {
+        ++queue_size;
+        STATS(recv, "TASK : NEW ");
       }
     }
   }
