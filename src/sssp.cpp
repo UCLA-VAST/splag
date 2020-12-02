@@ -667,7 +667,7 @@ void Dispatcher(
   int32_t max_queue_size = 0;
 
   // Format log messages.
-#define STATS(leve, tag, content)                                              \
+#define STATS(tag, content)                                                    \
   do {                                                                         \
     VLOG_F(9, tag) << content " | " << std::setfill(' ') << std::setw(1)       \
                    << task_count << " active + " << std::setw(2) << queue_size \
@@ -690,7 +690,7 @@ spin:
           queue_buf_valid = false;
           if (queue_buf.task_op == TaskOp::NOOP) {
             // PUSH request updated priority of existing tasks.
-            STATS(9, recv, "QUEUE: DECR");
+            STATS(recv, "QUEUE: DECR");
           }
 
           // Update statistics.
@@ -701,12 +701,12 @@ spin:
         case QueueOp::POP:
           if (queue_buf.task_op == TaskOp::NEW) {
             // POP request returned a new task.
-            STATS(9, recv, "QUEUE: NEW ");
+            STATS(recv, "QUEUE: NEW ");
           } else {
             // The queue is empty.
             queue_buf_valid = false;
             --task_count;
-            STATS(9, recv, "QUEUE: NOOP");
+            STATS(recv, "QUEUE: NOOP");
           }
           break;
       }
@@ -714,14 +714,14 @@ spin:
       // Dequeue tasks from the queue.
       if (queue_req_q.try_write({.op = QueueOp::POP, .task = {}})) {
         ++task_count;
-        STATS(9, send, "QUEUE: POP ");
+        STATS(send, "QUEUE: POP ");
       }
     } else if (RESET(task_buf_valid,
                      queue_req_q.try_write(
                          {.op = QueueOp::PUSH, .task = task_buf.task}))) {
       // Enqueue tasks generated from PEs.
       ++queue_size;
-      STATS(9, send, "QUEUE: PUSH");
+      STATS(send, "QUEUE: PUSH");
     }
 
     // Assign tasks to PEs.
@@ -736,7 +736,7 @@ spin:
         // Update statistics.
         ++visited_vertex_count;
         visited_edge_count += task_buf.task.vid;
-        STATS(9, recv, "TASK : DONE");
+        STATS(recv, "TASK : DONE");
       }
     }
   }
