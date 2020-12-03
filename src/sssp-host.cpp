@@ -40,7 +40,7 @@ template <typename T>
 bool IsValid(int64_t root, PackedEdgesView edges, WeightsView weights,
              const vector<unordered_map<T, float>>& indexed_weights,
              const T* parents, const float* distances, int64_t vertex_count) {
-  constexpr auto kEpsilon = 1e-5;
+  constexpr auto kEpsilon = 1e-4;
   // Check that the parent of root is root.
   CHECK_EQ(parents[root], root);
 
