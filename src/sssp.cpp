@@ -770,14 +770,8 @@ void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
   tapa::task()
       .invoke<0>(Dispatcher, root, metadata, task_req_q, task_resp_q,
                  queue_req_q, queue_resp_q)
-      .invoke<-1>(TaskQueue, 0, queue_req_qi[0], queue_resp_qi[0], vertices,
-                  heap_array, heap_index)
-      .invoke<-1>(TaskQueue, 1, queue_req_qi[1], queue_resp_qi[1], vertices,
-                  heap_array, heap_index)
-      .invoke<-1>(TaskQueue, 2, queue_req_qi[2], queue_resp_qi[2], vertices,
-                  heap_array, heap_index)
-      .invoke<-1>(TaskQueue, 3, queue_req_qi[3], queue_resp_qi[3], vertices,
-                  heap_array, heap_index)
+      .invoke<-1, kQueueCount>(TaskQueue, tapa::seq(), queue_req_qi,
+                               queue_resp_qi, vertices, heap_array, heap_index)
       .invoke<-1>(QueueReqArbiter, queue_req_q, queue_req_qi)
       .invoke<-1>(QueueRespArbiter, queue_resp_qi, queue_resp_q)
 
