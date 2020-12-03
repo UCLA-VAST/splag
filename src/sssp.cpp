@@ -33,10 +33,8 @@ void TaskQueue(
     Vid qid,
     // Queue requests.
     tapa::istream<QueueOp>& queue_req_q,
-    tapa::ostream<QueueOpResp>& queue_resp_q,
-    tapa::ostream<tapa::packet<Vid, Vertex>>& write_q,
-    tapa::mmap<float> distances, tapa::mmap<Task> heap_array,
-    tapa::mmap<Vid> heap_index) {
+    tapa::ostream<QueueOpResp>& queue_resp_q, tapa::mmap<Vertex> vertices,
+    tapa::mmap<Task> heap_array, tapa::mmap<Vid> heap_index) {
 #pragma HLS inline recursive
   // Heap rule: child <= parent
   Vid heap_size = 0;
@@ -235,7 +233,7 @@ spin:
             heapify = true;
           }
         } else {
-          if (!(bit_cast<uint32_t>(distances[new_task.vid]) <=
+          if (!(bit_cast<uint32_t>(vertices[new_task.vid].distance) <=
                 bit_cast<uint32_t>(new_task.vertex.distance))) {
             heapify = true;
             heapify_index = heap_size;
@@ -247,8 +245,7 @@ spin:
         }
 
         if (heapify) {
-          write_q.write({new_task.vid, new_task.vertex});
-          distances[new_task.vid] = new_task.vertex.distance;
+          vertices[new_task.vid] = new_task.vertex;
           // Increase the priority of heap_array[i] if necessary.
           Vid i = heapify_index;
           const Task task_i = new_task;
@@ -447,13 +444,10 @@ void EdgeMem(tapa::istream<Vid>& read_addr_q, tapa::ostream<Edge>& read_data_q,
 
 void VertexMem(tapa::istream<Vid>& read_addr_q,
                tapa::ostream<Vertex>& read_data_q,
-               tapa::istream<Vid>& write_addr_q,
-               tapa::istream<Vertex>& write_data_q,
                tapa::async_mmap<Vertex> mem) {
 #pragma HLS data_pack variable = mem.read_data
 #pragma HLS data_pack variable = mem.read_peek
-#pragma HLS data_pack variable = mem.write_data
-  ReadWriteMem(read_addr_q, read_data_q, write_addr_q, write_data_q, mem);
+  ReadOnlyMem(read_addr_q, read_data_q, mem);
 }
 
 void ProcElemS0(
@@ -624,20 +618,6 @@ spin:
   }
 }
 
-void WriteAribter(
-    tapa::istreams<tapa::packet<Vid, Vertex>, kQueueCount>& pkt_in_q,
-    tapa::ostream<Vid>& addr_out_q, tapa::ostream<Vertex>& data_out_q) {
-spin:
-  for (uint8_t q = 0;; ++q) {
-#pragma HLS pipeline II = 1
-    tapa::packet<Vid, Vertex> pkt;
-    if (pkt_in_q[q % kQueueCount].try_read(pkt)) {
-      addr_out_q.write(pkt.addr);
-      data_out_q.write(pkt.payload);
-    }
-  }
-}
-
 void Dispatcher(
     // Scalar.
     const Vid root,
@@ -756,8 +736,7 @@ spin:
 void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
           tapa::mmap<Edge> edges, tapa::mmap<Vertex> vertices,
           // For queues.
-          tapa::mmap<float> distances, tapa::mmap<Task> heap_array,
-          tapa::mmap<Vid> heap_index) {
+          tapa::mmap<Task> heap_array, tapa::mmap<Vid> heap_index) {
   tapa::stream<QueueOp, 256> queue_req_q("queue_req");
   tapa::stream<QueueOpResp, 2> queue_resp_q("queue_resp");
   tapa::streams<QueueOp, kQueueCount, 2> queue_req_qi("queue_req_i");
@@ -779,29 +758,23 @@ void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
   // For vertices.
   tapa::streams<Vid, kPeCount, 2> vertex_read_addr_q("vertex_read_addr");
   tapa::streams<Vertex, kPeCount, 2> vertex_read_data_q("vertex_read_data");
-  tapa::stream<Vid, 2> vertex_write_addr_q("vertex_write_addr");
-  tapa::stream<Vertex, 2> vertex_write_data_q("vertex_write_data");
   tapa::stream<Vid, 2> vertex_read_addr_qi("vertices.read_addr");
   tapa::stream<Vertex, 2> vertex_read_data_qi("vertices.read_data");
-  tapa::streams<tapa::packet<Vid, Vertex>, kQueueCount, 2> vertex_write_qi(
-      "vertices.write");
   tapa::stream<PeId, 64> vertex_pe_qi("vertices.pe");
 
   tapa::task()
       .invoke<0>(Dispatcher, root, metadata, task_req_q, task_resp_q,
                  queue_req_q, queue_resp_q)
-      .invoke<-1>(TaskQueue, 0, queue_req_qi[0], queue_resp_qi[0],
-                  vertex_write_qi[0], distances, heap_array, heap_index)
-      .invoke<-1>(TaskQueue, 1, queue_req_qi[1], queue_resp_qi[1],
-                  vertex_write_qi[1], distances, heap_array, heap_index)
-      .invoke<-1>(TaskQueue, 2, queue_req_qi[2], queue_resp_qi[2],
-                  vertex_write_qi[2], distances, heap_array, heap_index)
-      .invoke<-1>(TaskQueue, 3, queue_req_qi[3], queue_resp_qi[3],
-                  vertex_write_qi[3], distances, heap_array, heap_index)
+      .invoke<-1>(TaskQueue, 0, queue_req_qi[0], queue_resp_qi[0], vertices,
+                  heap_array, heap_index)
+      .invoke<-1>(TaskQueue, 1, queue_req_qi[1], queue_resp_qi[1], vertices,
+                  heap_array, heap_index)
+      .invoke<-1>(TaskQueue, 2, queue_req_qi[2], queue_resp_qi[2], vertices,
+                  heap_array, heap_index)
+      .invoke<-1>(TaskQueue, 3, queue_req_qi[3], queue_resp_qi[3], vertices,
+                  heap_array, heap_index)
       .invoke<-1>(QueueReqArbiter, queue_req_q, queue_req_qi)
       .invoke<-1>(QueueRespArbiter, queue_resp_qi, queue_resp_q)
-      .invoke<-1>(WriteAribter, vertex_write_qi, vertex_write_addr_q,
-                  vertex_write_data_q)
 
       // For edges.
       .invoke<-1>(EdgeMem, edge_read_addr_qi, edge_read_data_qi, edges)
@@ -811,8 +784,7 @@ void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
                   edge_read_data_q)
 
       // For vertices.
-      .invoke<-1>(VertexMem, vertex_read_addr_qi, vertex_read_data_qi,
-                  vertex_write_addr_q, vertex_write_data_q, vertices)
+      .invoke<-1>(VertexMem, vertex_read_addr_qi, vertex_read_data_qi, vertices)
       .invoke<-1>(ReadAddrArbiter, vertex_read_addr_q, vertex_pe_qi,
                   vertex_read_addr_qi)
       .invoke<-1>(VertexReadDataArbiter, vertex_pe_qi, vertex_read_data_qi,
