@@ -413,18 +413,20 @@ spin:
 
 void ReadAddrArbiter(tapa::istreams<Vid, kPeCount>& req_q,
                      tapa::ostream<PeId>& pe_q, tapa::ostream<Vid>& addr_q) {
+  DECL_BUF(PeId, src_pe);
+  DECL_BUF(Vid, addr);
+
 spin:
   for (;;) {
 #pragma HLS pipeline II = 1
-    bool done = false;
     RANGE(pe, kPeCount, {
-      Vid addr;
-      if (!done && req_q[pe].try_read(addr)) {
-        done |= true;
-        addr_q.write(addr);
-        pe_q.write(pe);
+      if (!src_pe_valid && SET(addr_valid, req_q[pe].try_read(addr))) {
+        src_pe = pe;
+        src_pe_valid = true;
       }
     });
+    UNUSED RESET(src_pe_valid, pe_q.try_write(src_pe));
+    UNUSED RESET(addr_valid, addr_q.try_write(addr));
   }
 }
 
