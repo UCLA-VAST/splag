@@ -91,6 +91,11 @@ inline std::ostream& operator<<(std::ostream& os, const Task& obj) {
 // Platform-specific constants and types.
 constexpr int kPeCount = 4;
 
+constexpr int kShardCount = 2;  // #edge partitions.
+static_assert(
+    kPeCount % kShardCount == 0,
+    "current implementation assumes PE count is a multiple of shard count");
+
 constexpr int kHeapOnChipWidth = 8;  // #children per on-heap element.
 
 constexpr int kHeapOffChipWidth = 16;  // #children per off-heap element.

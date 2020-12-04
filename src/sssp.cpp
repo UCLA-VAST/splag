@@ -411,8 +411,9 @@ spin:
   }
 }
 
-void ReadAddrArbiter(tapa::istreams<Vid, kPeCount>& req_q,
-                     tapa::ostream<PeId>& pe_q, tapa::ostream<Vid>& addr_q) {
+void VertexReadAddrArbiter(tapa::istreams<Vid, kPeCount>& req_q,
+                           tapa::ostream<PeId>& pe_q,
+                           tapa::ostream<Vid>& addr_q) {
   DECL_BUF(PeId, src_pe);
   DECL_BUF(Vid, addr);
 
@@ -430,10 +431,56 @@ spin:
   }
 }
 
-void EdgeReadDataArbiter(tapa::istream<PeId>& id_q,
-                         tapa::istream<Edge>& data_in_q,
+void EdgeReadAddrArbiter(tapa::istreams<Vid, kPeCount>& req_q,
+                         tapa::ostreams<PeId, kShardCount>& id_q,
+                         tapa::ostreams<Vid, kShardCount>& addr_q) {
+  DECL_ARRAY(PeId, id, kShardCount, PeId());
+  DECL_ARRAY(bool, id_valid, kShardCount, false);
+  DECL_ARRAY(Vid, addr, kShardCount, kNullVid);
+  DECL_ARRAY(bool, addr_valid, kShardCount, false);
+
+spin:
+  for (;;) {
+#pragma HLS pipeline II = 1
+    RANGE(sid, kShardCount, {
+      RANGE(pe_sid, kPeCount / kShardCount, {
+        const auto pe = pe_sid * kShardCount + sid;
+        if (!id_valid[sid] &&
+            SET(addr_valid[sid], req_q[pe].try_read(addr[sid]))) {
+          id[sid] = pe;
+          id_valid[sid] = true;
+        }
+      });
+    });
+
+    RANGE(sid, kShardCount, {
+      UNUSED RESET(id_valid[sid], id_q[sid].try_write(id[sid]));
+      UNUSED RESET(addr_valid[sid], addr_q[sid].try_write(addr[sid]));
+    });
+  }
+}
+
+void EdgeReadDataArbiter(tapa::istreams<PeId, kShardCount>& id_q,
+                         tapa::istreams<Edge, kShardCount>& data_in_q,
                          tapa::ostreams<Edge, kPeCount>& data_out_q) {
-  ReadDataArbiter(id_q, data_in_q, data_out_q);
+  DECL_ARRAY(PeId, id, kShardCount, PeId());
+  DECL_ARRAY(bool, id_valid, kShardCount, false);
+  DECL_ARRAY(Edge, data, kShardCount, Edge());
+  DECL_ARRAY(bool, data_valid, kShardCount, false);
+
+spin:
+  for (;;) {
+#pragma HLS pipeline II = 1
+    RANGE(sid, kShardCount, {
+      UNUSED SET(id_valid[sid], id_q[sid].try_read(id[sid]));
+      UNUSED SET(data_valid[sid], data_in_q[sid].try_read(data[sid]));
+      const auto id_sid = id[sid] / kShardCount * kShardCount + sid;
+      if (id_valid[sid] && data_valid[sid] &&
+          data_out_q[id_sid].try_write(data[sid])) {
+        id_valid[sid] = data_valid[sid] = false;
+      }
+    });
+  }
 }
 
 void VertexReadDataArbiter(tapa::istream<PeId>& id_q,
@@ -470,9 +517,11 @@ void ProcElemS0(
 spin:
   for (;;) {
     const auto src = task_req_q.read();
-    const Index index = (edges_read_addr_q.write(src), ap_wait(),
+    const Index index = (edges_read_addr_q.write(src / kShardCount), ap_wait(),
                          bit_cast<Index>(edges_read_data_q.read()));
     task_s0_q.write({.dst = src, .weight = bit_cast<float>(index.count)});
+    VLOG_F(9, strt) << "shard[" << src % kShardCount << "]: src: " << src
+                    << " #dst: " << index.count;
   read_edges:
     for (Eid eid_req = 0, eid_resp = 0; eid_resp < index.count;) {
       if (eid_req < index.count && eid_req < eid_resp + kMemLatency &&
@@ -482,9 +531,14 @@ spin:
 
       if (UPDATE(edge, edges_read_data_q.try_read(edge),
                  task_s0_q.try_write(edge))) {
+        VLOG_F(9, recv) << "shard[" << src % kShardCount << "]: src: " << src
+                        << " #dst: " << index.count << " #req: " << eid_req
+                        << " #resp: " << eid_resp;
         ++eid_resp;
       }
     }
+    VLOG_F(9, done) << "shard[" << src % kShardCount << "]: src: " << src
+                    << " #dst: " << index.count;
   }
 }
 
@@ -512,6 +566,8 @@ spin:
       DECL_BUF(Vertex, vertex);
       bool task_s1p0_written = false;
       bool read_addr_written = false;
+      VLOG_F(9, strt) << "shard[" << src % kShardCount << "]: src: " << src
+                      << " #dst: " << count;
 
     fwd:
       for (Vid i_req = 0, i_resp = 0; i_resp < count;) {
@@ -534,9 +590,14 @@ spin:
 
         if (UPDATE(vertex, read_data_q.try_read(vertex),
                    task_s1p1_q.try_write(vertex.distance))) {
+          VLOG_F(9, recv) << "shard[" << src % kShardCount << "]: src: " << src
+                          << " #dst: " << count << " #req: " << i_req
+                          << " #resp: " << i_resp;
           ++i_resp;
         }
       }
+      VLOG_F(9, done) << "shard[" << src % kShardCount << "]: src: " << src
+                      << " #dst: " << count;
     }
   }
 }
@@ -581,7 +642,7 @@ spin:
     }
     task_resp_q.write({
         .op = TaskOp::DONE,
-        .task = {.vid = count, .vertex = {}},
+        .task = {.vid = count, .vertex = {.parent = src}},
     });
   }
 }
@@ -645,7 +706,14 @@ void Dispatcher(
   int32_t queue_size = 0;  // Number of tasks in the queue.
   int32_t pop_count = 0;   // Number of POP requests sent but not acknowledged.
 
-  task_req_q[0].write(root);
+  DECL_ARRAY(int32_t, task_count_per_shard, kShardCount, 0);
+  auto task_count_ready = [&task_count_per_shard] {
+    RANGE(sid, kShardCount, if (task_count_per_shard[sid] > 1) return false;);
+    return true;
+  };
+
+  task_req_q[root % kShardCount].write(root);
+  ++task_count_per_shard[root % kShardCount];
 
   // Statistics.
   int32_t visited_vertex_count = 0;
@@ -690,6 +758,7 @@ spin:
           if (queue_buf.task_op == TaskOp::NEW) {
             // POP request returned a new task.
             ++task_count;
+            ++task_count_per_shard[queue_buf.task.vid % kShardCount];
             --queue_size;
             STATS(recv, "QUEUE: NEW ");
           } else {
@@ -699,8 +768,7 @@ spin:
           }
           break;
       }
-    } else if (task_count < kPeCount * 2 && pop_count < kPeCount &&
-               queue_size != 0) {
+    } else if (task_count_ready() && pop_count < kPeCount && queue_size != 0) {
       // Dequeue tasks from the queue.
       if (queue_req_q.try_write({.op = QueueOp::POP, .task = {}})) {
         ++pop_count;
@@ -714,13 +782,17 @@ spin:
     }
 
     // Assign tasks to PEs.
-    UNUSED RESET(queue_buf_valid, task_req_q[pe].try_write(queue_buf.task.vid));
+    const auto pe_req =
+        pe / kShardCount * kShardCount + queue_buf.task.vid % kShardCount;
+    UNUSED RESET(queue_buf_valid,
+                 task_req_q[pe_req].try_write(queue_buf.task.vid));
 
     // Receive tasks generated from PEs.
     if (SET(task_buf_valid, task_resp_q[pe].try_read(task_buf))) {
       if (task_buf.op == TaskOp::DONE) {
         task_buf_valid = false;
         --task_count;
+        --task_count_per_shard[task_buf.task.vertex.parent % kShardCount];
 
         // Update statistics.
         ++visited_vertex_count;
@@ -733,6 +805,8 @@ spin:
     }
   }
 
+  RANGE(sid, kShardCount, CHECK_EQ(task_count_per_shard[sid], 0));
+
   metadata[0] = visited_edge_count;
   metadata[1] = total_queue_size;
   metadata[2] = queue_count;
@@ -741,7 +815,8 @@ spin:
 }
 
 void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
-          tapa::mmap<Edge> edges, tapa::mmap<Vertex> vertices,
+          tapa::async_mmaps<Edge, kShardCount> edges,
+          tapa::mmap<Vertex> vertices,
           // For queues.
           tapa::mmap<Task> heap_array, tapa::mmap<Vid> heap_index) {
   tapa::stream<QueueOp, 256> queue_req_q("queue_req");
@@ -758,9 +833,9 @@ void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
   // For edges.
   tapa::streams<Vid, kPeCount, 2> edge_read_addr_q("edge_read_addr");
   tapa::streams<Edge, kPeCount, 2> edge_read_data_q("edge_read_data");
-  tapa::stream<Vid, 2> edge_read_addr_qi("edges.read_addr");
-  tapa::stream<Edge, 2> edge_read_data_qi("edges.read_data");
-  tapa::stream<PeId, 64> edge_pe_qi("edges.pe");
+  tapa::streams<Vid, kShardCount, 2> edge_read_addr_qi("edges.read_addr");
+  tapa::streams<Edge, kShardCount, 2> edge_read_data_qi("edges.read_data");
+  tapa::streams<PeId, kShardCount, 64> edge_pe_qi("edges.pe");
 
   // For vertices.
   tapa::streams<Vid, kPeCount, 2> vertex_read_addr_q("vertex_read_addr");
@@ -778,15 +853,16 @@ void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
       .invoke<-1>(QueueRespArbiter, queue_resp_qi, queue_resp_q)
 
       // For edges.
-      .invoke<-1>(EdgeMem, edge_read_addr_qi, edge_read_data_qi, edges)
-      .invoke<-1>(ReadAddrArbiter, edge_read_addr_q, edge_pe_qi,
+      .invoke<-1, kShardCount>(EdgeMem, edge_read_addr_qi, edge_read_data_qi,
+                               edges)
+      .invoke<-1>(EdgeReadAddrArbiter, edge_read_addr_q, edge_pe_qi,
                   edge_read_addr_qi)
       .invoke<-1>(EdgeReadDataArbiter, edge_pe_qi, edge_read_data_qi,
                   edge_read_data_q)
 
       // For vertices.
       .invoke<-1>(VertexMem, vertex_read_addr_qi, vertex_read_data_qi, vertices)
-      .invoke<-1>(ReadAddrArbiter, vertex_read_addr_q, vertex_pe_qi,
+      .invoke<-1>(VertexReadAddrArbiter, vertex_read_addr_q, vertex_pe_qi,
                   vertex_read_addr_qi)
       .invoke<-1>(VertexReadDataArbiter, vertex_pe_qi, vertex_read_data_qi,
                   vertex_read_data_q)

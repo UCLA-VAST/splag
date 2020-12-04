@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <deque>
@@ -17,6 +18,7 @@
 #include "sssp.h"
 #include "util.h"
 
+using std::array;
 using std::deque;
 using std::make_unique;
 using std::unordered_map;
@@ -118,7 +120,7 @@ vector<int64_t> SampleVertices(const vector<int64_t>& degree_no_self_loop) {
 // degrees of the coarsened graph for sampling vertices.
 deque<std::pair<Vid, unordered_map<Vid, float>>> Coarsen(
     vector<unordered_map<Vid, float>> indexed_weights, vector<int64_t>& degrees,
-    aligned_vector<Edge>& edges) {
+    array<aligned_vector<Edge>, kShardCount>& edges) {
   const int64_t vertex_count = degrees.size();
   CHECK_EQ(vertex_count, indexed_weights.size());
   const int64_t edge_count = vertex_count * 16;
@@ -222,21 +224,30 @@ deque<std::pair<Vid, unordered_map<Vid, float>>> Coarsen(
       << 100. * std::abs(edge_count_delta) / edge_count << "% of " << edge_count
       << ") edges";
 
-  edges.resize(vertex_count);
-  Eid offset = vertex_count;
+  const int64_t vertex_count_per_edge_partition =
+      tapa::round_up_div<kShardCount>(vertex_count);
+  array<Eid, kShardCount> offset;
+  for (int i = 0; i < kShardCount; ++i) {
+    edges[i].resize(vertex_count_per_edge_partition);
+    offset[i] = vertex_count_per_edge_partition;
+  }
   for (Vid vid = 0; vid < vertex_count; ++vid) {
     const Vid count = degrees[vid];
-    edges[vid] = bit_cast<Edge>(Index{.offset = offset, .count = count});
-    offset += count;
+    const auto sid = vid % kShardCount;
+    edges[sid][vid / kShardCount] =
+        bit_cast<Edge>(Index{.offset = offset[sid], .count = count});
+    offset[sid] += count;
   }
 
-  edges.resize(offset);
+  for (int i = 0; i < kShardCount; ++i) edges[i].resize(offset[i]);
   vector<Vid> vertex_counts(vertex_count);
   for (Vid v0 = 0; v0 < vertex_count; ++v0) {
     for (auto [k, weight] : indexed_weights[v0]) {
       Vid v1 = k;
       for (auto [src, dst] : {std::tie(v0, v1), std::tie(v1, v0)}) {
-        edges[bit_cast<Index>(edges[src]).offset + vertex_counts[src]] = {
+        const auto src_sid = src % kShardCount;
+        const auto index = bit_cast<Index>(edges[src_sid][src / kShardCount]);
+        edges[src_sid][index.offset + vertex_counts[src]] = {
             .dst = Vid(dst),
             .weight = weight,
         };
@@ -246,7 +257,9 @@ deque<std::pair<Vid, unordered_map<Vid, float>>> Coarsen(
   }
 
   for (Vid vid = 0; vid < vertex_count; ++vid) {
-    CHECK_EQ(vertex_counts[vid], bit_cast<Index>(edges[vid]).count);
+    CHECK_EQ(
+        vertex_counts[vid],
+        bit_cast<Index>(edges[vid % kShardCount][vid / kShardCount]).count);
   }
 
   return coarsen_records;
@@ -281,8 +294,9 @@ void Refine(
 }
 
 void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
-          tapa::mmap<Edge> edges, tapa::mmap<Vertex> vertices,
-          tapa::mmap<Task> heap_array, tapa::mmap<Vid> heap_index);
+          tapa::async_mmaps<Edge, kShardCount> edges,
+          tapa::mmap<Vertex> vertices, tapa::mmap<Task> heap_array,
+          tapa::mmap<Vid> heap_index);
 
 int main(int argc, char* argv[]) {
   FLAGS_logtostderr = true;
@@ -362,18 +376,22 @@ int main(int argc, char* argv[]) {
   }
 
   // Allocate and fill edges for the kernel.
-  aligned_vector<Edge> edges;
+  array<aligned_vector<Edge>, kShardCount> edges;
   auto coarsen_records = Coarsen(indexed_weights, degree_no_self_loop, edges);
 
   if (FLAGS_sort || FLAGS_shuffle) {
-    for (Vid vid = 0; vid < vertex_count; ++vid) {
-      const auto index = bit_cast<Index>(edges[vid]);
-      const auto first = edges.begin() + index.offset;
-      const auto last = first + index.count;
-      if (FLAGS_sort) {
-        std::sort(first, last, [](auto& a, auto& b) { return a.dst < b.dst; });
-      } else {
-        std::random_shuffle(first, last);
+    for (auto& shard : edges) {
+      for (Vid vid = 0; vid < tapa::round_up_div<kShardCount>(vertex_count);
+           ++vid) {
+        const auto index = bit_cast<Index>(shard[vid]);
+        const auto first = shard.begin() + index.offset;
+        const auto last = first + index.count;
+        if (FLAGS_sort) {
+          std::sort(first, last,
+                    [](auto& a, auto& b) { return a.dst < b.dst; });
+        } else {
+          std::random_shuffle(first, last);
+        }
       }
     }
   }
@@ -431,14 +449,16 @@ int main(int argc, char* argv[]) {
     auto queue_count = metadata[2];
     auto max_queue_size = metadata[3];
     auto visited_vertex_count = metadata[4];
+    int64_t coarsened_edge_count = 0;
+    for (auto& shard : edges) coarsened_edge_count += shard.size();
     VLOG(3) << "  TEPS:                  " << *teps.rbegin() << " ("
             << 1e9 * elapsed_time / visited_edge_count << " ns/edge visited + "
             << refine_time << " s refinement)";
     VLOG(3) << "  #edges connected:      " << connected_edge_count;
     VLOG(3) << "  #edges visited:        " << visited_edge_count << " ("
             << std::fixed << std::setprecision(1) << std::showpos
-            << 100. * visited_edge_count / edges.size() - 100 << "% over "
-            << edges.size() << ") ";
+            << 100. * visited_edge_count / coarsened_edge_count - 100
+            << "% over " << std::noshowpos << coarsened_edge_count << ") ";
     VLOG(3) << "  #vertices visited:     " << visited_vertex_count << " ("
             << std::fixed << std::setprecision(1) << std::showpos
             << 100. * visited_vertex_count / vertex_count - 100 << "% over "
