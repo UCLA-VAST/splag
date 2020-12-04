@@ -591,7 +591,7 @@ void QueueReqArbiter(tapa::istream<QueueOp>& req_in_q,
   static_assert(is_power_of(kQueueCount, 2), "invalid queue count");
   DECL_BUF(QueueOp, req);
 spin:
-  for (ap_uint<log(kQueueCount, 2)> q = 0;;) {
+  for (ap_uint<log(kQueueCount, 2) + 1> q = 0;;) {
 #pragma HLS pipeline II = 1
     UNUSED SET(req_valid, req_in_q.try_read(req));
     if (req_valid) {
@@ -601,7 +601,7 @@ spin:
                        req_out_q[req.task.vid % kQueueCount].try_write(req));
           break;
         case QueueOp::POP:
-          if (RESET(req_valid, req_out_q[q].try_write(req))) ++q;
+          if (RESET(req_valid, req_out_q[q / 2].try_write(req))) q += 2;
           break;
       }
     }
