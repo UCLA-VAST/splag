@@ -38,13 +38,7 @@ add_xocc_hw_link_targets(
   ${CMAKE_CURRENT_BINARY_DIR}
   --jobs=${NPROC}
   --remote_ip_cache=$ENV{HOME}/.remote_ip_cache
-  --sp=SSSP.metadata:PLRAM[0]
-  --sp=SSSP.edges_0:HBM[16]
-  --sp=SSSP.edges_1:HBM[17]
-  --sp=SSSP.vertices:HBM[18]
-  --sp=SSSP.heap_array:HBM[19]
-  --sp=SSSP.heap_index:HBM[20]
-  --vivado.prop=run.impl_1.STRATEGY=Performance_EarlyBlockPlacement
+  --config=${CMAKE_CURRENT_SOURCE_DIR}/link_config.ini
   --vivado.prop=run.impl_1.STEPS.OPT_DESIGN.TCL.PRE=${CMAKE_CURRENT_SOURCE_DIR}/constraint.tcl
   INPUT sssp-hw-xo
   HW_EMU_XCLBIN hw_emu_xclbin_target
