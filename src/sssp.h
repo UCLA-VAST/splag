@@ -93,6 +93,6 @@ constexpr int kPeCount = 4;
 
 constexpr int kHeapOnChipWidth = 8;  // #children per on-heap element.
 
-constexpr int kHeapOffChipWidth = 8;  // #children per off-heap element.
+constexpr int kHeapOffChipWidth = 16;  // #children per off-heap element.
 
 #endif  // TAPA_SSSP_H_
