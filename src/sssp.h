@@ -96,6 +96,8 @@ static_assert(
     kPeCount % kShardCount == 0,
     "current implementation assumes PE count is a multiple of shard count");
 
+constexpr int kIntervalCount = 2;  // #vertex partitions.
+
 constexpr int kHeapOnChipWidth = 8;  // #children per on-heap element.
 
 constexpr int kHeapOffChipWidth = 16;  // #children per off-heap element.

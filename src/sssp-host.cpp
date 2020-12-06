@@ -267,19 +267,22 @@ deque<std::pair<Vid, unordered_map<Vid, float>>> Coarsen(
 
 void Refine(
     const deque<std::pair<Vid, unordered_map<Vid, float>>>& coarsen_records,
-    aligned_vector<Vertex>& vertices) {
+    array<aligned_vector<Vertex>, kIntervalCount>& vertices) {
+  auto access_vertex = [&vertices](Vid vid) -> Vertex& {
+    return vertices[vid % kIntervalCount][vid / kIntervalCount];
+  };
   for (auto& [v0, edges] : coarsen_records) {
     // All neighbors must be in or not in the SSSP tree at the same time.
     // So if the first one is not, skip this coarsened vertex.
-    if (vertices[edges.begin()->first].parent == kNullVid) continue;
+    if (access_vertex(edges.begin()->first).parent == kNullVid) continue;
 
-    auto& attr0 = vertices[v0];
+    auto& attr0 = access_vertex(v0);
     for (auto& [v1, weight] : edges) {
-      auto& attr1 = vertices[v1];
+      auto& attr1 = access_vertex(v1);
       if (edges.count(attr1.parent) &&
-          almost_equal(attr1.distance, edges.at(attr1.parent) +
-                                           vertices[attr1.parent].distance +
-                                           weight)) {
+          almost_equal(attr1.distance,
+                       edges.at(attr1.parent) +
+                           access_vertex(attr1.parent).distance + weight)) {
         // Parent of v1 is v0.
         attr1.parent = v0;
       } else {
@@ -295,8 +298,8 @@ void Refine(
 
 void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
           tapa::async_mmaps<Edge, kShardCount> edges,
-          tapa::mmap<Vertex> vertices, tapa::mmap<Task> heap_array,
-          tapa::mmap<Vid> heap_index);
+          tapa::async_mmaps<Vertex, kIntervalCount> vertices,
+          tapa::mmap<Task> heap_array, tapa::mmap<Vid> heap_index);
 
 int main(int argc, char* argv[]) {
   FLAGS_logtostderr = true;
@@ -398,7 +401,10 @@ int main(int argc, char* argv[]) {
 
   // Other kernel arguments.
   aligned_vector<int64_t> metadata(5);
-  aligned_vector<Vertex> vertices(vertex_count);
+  array<aligned_vector<Vertex>, kIntervalCount> vertices;
+  for (auto& interval : vertices) {
+    interval.resize(tapa::round_up_div<kIntervalCount>(vertex_count));
+  }
   aligned_vector<Task> heap_array(vertex_count);
   aligned_vector<Vid> heap_index(vertex_count);
 
@@ -410,10 +416,13 @@ int main(int argc, char* argv[]) {
     CHECK_LT(root, vertex_count) << "invalid root";
     LOG(INFO) << "root: " << root;
 
-    std::fill(vertices.begin(), vertices.end(),
-              Vertex{.parent = kNullVid, .distance = kInfDistance});
+    for (auto& interval : vertices) {
+      std::fill(interval.begin(), interval.end(),
+                Vertex{.parent = kNullVid, .distance = kInfDistance});
+    }
     std::fill(heap_index.begin(), heap_index.end(), kNullVid);
-    vertices[root] = {.parent = Vid(root), .distance = 0.f};
+    vertices[root % kIntervalCount][root / kIntervalCount] = {
+        .parent = Vid(root), .distance = 0.f};
 
     unsetenv("KERNEL_TIME_NS");
     auto tic = steady_clock::now();
@@ -433,8 +442,9 @@ int main(int argc, char* argv[]) {
     vector<Vid> parents(vertex_count);
     vector<float> distances(vertex_count);
     for (int64_t vid = 0; vid < vertex_count; ++vid) {
-      parents[vid] = vertices[vid].parent;
-      distances[vid] = vertices[vid].distance;
+      const auto& vertex = vertices[vid % kIntervalCount][vid / kIntervalCount];
+      parents[vid] = vertex.parent;
+      distances[vid] = vertex.distance;
     }
 
     int64_t connected_edge_count = 0;
