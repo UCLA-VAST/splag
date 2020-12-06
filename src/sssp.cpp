@@ -224,24 +224,29 @@ spin:
       case QueueOp::PUSH: {
         const auto new_task = req.task;
         const Vid task_index = get_heap_index(new_task.vid);
-        bool heapify = false;
+        bool heapify = true;
+        bool is_new = true;
         Vid heapify_index = task_index;
         if (task_index != kNullVid) {
           const Task old_task = get_heap_elem(task_index);
           CHECK_EQ(old_task.vid, new_task.vid);
-          if (!(new_task <= old_task)) {
-            heapify = true;
+          if (new_task <= old_task) {
+            heapify = false;
+          } else {
+            is_new = false;
           }
-        } else {
-          if (!(bit_cast<uint32_t>(vertices[new_task.vid].distance) <=
-                bit_cast<uint32_t>(new_task.vertex.distance))) {
-            heapify = true;
+        }
+
+        if (heapify && !(bit_cast<uint32_t>(vertices[new_task.vid].distance) <=
+                         bit_cast<uint32_t>(new_task.vertex.distance))) {
+          if (is_new) {
             heapify_index = heap_size;
             ++heap_size;
             resp.task_op = TaskOp::NEW;
-          } else {
-            clear_heap_index(new_task.vid);
           }
+        } else {
+          heapify = false;
+          clear_heap_index(new_task.vid);
         }
 
         if (heapify) {
