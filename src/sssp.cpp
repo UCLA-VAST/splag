@@ -818,17 +818,17 @@ spin:
           }
           break;
       }
+    } else if (RESET(task_buf_valid,
+                     queue_req_q.try_write(
+                         {.op = QueueOp::PUSH, .task = task_buf.task}))) {
+      // Enqueue tasks generated from PEs.
+      STATS(send, "QUEUE: PUSH");
     } else if (task_count_ready() && pop_count < kPeCount && queue_size != 0) {
       // Dequeue tasks from the queue.
       if (queue_req_q.try_write({.op = QueueOp::POP, .task = {}})) {
         ++pop_count;
         STATS(send, "QUEUE: POP ");
       }
-    } else if (RESET(task_buf_valid,
-                     queue_req_q.try_write(
-                         {.op = QueueOp::PUSH, .task = task_buf.task}))) {
-      // Enqueue tasks generated from PEs.
-      STATS(send, "QUEUE: PUSH");
     }
 
     // Assign tasks to PEs.
