@@ -153,7 +153,6 @@ heap_index_cache_init:
    */
 
   TaskOnChip heap_array_cache[kHeapOnChipSize];
-#pragma HLS array_partition variable = heap_array_cache cyclic factor = 2
 #pragma HLS resource variable = heap_array_cache core = RAM_2P_URAM
 #pragma HLS data_pack variable = heap_array_cache
 
