@@ -8,6 +8,18 @@
 
 #include "sssp-kernel.h"
 
+using tapa::detach;
+using tapa::istream;
+using tapa::ostream;
+using tapa::packet;
+using tapa::seq;
+using tapa::stream;
+using tapa::streams;
+using tapa::task;
+
+using VidPkt = packet<PeId, Vid>;
+using VertexPkt = packet<PeId, Vertex>;
+
 // Estimated DRAM latency.
 constexpr int kMemLatency = 50;
 
@@ -16,8 +28,6 @@ constexpr int kQueueCount = 4;
 static_assert(kQueueCount % kIntervalCount == 0,
               "current implementation requires that queue count is a multiple "
               "of interval count");
-
-using Iid = ap_uint<log(kIntervalCount, 2) + 1>;
 
 // Verbosity definitions:
 //   v=5: O(1)
@@ -420,70 +430,83 @@ spin:
   }
 }
 
-// Route vertex read requests from PEs to intervals.
-void VertexReadAddrArbiter(tapa::istreams<Vid, kPeCount>& req_q,
-                           tapa::ostreams<PeId, kIntervalCount>& id_q,
-                           // Remember which interval should be read next.
-                           tapa::ostreams<Iid, kPeCount>& iid_q,
-                           tapa::ostreams<Vid, kIntervalCount>& addr_q) {
-  DECL_ARRAY(PeId, id, kIntervalCount, PeId());
-  DECL_ARRAY(bool, id_valid, kIntervalCount, false);
-  DECL_ARRAY(Vid, addr, kIntervalCount, kNullVid);
-  DECL_ARRAY(bool, addr_valid, kIntervalCount, false);
-
+// A VidMux merges two input streams into one.
+void VidMux(istream<VidPkt>& in0, istream<VidPkt>& in1, ostream<VidPkt>& out) {
 spin:
-  for (;;) {
+  for (bool flag = false;; flag = !flag) {
 #pragma HLS pipeline II = 1
-    RANGE(pe, kPeCount, {
-      Vid vid;
-      if (req_q[pe].try_peek(vid)) {
-        const Vid iid = vid % kIntervalCount;
-        if (!id_valid[iid] && !addr_valid[iid] && iid_q[pe].try_write(iid)) {
-          CHECK_EQ(vid, req_q[pe].read(nullptr));
-          id[iid] = pe;
-          addr[iid] = vid / kIntervalCount;
-          id_valid[iid] = addr_valid[iid] = true;
-        }
-      }
-    });
-
-    RANGE(iid, kIntervalCount, {
-      UNUSED RESET(id_valid[iid], id_q[iid].try_write(id[iid]));
-      UNUSED RESET(addr_valid[iid], addr_q[iid].try_write(addr[iid]));
-    });
+    VidPkt data;
+    if (flag ? in0.try_read(data) : in1.try_read(data)) out.write(data);
   }
 }
 
-// Route vertex read response from intervals to PEs.
-void VertexReadDataArbiter(tapa::istreams<PeId, kIntervalCount>& id_q,
-                           tapa::istreams<Iid, kPeCount>& iid_q,
-                           tapa::istreams<Vertex, kIntervalCount>& data_in_q,
-                           tapa::ostreams<Vertex, kPeCount>& data_out_q) {
-  DECL_ARRAY(PeId, id, kIntervalCount, PeId());
-  DECL_ARRAY(bool, id_valid, kIntervalCount, false);
-  DECL_ARRAY(Iid, iid_buf, kPeCount, Iid());
-  DECL_ARRAY(bool, iid_valid, kPeCount, false);
-  DECL_ARRAY(Vertex, data, kPeCount, Vertex());
-  DECL_ARRAY(bool, data_valid, kPeCount, false);
-
+// A VertexMux merges two input streams into one based on a selection stream.
+void VertexMux(istream<bool>& select_q, istream<VertexPkt>& in0,
+               istream<VertexPkt>& in1, ostream<VertexPkt>& out) {
+  DECL_BUF(bool, select);
 spin:
   for (;;) {
 #pragma HLS pipeline II = 1
-    RANGE(pe, kPeCount,
-          UNUSED SET(iid_valid[pe], iid_q[pe].try_read(iid_buf[pe])));
+    VertexPkt data;
+    UPDATE(select, select_q.try_read(select),
+           (select ? in1.try_read(data) : in0.try_read(data)) &&
+               (out.write(data), true));
+  }
+}
 
-    RANGE(iid, kIntervalCount, {
-      UNUSED SET(id_valid[iid], id_q[iid].try_read(id[iid]));
-      const auto pe = id[iid];
-      UNUSED RESET(
-          iid_valid[pe],
-          iid_buf[pe] == iid &&
-              RESET(id_valid[iid],
-                    SET(data_valid[pe], data_in_q[iid].try_read(data[pe]))));
-    });
+// A VidDemux routes input streams based on the specified bit in Vid.
+void VidDemux(int b, istream<VidPkt>& in, ostream<bool>& select_q,
+              ostream<VidPkt>& out0, ostream<VidPkt>& out1) {
+spin:
+  for (;;) {
+#pragma HLS pipeline II = 1
+    VidPkt data;
+    if (in.try_read(data)) {
+      const bool select =
+          ap_uint<sizeof(data.payload) * CHAR_BIT>(data.payload).test(b);
+      select ? out1.write(data) : out0.write(data);
+      select_q.write(select);
+    }
+  }
+}
 
-    RANGE(pe, kPeCount,
-          UNUSED RESET(data_valid[pe], data_out_q[pe].try_write(data[pe])));
+// A VertexDemux routes input streams based on the specified bit in PeId.
+void VertexDemux(int b, istream<VertexPkt>& in, ostream<VertexPkt>& out0,
+                 ostream<VertexPkt>& out1) {
+spin:
+  for (;;) {
+#pragma HLS pipeline II = 1
+    VertexPkt data;
+    if (in.try_read(data)) {
+      ap_uint<sizeof(data.addr) * CHAR_BIT>(data.addr).test(b)
+          ? out1.write(data)
+          : out0.write(data);
+    }
+  }
+}
+
+void VertexTagger(int id, istream<VidPkt>& pkt_q, ostream<PeId>& tag_q,
+                  ostream<Vid>& addr_q) {
+spin:
+  for (;;) {
+#pragma HLS pipeline II = 1
+    VidPkt pkt;
+    if (pkt_q.try_read(pkt)) {
+      CHECK_EQ(pkt.payload % kIntervalCount, id);
+      tag_q.write(pkt.addr);
+      addr_q.write(pkt.payload / kIntervalCount);
+    }
+  }
+}
+
+void VertexUntagger(istream<PeId>& tag_q, istream<Vertex>& data_q,
+                    ostream<packet<PeId, Vertex>>& pkt_q) {
+spin:
+  for (;;) {
+#pragma HLS pipeline II = 1
+    if (!tag_q.empty() && !data_q.empty()) {
+      pkt_q.write({tag_q.read(), data_q.read()});
+    }
   }
 }
 
@@ -593,19 +616,24 @@ spin:
 }
 
 void ProcElemS1(
+    // PE id.
+    PeId id,
     // Task data.
     tapa::istream<Edge>& task_s0_q, tapa::ostream<Update>& task_s1p0_q,
     tapa::ostream<float>& task_s1p1_q,
     // Memory-maps.
-    tapa::ostream<Vid>& read_addr_q, tapa::istream<Vertex>& read_data_q) {
+    ostream<VidPkt>& read_addr_q, istream<VertexPkt>& read_data_q) {
 spin:
   for (;;) {
     Edge task_s0;
     if (task_s0_q.try_read(task_s0)) {
       const auto src = task_s0.dst;
       const auto count = bit_cast<Vid>(task_s0.weight);
-      const auto src_distance =
-          (read_addr_q.write(src), ap_wait(), read_data_q.read().distance);
+      read_addr_q.write({id, src});
+      ap_wait();
+      const auto vertex_pkt = read_data_q.read();
+      CHECK_EQ(vertex_pkt.addr, id);
+      const auto src_distance = vertex_pkt.payload.distance;
       task_s1p0_q.write({
           .vid = src,
           .distance = src_distance,
@@ -613,7 +641,7 @@ spin:
       });
 
       DECL_BUF(Edge, task_s0);
-      DECL_BUF(Vertex, vertex);
+      DECL_BUF(VertexPkt, vertex);
       bool task_s1p0_written = false;
       bool read_addr_written = false;
       VLOG_F(9, strt) << "shard[" << src % kShardCount << "]: src: " << src
@@ -628,7 +656,7 @@ spin:
             SET(task_s1p0_written,
                 task_s1p0_q.try_write(
                     {.vid = task_s0.dst, .distance = task_s0.weight}));
-            SET(read_addr_written, read_addr_q.try_write(task_s0.dst));
+            SET(read_addr_written, read_addr_q.try_write({id, task_s0.dst}));
           }
           if (task_s1p0_written && read_addr_written) {
             task_s0_valid = false;
@@ -639,7 +667,7 @@ spin:
         }
 
         if (UPDATE(vertex, read_data_q.try_read(vertex),
-                   task_s1p1_q.try_write(vertex.distance))) {
+                   task_s1p1_q.try_write(vertex.payload.distance))) {
           VLOG_F(9, recv) << "shard[" << src % kShardCount << "]: src: " << src
                           << " #dst: " << count << " #req: " << i_req
                           << " #resp: " << i_resp;
@@ -888,14 +916,25 @@ void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
   tapa::streams<PeId, kShardCount, 64> edge_pe_qi("edges.pe");
 
   // For vertices.
-  tapa::streams<Vid, kPeCount, 2> vertex_read_addr_q("vertex_read_addr");
-  tapa::streams<Vertex, kPeCount, 2> vertex_read_data_q("vertex_read_data");
-  tapa::streams<Vid, kIntervalCount, 2> vertex_read_addr_qi(
-      "vertices.read_addr");
-  tapa::streams<Vertex, kIntervalCount, 2> vertex_read_data_qi(
-      "vertices.read_data");
-  tapa::streams<PeId, kIntervalCount, 64> vertex_pe_qi("vertices.pe");
-  tapa::streams<Iid, kPeCount, 64> vertex_iid_qi("vertices.iid");
+  //   Connect PEs to the addr network.
+  streams<VidPkt, kPeCount, 2> vertex_read_addr_q;
+  //   Compose the addr network.
+  streams<VidPkt, kIntervalCount, 8> vertex_read_addr_qi1;
+  streams<VidPkt, kIntervalCount, 8> vertex_read_addr_0_qi0;
+  streams<VidPkt, kIntervalCount, 8> vertex_read_addr_1_qi0;
+  streams<bool, kIntervalCount, 64> vertex_select_qi0;
+  streams<VidPkt, kIntervalCount, 8> vertex_read_addr_qi0;
+  //   Connects the memory.
+  streams<Vid, kIntervalCount, 2> vertex_read_addr_qi;
+  streams<PeId, kIntervalCount, 64> vertex_tag_qi;
+  streams<Vertex, kIntervalCount, 2> vertex_read_data_qi;
+  //   Compose the data network.
+  streams<VertexPkt, kIntervalCount, 8> vertex_read_data_qi0;
+  streams<VertexPkt, kIntervalCount, 8> vertex_read_data_0_qi0;
+  streams<VertexPkt, kIntervalCount, 8> vertex_read_data_1_qi0;
+  streams<VertexPkt, kIntervalCount, 8> vertex_read_data_qi1;
+  //   Connect the data network to PEs.
+  streams<VertexPkt, kPeCount, 2> vertex_read_data_q;
 
   tapa::task()
       .invoke<0>(Dispatcher, root, metadata, task_req_q, task_resp_q,
@@ -914,17 +953,32 @@ void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
                   edge_read_data_q)
 
       // For vertices.
-      .invoke<-1, kIntervalCount>(VertexMem, vertex_read_addr_qi,
-                                  vertex_read_data_qi, vertices)
-      .invoke<-1>(VertexReadAddrArbiter, vertex_read_addr_q, vertex_pe_qi,
-                  vertex_iid_qi, vertex_read_addr_qi)
-      .invoke<-1>(VertexReadDataArbiter, vertex_pe_qi, vertex_iid_qi,
-                  vertex_read_data_qi, vertex_read_data_q)
+      // clang-format off
+      .invoke<detach>(VidMux, vertex_read_addr_q[0], vertex_read_addr_q[2], vertex_read_addr_qi1[0])
+      .invoke<detach>(VidMux, vertex_read_addr_q[1], vertex_read_addr_q[3], vertex_read_addr_qi1[1])
+      .invoke<detach, kIntervalCount>(VidDemux, 0, vertex_read_addr_qi1, vertex_select_qi0, vertex_read_addr_0_qi0, vertex_read_addr_1_qi0)
+      .invoke<detach>(VidMux, vertex_read_addr_0_qi0[0], vertex_read_addr_0_qi0[1], vertex_read_addr_qi0[0])
+      .invoke<detach>(VidMux, vertex_read_addr_1_qi0[0], vertex_read_addr_1_qi0[1], vertex_read_addr_qi0[1])
+      // clang-format on
+      .invoke<detach, kIntervalCount>(VertexTagger, seq(), vertex_read_addr_qi0,
+                                      vertex_tag_qi, vertex_read_addr_qi)
+      .invoke<detach, kIntervalCount>(VertexMem, vertex_read_addr_qi,
+                                      vertex_read_data_qi, vertices)
+      .invoke<detach, kIntervalCount>(VertexUntagger, vertex_tag_qi,
+                                      vertex_read_data_qi, vertex_read_data_qi0)
+      // clang-format off
+      .invoke<detach, kIntervalCount>(VertexDemux, 0, vertex_read_data_qi0, vertex_read_data_0_qi0, vertex_read_data_1_qi0)
+      .invoke<detach>(VertexMux, vertex_select_qi0[0], vertex_read_data_0_qi0[0], vertex_read_data_0_qi0[1], vertex_read_data_qi1[0])
+      .invoke<detach>(VertexMux, vertex_select_qi0[1], vertex_read_data_1_qi0[0], vertex_read_data_1_qi0[1], vertex_read_data_qi1[1])
+      .invoke<detach>(VertexDemux, 1, vertex_read_data_qi1[0], vertex_read_data_q[0], vertex_read_data_q[2])
+      .invoke<detach>(VertexDemux, 1, vertex_read_data_qi1[1], vertex_read_data_q[1], vertex_read_data_q[3])
+      // clang-format on
 
       // PEs.
       .invoke<-1, kPeCount>(ProcElemS0, task_req_q, task_s0_q, edge_read_addr_q,
                             edge_read_data_q)
-      .invoke<-1, kPeCount>(ProcElemS1, task_s0_q, task_s1p0_q, task_s1p1_q,
-                            vertex_read_addr_q, vertex_read_data_q)
+      .invoke<detach, kPeCount>(ProcElemS1, seq(), task_s0_q, task_s1p0_q,
+                                task_s1p1_q, vertex_read_addr_q,
+                                vertex_read_data_q)
       .invoke<-1, kPeCount>(ProcElemS2, task_s1p0_q, task_s1p1_q, task_resp_q);
 }
