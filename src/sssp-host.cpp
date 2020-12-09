@@ -400,7 +400,7 @@ int main(int argc, char* argv[]) {
   }
 
   // Other kernel arguments.
-  aligned_vector<int64_t> metadata(5);
+  aligned_vector<int64_t> metadata(7);
   array<aligned_vector<Vertex>, kIntervalCount> vertices;
   for (auto& interval : vertices) {
     interval.resize(tapa::round_up_div<kIntervalCount>(vertex_count));
@@ -459,6 +459,8 @@ int main(int argc, char* argv[]) {
     auto queue_count = metadata[2];
     auto max_queue_size = metadata[3];
     auto visited_vertex_count = metadata[4];
+    auto total_task_count = metadata[5];
+    auto cycle_count = metadata[6];
     int64_t coarsened_edge_count = 0;
     for (auto& shard : edges) coarsened_edge_count += shard.size();
     VLOG(3) << "  TEPS:                  " << *teps.rbegin() << " ("
@@ -482,6 +484,9 @@ int main(int argc, char* argv[]) {
             << 100. * max_queue_size / vertex_count << "% of " << vertex_count
             << ")";
     VLOG(3) << "  queue operations:      " << queue_count;
+    VLOG(3) << "  average task count:    " << std::fixed << std::setprecision(1)
+            << 1. * total_task_count / cycle_count;
+    VLOG(3) << "  cycle count:           " << cycle_count;
 
     if (!IsValid(root, edges_view, weights_view, indexed_weights,
                  parents.data(), distances.data(), vertex_count)) {

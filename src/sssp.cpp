@@ -799,6 +799,8 @@ void Dispatcher(
   int32_t queue_count = 0;
   int64_t total_queue_size = 0;
   int32_t max_queue_size = 0;
+  int64_t total_task_count = 0;
+  int64_t cycle_count = 0;
 
   // Format log messages.
 #define STATS(tag, content)                                                    \
@@ -811,9 +813,10 @@ void Dispatcher(
   } while (0)
 
 spin:
-  for (uint8_t pe = 0; queue_size != 0 || task_count != 0 || pop_count != 0;
-       pe = pe == kPeCount - 1 ? 0 : pe + 1) {
+  for (; queue_size != 0 || task_count != 0 || pop_count != 0; ++cycle_count) {
 #pragma HLS pipeline II = 1
+    total_task_count += task_count;
+    const auto pe = cycle_count % kPeCount;
     // Process response messages from the queue.
     if (SET(queue_buf_valid, queue_resp_q.try_read(queue_buf))) {
       switch (queue_buf.queue_op) {
@@ -890,6 +893,8 @@ spin:
   metadata[2] = queue_count;
   metadata[3] = max_queue_size;
   metadata[4] = visited_vertex_count;
+  metadata[5] = total_task_count;
+  metadata[6] = cycle_count;
 }
 
 void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
