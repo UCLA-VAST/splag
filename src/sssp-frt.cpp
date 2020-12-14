@@ -40,45 +40,49 @@ void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
   }
 
   // Child.
-  auto instance = fpga::Instance(getenv("BITSTREAM"));
-  auto metadata_arg = fpga::ReadWrite(metadata.get(), metadata.size());
-  std::vector<fpga::WriteOnlyBuffer<Edge>> edge_args;
-  edge_args.reserve(kShardCount);
-  for (int i = 0; i < kShardCount; ++i) {
-    edge_args.push_back(fpga::WriteOnly(edges[i].get(), edges[i].size()));
-  }
-  std::vector<fpga::ReadWriteBuffer<Vertex>> vertex_args;
-  vertex_args.reserve(kIntervalCount);
-  for (int i = 0; i < kIntervalCount; ++i) {
-    vertex_args.push_back(
-        fpga::ReadWrite(vertices[i].get(), vertices[i].size()));
-  }
-  auto heap_array_arg = fpga::Placeholder(heap_array.get(), heap_array.size());
-  auto heap_index_arg = fpga::Placeholder(heap_index.get(), heap_index.size());
+  {
+    auto instance = fpga::Instance(getenv("BITSTREAM"));
+    auto metadata_arg = fpga::ReadWrite(metadata.get(), metadata.size());
+    std::vector<fpga::WriteOnlyBuffer<Edge>> edge_args;
+    edge_args.reserve(kShardCount);
+    for (int i = 0; i < kShardCount; ++i) {
+      edge_args.push_back(fpga::WriteOnly(edges[i].get(), edges[i].size()));
+    }
+    std::vector<fpga::ReadWriteBuffer<Vertex>> vertex_args;
+    vertex_args.reserve(kIntervalCount);
+    for (int i = 0; i < kIntervalCount; ++i) {
+      vertex_args.push_back(
+          fpga::ReadWrite(vertices[i].get(), vertices[i].size()));
+    }
+    auto heap_array_arg =
+        fpga::Placeholder(heap_array.get(), heap_array.size());
+    auto heap_index_arg =
+        fpga::Placeholder(heap_index.get(), heap_index.size());
 
-  int arg_idx = 0;
-  instance.SetArg(arg_idx++, vertex_count);
-  instance.SetArg(arg_idx++, root);
-  instance.AllocBuf(arg_idx, metadata_arg);
-  instance.SetArg(arg_idx++, metadata_arg);
-  for (auto& edge_arg : edge_args) {
-    instance.AllocBuf(arg_idx, edge_arg);
-    instance.SetArg(arg_idx++, edge_arg);
-  }
-  for (auto& vertex_arg : vertex_args) {
-    instance.AllocBuf(arg_idx, vertex_arg);
-    instance.SetArg(arg_idx++, vertex_arg);
-  }
-  instance.AllocBuf(arg_idx, heap_array_arg);
-  instance.SetArg(arg_idx++, heap_array_arg);
-  instance.AllocBuf(arg_idx, heap_index_arg);
-  instance.SetArg(arg_idx++, heap_index_arg);
+    int arg_idx = 0;
+    instance.SetArg(arg_idx++, vertex_count);
+    instance.SetArg(arg_idx++, root);
+    instance.AllocBuf(arg_idx, metadata_arg);
+    instance.SetArg(arg_idx++, metadata_arg);
+    for (auto& edge_arg : edge_args) {
+      instance.AllocBuf(arg_idx, edge_arg);
+      instance.SetArg(arg_idx++, edge_arg);
+    }
+    for (auto& vertex_arg : vertex_args) {
+      instance.AllocBuf(arg_idx, vertex_arg);
+      instance.SetArg(arg_idx++, vertex_arg);
+    }
+    instance.AllocBuf(arg_idx, heap_array_arg);
+    instance.SetArg(arg_idx++, heap_array_arg);
+    instance.AllocBuf(arg_idx, heap_index_arg);
+    instance.SetArg(arg_idx++, heap_index_arg);
 
-  instance.WriteToDevice();
-  instance.Exec();
-  instance.ReadFromDevice();
-  instance.Finish();
+    instance.WriteToDevice();
+    instance.Exec();
+    instance.ReadFromDevice();
+    instance.Finish();
 
-  *kernel_time_ns = instance.ComputeTimeNanoSeconds();
+    *kernel_time_ns = instance.ComputeTimeNanoSeconds();
+  }
   exit(EXIT_SUCCESS);
 }
