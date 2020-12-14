@@ -89,7 +89,7 @@ inline std::ostream& operator<<(std::ostream& os, const Task& obj) {
 }
 
 // Platform-specific constants and types.
-constexpr int kPeCount = 8;
+constexpr int kPeCount = 16;
 
 constexpr int kShardCount = 2;  // #edge partitions.
 static_assert(
