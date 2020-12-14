@@ -927,6 +927,7 @@ void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
   // For vertices.
   //   Connect PEs to the addr network.
   streams<VidPkt, kPeCount, 2> vertex_read_addr_q;
+  streams<VidPkt, kPeCount / 2, 8> vertex_read_addr_qi2;
   //   Compose the addr network.
   streams<VidPkt, kIntervalCount, 8> vertex_read_addr_qi1;
   streams<VidPkt, kIntervalCount, 8> vertex_read_addr_0_qi0;
@@ -943,6 +944,7 @@ void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
   streams<VertexPkt, kIntervalCount, 8> vertex_read_data_1_qi0;
   streams<VertexPkt, kIntervalCount, 8> vertex_read_data_qi1;
   //   Connect the data network to PEs.
+  streams<VertexPkt, kPeCount / 2, 8> vertex_read_data_qi2;
   streams<VertexPkt, kPeCount, 2> vertex_read_data_q;
 
   tapa::task()
@@ -963,8 +965,12 @@ void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
 
       // For vertices.
       // clang-format off
-      .invoke<detach>(VidMux, vertex_read_addr_q[0], vertex_read_addr_q[2], vertex_read_addr_qi1[0])
-      .invoke<detach>(VidMux, vertex_read_addr_q[1], vertex_read_addr_q[3], vertex_read_addr_qi1[1])
+      .invoke<detach>(VidMux, vertex_read_addr_q[0], vertex_read_addr_q[4], vertex_read_addr_qi2[0])
+      .invoke<detach>(VidMux, vertex_read_addr_q[1], vertex_read_addr_q[5], vertex_read_addr_qi2[1])
+      .invoke<detach>(VidMux, vertex_read_addr_q[2], vertex_read_addr_q[6], vertex_read_addr_qi2[2])
+      .invoke<detach>(VidMux, vertex_read_addr_q[3], vertex_read_addr_q[7], vertex_read_addr_qi2[3])
+      .invoke<detach>(VidMux, vertex_read_addr_qi2[0], vertex_read_addr_qi2[2], vertex_read_addr_qi1[0])
+      .invoke<detach>(VidMux, vertex_read_addr_qi2[1], vertex_read_addr_qi2[3], vertex_read_addr_qi1[1])
       .invoke<detach, kIntervalCount>(VidDemux, 0, vertex_read_addr_qi1, vertex_select_qi0, vertex_read_addr_0_qi0, vertex_read_addr_1_qi0)
       .invoke<detach>(VidMux, vertex_read_addr_0_qi0[0], vertex_read_addr_0_qi0[1], vertex_read_addr_qi0[0])
       .invoke<detach>(VidMux, vertex_read_addr_1_qi0[0], vertex_read_addr_1_qi0[1], vertex_read_addr_qi0[1])
@@ -979,8 +985,12 @@ void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
       .invoke<detach, kIntervalCount>(VertexDemux, 0, vertex_read_data_qi0, vertex_read_data_0_qi0, vertex_read_data_1_qi0)
       .invoke<detach>(VertexMux, vertex_select_qi0[0], vertex_read_data_0_qi0[0], vertex_read_data_0_qi0[1], vertex_read_data_qi1[0])
       .invoke<detach>(VertexMux, vertex_select_qi0[1], vertex_read_data_1_qi0[0], vertex_read_data_1_qi0[1], vertex_read_data_qi1[1])
-      .invoke<detach>(VertexDemux, 1, vertex_read_data_qi1[0], vertex_read_data_q[0], vertex_read_data_q[2])
-      .invoke<detach>(VertexDemux, 1, vertex_read_data_qi1[1], vertex_read_data_q[1], vertex_read_data_q[3])
+      .invoke<detach>(VertexDemux, 1, vertex_read_data_qi1[0], vertex_read_data_qi2[0], vertex_read_data_qi2[2])
+      .invoke<detach>(VertexDemux, 1, vertex_read_data_qi1[1], vertex_read_data_qi2[1], vertex_read_data_qi2[3])
+      .invoke<detach>(VertexDemux, 2, vertex_read_data_qi2[0], vertex_read_data_q[0], vertex_read_data_q[4])
+      .invoke<detach>(VertexDemux, 2, vertex_read_data_qi2[1], vertex_read_data_q[1], vertex_read_data_q[5])
+      .invoke<detach>(VertexDemux, 2, vertex_read_data_qi2[2], vertex_read_data_q[2], vertex_read_data_q[6])
+      .invoke<detach>(VertexDemux, 2, vertex_read_data_qi2[3], vertex_read_data_q[3], vertex_read_data_q[7])
       // clang-format on
 
       // PEs.
