@@ -794,8 +794,11 @@ void Dispatcher(
     return true;
   };
 
+  DECL_ARRAY(bool, pe_active, kPeCount, false);
+
   task_req_q[root % kShardCount].write(root);
   ++task_count_per_shard[root % kShardCount];
+  pe_active[root % kShardCount] = true;
 
   // Statistics.
   int32_t visited_vertex_count = 0;
@@ -805,6 +808,9 @@ void Dispatcher(
   int32_t max_queue_size = 0;
   int64_t total_task_count = 0;
   int64_t cycle_count = 0;
+  int64_t queue_full_cycle_count = 0;
+  int64_t pe_fullcycle_count = 0;
+  DECL_ARRAY(int64_t, pe_active_count, kPeCount, 0);
 
   // Format log messages.
 #define STATS(tag, content)                                                    \
@@ -819,6 +825,7 @@ void Dispatcher(
 spin:
   for (; queue_size != 0 || task_count != 0 || pop_count != 0; ++cycle_count) {
 #pragma HLS pipeline II = 1
+    RANGE(pe, kPeCount, pe_active[pe] && ++pe_active_count[pe]);
     total_task_count += task_count;
     const auto pe = cycle_count % kPeCount;
     // Process response messages from the queue.
@@ -864,17 +871,24 @@ spin:
       if (queue_req_q.try_write({.op = QueueOp::POP, .task = {}})) {
         ++pop_count;
         STATS(send, "QUEUE: POP ");
+      } else {
+        ++queue_full_cycle_count;
       }
     }
 
     // Assign tasks to PEs.
     const auto pe_req =
         pe / kShardCount * kShardCount + queue_buf.task.vid % kShardCount;
-    UNUSED RESET(queue_buf_valid,
-                 task_req_q[pe_req].try_write(queue_buf.task.vid));
+    if (RESET(queue_buf_valid,
+              task_req_q[pe_req].try_write(queue_buf.task.vid))) {
+      pe_active[pe_req] = true;
+    } else if (queue_buf_valid) {
+      ++pe_fullcycle_count;
+    }
 
     // Receive tasks generated from PEs.
     if (SET(task_buf_valid, task_resp_q[pe].try_read(task_buf))) {
+      pe_active[pe] = false;
       if (task_buf.op == TaskOp::DONE) {
         task_buf_valid = false;
         --task_count;
@@ -900,6 +914,14 @@ spin:
   metadata[4] = visited_vertex_count;
   metadata[5] = total_task_count;
   metadata[6] = cycle_count;
+  metadata[7] = queue_full_cycle_count;
+  metadata[8] = pe_fullcycle_count;
+
+meta:
+  for (int pe = 0; pe < kPeCount; ++pe) {
+#pragma HLS pipeline II = 1
+    metadata[9 + pe] = pe_active_count[pe];
+  }
 }
 
 void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,

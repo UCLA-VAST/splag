@@ -400,7 +400,7 @@ int main(int argc, char* argv[]) {
   }
 
   // Other kernel arguments.
-  aligned_vector<int64_t> metadata(7);
+  aligned_vector<int64_t> metadata(9 + kPeCount);
   array<aligned_vector<Vertex>, kIntervalCount> vertices;
   for (auto& interval : vertices) {
     interval.resize(tapa::round_up_div<kIntervalCount>(vertex_count));
@@ -487,6 +487,33 @@ int main(int argc, char* argv[]) {
     VLOG(3) << "  average task count:    " << std::fixed << std::setprecision(1)
             << 1. * total_task_count / cycle_count;
     VLOG(3) << "  cycle count:           " << cycle_count;
+    VLOG(3) << "    queue full:          " << metadata[7] << " (" << std::fixed
+            << std::setprecision(1) << 100. * metadata[7] / cycle_count << "%)";
+    VLOG(3) << "    PE full:             " << metadata[8] << " (" << std::fixed
+            << std::setprecision(1) << 100. * metadata[8] / cycle_count << "%)";
+    int64_t pe_active_total = 0;
+    for (int pe = 0; pe < kPeCount; ++pe) {
+      const auto count = metadata[9 + pe];
+      VLOG(3) << "    PE[" << std::setfill(' ') << std::setw(3) << pe
+              << "] active:      " << count << " (" << std::fixed
+              << std::setprecision(1) << 100. * count / cycle_count << "%)";
+      pe_active_total += count;
+    }
+    VLOG(3) << "    total active:        " << pe_active_total << " ("
+            << std::fixed << std::setprecision(1)
+            << 100. * pe_active_total / cycle_count << "%)";
+    VLOG(3) << "    per PE active:       " << pe_active_total / kPeCount << " ("
+            << std::fixed << std::setprecision(1)
+            << 100. * pe_active_total / cycle_count / kPeCount << "%) ("
+            << kPeCount << " PEs)";
+    VLOG(3) << "    per shard active:    " << pe_active_total / kShardCount
+            << " (" << std::fixed << std::setprecision(1)
+            << 100. * pe_active_total / cycle_count / kShardCount << "%) ("
+            << kShardCount << " shards)";
+    VLOG(3) << "    per interval active: " << pe_active_total / kIntervalCount
+            << " (" << std::fixed << std::setprecision(1)
+            << 100. * pe_active_total / cycle_count / kIntervalCount << "%) ("
+            << kIntervalCount << " intervals)";
 
     if (!IsValid(root, edges_view, weights_view, indexed_weights,
                  parents.data(), distances.data(), vertex_count)) {
