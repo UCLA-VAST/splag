@@ -27,6 +27,7 @@ inline constexpr bool is_power_of(int64_t n, int64_t b) {
 inline constexpr int64_t log(int64_t n, int64_t b) {
   return n == 1 ? 0 : log(n / b, b) + 1;
 }
+inline constexpr int64_t bit_length(int64_t n) { return 1 + log(n, 2); }
 
 // Application-specific constants and type definitions.
 using Vid = int32_t;  // Large enough to index all vertices.
