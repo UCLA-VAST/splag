@@ -890,8 +890,8 @@ spin:
 
     // Receive tasks generated from PEs.
     if (SET(task_buf_valid, task_resp_q[pe].try_read(task_buf))) {
-      pe_active[pe] = false;
       if (task_buf.op == TaskOp::DONE) {
+        pe_active[pe] = false;
         task_buf_valid = false;
         --task_count;
         --task_count_per_shard[task_buf.task.vertex.parent % kShardCount];
