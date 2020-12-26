@@ -867,6 +867,8 @@ spin:
       if (queue_req_q.try_write({.op = QueueOp::PUSH, .task = task_buf.task})) {
         task_buf_valid = false;
         STATS(send, "QUEUE: PUSH");
+      } else {
+        ++queue_full_cycle_count;
       }
     } else if (task_count_ready() && pop_count < kPeCount && queue_size != 0) {
       // Dequeue tasks from the queue.
