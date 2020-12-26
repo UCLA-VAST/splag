@@ -954,7 +954,7 @@ void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
   tapa::streams<QueueOp, kQueueCount, 2> queue_req_qi("queue_req_i");
   tapa::streams<QueueOpResp, kQueueCount, 2> queue_resp_qi("queue_resp_i");
 
-  streams<Vid, kPeCount, kPeCount / kShardCount * 4> task_req_q("task_req");
+  streams<Vid, kPeCount, kTaskCapPerPe> task_req_q("task_req");
   tapa::streams<Edge, kPeCount, 2> task_s0_q("task_stage0");
   tapa::streams<Update, kPeCount, 64> task_s1p0_q("task_stage1_part0");
   tapa::streams<float, kPeCount, 2> task_s1p1_q("task_stage1_part1");
