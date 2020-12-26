@@ -776,7 +776,6 @@ spin:
   }
 }
 
-constexpr int kPopCapPerShard = 1;
 constexpr int kTaskCapPerPe = 2;
 constexpr int kTaskCapPerShard = kPeCount / kShardCount * kTaskCapPerPe;
 
@@ -881,8 +880,8 @@ spin:
       } else {
         ++queue_full_cycle_count;
       }
-    } else if (task_count_per_shard[sid] < kTaskCapPerShard &&
-               pop_count[sid] < kPopCapPerShard && queue_size != 0) {
+    } else if (task_count_per_shard[sid] + pop_count[sid] < kTaskCapPerShard &&
+               queue_size != 0) {
       // Dequeue tasks from the queue.
       if (queue_req_q.try_write({.op = QueueOp::POP, .task = {.vid = sid}})) {
         ++pop_count[sid];
