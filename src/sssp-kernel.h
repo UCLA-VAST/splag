@@ -180,6 +180,19 @@ inline bool All(const bool (&array)[N]) {
 }
 
 template <typename T>
+inline bool Any(const T (&array)[1]) {
+#pragma HLS inline
+  return array[0];
+}
+
+template <typename T, int N>
+inline bool Any(const T (&array)[N]) {
+#pragma HLS inline
+  return Any((const T(&)[N / 2])(array)) &&
+         Any((const T(&)[N - N / 2])(array[N / 2]));
+}
+
+template <typename T>
 inline void MemSet(T (&array)[1], T value) {
 #pragma HLS inline
   array[0] = value;
