@@ -804,6 +804,8 @@ void Dispatcher(
   DECL_ARRAY(int32_t, task_count_per_shard, kShardCount, 0);
   DECL_ARRAY(int32_t, task_count_per_pe, kPeCount, 0);
 
+  DECL_ARRAY(int32_t, pe_base_per_shard, kShardCount, 0);
+
   task_req_q[root % kShardCount].write(root);
   ++task_count_per_shard[root % kShardCount];
   ++task_count_per_pe[root % kShardCount];
@@ -891,14 +893,18 @@ spin:
     }
 
     // Assign tasks to PEs.
-    const auto pe_req =
-        (cycle_count * kShardCount + queue_buf.task.vid % kShardCount) %
-        kPeCount;
-    if (RESET(queue_buf_valid,
-              task_req_q[pe_req].try_write(queue_buf.task.vid))) {
-      ++task_count_per_pe[pe_req];
-    } else if (queue_buf_valid) {
-      ++pe_fullcycle_count;
+    {
+      const auto sid = queue_buf.task.vid % kShardCount;
+      const auto pe = (pe_base_per_shard[sid] * kShardCount + sid) % kPeCount;
+      if (queue_buf_valid) {
+        if (task_req_q[pe].try_write(queue_buf.task.vid)) {
+          queue_buf_valid = false;
+          ++task_count_per_pe[pe];
+        } else {
+          ++pe_fullcycle_count;
+        }
+        ++pe_base_per_shard[sid];
+      }
     }
 
     // Receive tasks generated from PEs.
