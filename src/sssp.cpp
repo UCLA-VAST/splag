@@ -556,11 +556,13 @@ spin:
     RANGE(sid, kShardCount, {
       UNUSED SET(id_valid[sid], id_q[sid].try_read(id[sid]));
       UNUSED SET(data_valid[sid], data_in_q[sid].try_read(data[sid]));
-      const auto id_sid = id[sid] / kShardCount * kShardCount + sid;
-      if (id_valid[sid] && data_valid[sid] &&
-          data_out_q[id_sid].try_write(data[sid])) {
-        id_valid[sid] = data_valid[sid] = false;
-      }
+      RANGE(pe_sid, kPeCount / kShardCount, {
+        const auto pe = pe_sid * kShardCount + sid;
+        if (id_valid[sid] && data_valid[sid] && id[sid] == pe &&
+            data_out_q[pe].try_write(data[sid])) {
+          id_valid[sid] = data_valid[sid] = false;
+        }
+      });
     });
   }
 }
