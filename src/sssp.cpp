@@ -802,12 +802,11 @@ void Dispatcher(
   DECL_ARRAY(int32_t, pop_count, kShardCount, 0);
 
   DECL_ARRAY(int32_t, task_count_per_shard, kShardCount, 0);
-
-  DECL_ARRAY(bool, pe_active, kPeCount, false);
+  DECL_ARRAY(int32_t, task_count_per_pe, kPeCount, 0);
 
   task_req_q[root % kShardCount].write(root);
   ++task_count_per_shard[root % kShardCount];
-  pe_active[root % kShardCount] = true;
+  ++task_count_per_pe[root % kShardCount];
 
   // Statistics.
   int32_t visited_vertex_count = 0;
@@ -834,7 +833,7 @@ void Dispatcher(
 spin:
   for (; queue_size != 0 || task_count != 0 || Any(pop_count); ++cycle_count) {
 #pragma HLS pipeline II = 1
-    RANGE(pe, kPeCount, pe_active[pe] && ++pe_active_count[pe]);
+    RANGE(pe, kPeCount, task_count_per_pe[pe] && ++pe_active_count[pe]);
     total_task_count += task_count;
     const auto pe = cycle_count % kPeCount;
     // Process response messages from the queue.
@@ -897,7 +896,7 @@ spin:
         kPeCount;
     if (RESET(queue_buf_valid,
               task_req_q[pe_req].try_write(queue_buf.task.vid))) {
-      pe_active[pe_req] = true;
+      ++task_count_per_pe[pe_req];
     } else if (queue_buf_valid) {
       ++pe_fullcycle_count;
     }
@@ -905,10 +904,10 @@ spin:
     // Receive tasks generated from PEs.
     if (SET(task_buf_valid, task_resp_q[pe].try_read(task_buf))) {
       if (task_buf.op == TaskOp::DONE) {
-        pe_active[pe] = false;
         task_buf_valid = false;
         --task_count;
         --task_count_per_shard[task_buf.task.vertex.parent % kShardCount];
+        --task_count_per_pe[pe];
 
         // Update statistics.
         ++visited_vertex_count;
@@ -925,7 +924,7 @@ spin:
     CHECK_EQ(pop_count[sid], 0);
     CHECK_EQ(task_count_per_shard[sid], 0);
   });
-  RANGE(pe, kPeCount, CHECK_EQ(pe_active[pe], false));
+  RANGE(pe, kPeCount, CHECK_EQ(task_count_per_pe[pe], 0));
 
   metadata[0] = visited_edge_count;
   metadata[1] = total_queue_size;
