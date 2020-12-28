@@ -32,6 +32,18 @@ static_assert(kQueueCount % kShardCount == 0,
               "current implementation requires that queue count is a multiple "
               "of shard count");
 
+inline bool AllInShard(const bool (&array)[kShardCount], int sid) {
+#pragma HLS inline
+  return array[sid];
+}
+
+template <int N>
+inline bool AllInShard(const bool (&array)[N], int sid) {
+#pragma HLS inline
+  return AllInShard((const bool(&)[N / 2])(array), sid) &&
+         AllInShard((const bool(&)[N - N / 2])(array[N / 2]), sid);
+}
+
 // Verbosity definitions:
 //   v=5: O(1)
 //   v=8: O(#vertex)
@@ -331,6 +343,7 @@ spin:
         break;
       }
       case QueueOp::POP: {
+        resp.task.vid = qid;
         if (heap_size != 0) {
           const Task front(heap_array_cache[0]);
           clear_heap_index(front.vid);
@@ -798,10 +811,14 @@ void Dispatcher(
   QueueOpResp queue_buf;
 
   int32_t task_count = 1;  // Number of active tasks.
-  int32_t queue_size = 0;  // Number of tasks in the queue.
 
   // Number of POP requests sent but not acknowledged.
   DECL_ARRAY(int32_t, pop_count, kShardCount, 0);
+
+  // Number of PUSH requests yet to send or not acknowledged.
+  int32_t push_count = 0;
+
+  DECL_ARRAY(bool, queue_empty, kQueueCount, true);
 
   DECL_ARRAY(int32_t, task_count_per_shard, kShardCount, 0);
   DECL_ARRAY(int32_t, task_count_per_pe, kPeCount, 0);
@@ -828,34 +845,34 @@ void Dispatcher(
 #define STATS(tag, content)                                                    \
   do {                                                                         \
     VLOG_F(9, tag) << content " | " << std::setfill(' ') << std::setw(1)       \
-                   << task_count << " active + " << std::setw(2) << queue_size \
+                   << task_count << " active + " << std::setw(2) << push_count \
                    << " pending tasks";                                        \
-    CHECK_GE(queue_size, 0);                                                   \
+    CHECK_GE(push_count, 0);                                                   \
     CHECK_GE(task_count, 0);                                                   \
   } while (0)
 
 spin:
-  for (; queue_size != 0 || task_count != 0 || Any(pop_count); ++cycle_count) {
+  for (; task_count || push_count || Any(pop_count) || !All(queue_empty);
+       ++cycle_count) {
 #pragma HLS pipeline II = 1
     RANGE(pe, kPeCount, task_count_per_pe[pe] && ++pe_active_count[pe]);
     total_task_count += task_count;
     const auto pe = cycle_count % kPeCount;
     // Process response messages from the queue.
     if (SET(queue_buf_valid, queue_resp_q.try_read(queue_buf))) {
+      queue_empty[queue_buf.task.vid % kQueueCount] = false;
       switch (queue_buf.queue_op) {
         case QueueOp::PUSH:
           // PUSH requests do not need further processing.
           queue_buf_valid = false;
+          --push_count;
           if (queue_buf.task_op == TaskOp::NOOP) {
             // PUSH request updated priority of existing tasks.
-            --queue_size;
             STATS(recv, "QUEUE: DECR");
           }
 
           // Update statistics.
           ++queue_count;
-          total_queue_size += queue_size;
-          if (queue_size > max_queue_size) max_queue_size = queue_size;
           break;
         case QueueOp::POP:
           --pop_count[queue_buf.task.vid % kShardCount];
@@ -863,11 +880,11 @@ spin:
             // POP request returned a new task.
             ++task_count;
             ++task_count_per_shard[queue_buf.task.vid % kShardCount];
-            --queue_size;
             STATS(recv, "QUEUE: NEW ");
           } else {
             // The queue is empty.
             queue_buf_valid = false;
+            queue_empty[queue_buf.task.vid % kQueueCount] = true;
             STATS(recv, "QUEUE: NOOP");
           }
           break;
@@ -884,7 +901,7 @@ spin:
         ++queue_full_cycle_count;
       }
     } else if (task_count_per_shard[sid] + pop_count[sid] < kTaskCapPerShard &&
-               queue_size != 0) {
+               !(AllInShard(queue_empty, sid) && push_count == 0)) {
       // Dequeue tasks from the queue.
       if (queue_req_q.try_write({.op = QueueOp::POP, .task = {.vid = sid}})) {
         ++pop_count[sid];
@@ -922,7 +939,7 @@ spin:
         visited_edge_count += task_buf.task.vid;
         STATS(recv, "TASK : DONE");
       } else {
-        ++queue_size;
+        ++push_count;
         STATS(recv, "TASK : NEW ");
       }
     }
