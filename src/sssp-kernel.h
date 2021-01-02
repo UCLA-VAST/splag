@@ -12,9 +12,9 @@ using PeId = uint8_t;
 
 // Used in:
 //
-// ProcElemS2 -> Dispatcher
+// ProcElemS1 -> Dispatcher
 struct TaskOp {
-  // ProcElemS2 -> Dispatcher: Valid values are NEW and DONE.
+  // ProcElemS1 -> Dispatcher: Valid values are NEW and DONE.
   enum Op { NEW, NOOP, DONE = NOOP } op;
   Task task;  // Valid only when op is NEW.
 };
@@ -30,21 +30,18 @@ inline std::ostream& operator<<(std::ostream& os, const TaskOp& obj) {
 
 // Used in:
 //
-// ProcElemS1 -> ProcElemS2
-struct Update {
-  Vid vid;
-  float distance;
-  Vid count;
-};
+// ProcElemS2 -> (net)
+// (net) -> VertexReaderS0 -> VertexReaderS1 -> VertexUpdater -> (net)
+// (net) -> ProcElemS1
+using Update = tapa::packet<PeId, TaskOp>;
 
-inline std::ostream& operator<<(std::ostream& os, const Update& obj) {
-  if (obj.count == 0) {
-    return os << "{ dst: " << obj.vid << ", dst_distance: " << obj.distance
-              << " }";
-  }
-  return os << "{ src: " << obj.vid << ", src_distance: " << obj.distance
-            << ", count: " << obj.count << " }";
-}
+// Used in:
+//
+// ProcElemS1 -> ProcElemS2
+struct UpdateReq {
+  Update pkt;
+  float weight;
+};
 
 // Used in:
 //

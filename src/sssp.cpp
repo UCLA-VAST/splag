@@ -10,15 +10,13 @@
 
 using tapa::detach;
 using tapa::istream;
+using tapa::mmap;
 using tapa::ostream;
 using tapa::packet;
 using tapa::seq;
 using tapa::stream;
 using tapa::streams;
 using tapa::task;
-
-using VidPkt = packet<PeId, Vid>;
-using VertexPkt = packet<PeId, Vertex>;
 
 // Estimated DRAM latency.
 constexpr int kMemLatency = 50;
@@ -64,8 +62,8 @@ void TaskQueue(
     Vid qid,
     // Queue requests.
     tapa::istream<QueueOp>& queue_req_q,
-    tapa::ostream<QueueOpResp>& queue_resp_q, tapa::mmap<Vertex> vertices,
-    tapa::mmap<Task> heap_array, tapa::mmap<Vid> heap_index) {
+    tapa::ostream<QueueOpResp>& queue_resp_q, tapa::mmap<Task> heap_array,
+    tapa::mmap<Vid> heap_index) {
 #pragma HLS inline recursive
   // Heap rule: child <= parent
   Vid heap_size = 0;
@@ -257,34 +255,21 @@ spin:
         CHECK_EQ(new_task.vid % kIntervalCount, qid % kIntervalCount);
         const Vid task_index = get_heap_index(new_task.vid);
         bool heapify = true;
-        bool is_new = true;
         Vid heapify_index = task_index;
         if (task_index != kNullVid) {
           const Task old_task = get_heap_elem(task_index);
           CHECK_EQ(old_task.vid, new_task.vid);
           if (new_task <= old_task) {
             heapify = false;
-          } else {
-            is_new = false;
-          }
-        }
-
-        if (heapify &&
-            !(bit_cast<uint32_t>(
-                  vertices[new_task.vid / kIntervalCount].distance) <=
-              bit_cast<uint32_t>(new_task.vertex.distance))) {
-          if (is_new) {
-            heapify_index = heap_size;
-            ++heap_size;
-            resp.task_op = TaskOp::NEW;
+            clear_heap_index(new_task.vid);
           }
         } else {
-          heapify = false;
-          clear_heap_index(new_task.vid);
+          heapify_index = heap_size;
+          ++heap_size;
+          resp.task_op = TaskOp::NEW;
         }
 
         if (heapify) {
-          vertices[new_task.vid / kIntervalCount] = new_task.vertex;
           // Increase the priority of heap_array[i] if necessary.
           Vid i = heapify_index;
           const Task task_i = new_task;
@@ -447,23 +432,23 @@ spin:
 }
 
 // A VidMux merges two input streams into one.
-void VidMux(istream<VidPkt>& in0, istream<VidPkt>& in1, ostream<VidPkt>& out) {
+void VidMux(istream<Update>& in0, istream<Update>& in1, ostream<Update>& out) {
 spin:
   for (bool flag = false;; flag = !flag) {
 #pragma HLS pipeline II = 1
-    VidPkt data;
+    Update data;
     if (flag ? in0.try_read(data) : in1.try_read(data)) out.write(data);
   }
 }
 
-// A VertexMux merges two input streams into one based on a selection stream.
-void VertexMux(istream<bool>& select_q, istream<VertexPkt>& in0,
-               istream<VertexPkt>& in1, ostream<VertexPkt>& out) {
+// A UpdateMux merges two input streams into one based on a selection stream.
+void UpdateMux(istream<bool>& select_q, istream<Update>& in0,
+               istream<Update>& in1, ostream<Update>& out) {
   DECL_BUF(bool, select);
 spin:
   for (;;) {
 #pragma HLS pipeline II = 1
-    VertexPkt data;
+    Update data;
     UPDATE(select, select_q.try_read(select),
            (select ? in1.try_read(data) : in0.try_read(data)) &&
                (out.write(data), true));
@@ -471,57 +456,32 @@ spin:
 }
 
 // A VidDemux routes input streams based on the specified bit in Vid.
-void VidDemux(int b, istream<VidPkt>& in, ostream<bool>& select_q,
-              ostream<VidPkt>& out0, ostream<VidPkt>& out1) {
+void VidDemux(int b, istream<Update>& in, ostream<bool>& select_q,
+              ostream<Update>& out0, ostream<Update>& out1) {
 spin:
   for (;;) {
 #pragma HLS pipeline II = 1
-    VidPkt data;
+    Update data;
     if (in.try_read(data)) {
-      const bool select =
-          ap_uint<sizeof(data.payload) * CHAR_BIT>(data.payload).test(b);
+      const auto addr = data.payload.task.vid;
+      const bool select = ap_uint<sizeof(addr) * CHAR_BIT>(addr).test(b);
       select ? out1.write(data) : out0.write(data);
       select_q.write(select);
     }
   }
 }
 
-// A VertexDemux routes input streams based on the specified bit in PeId.
-void VertexDemux(int b, istream<VertexPkt>& in, ostream<VertexPkt>& out0,
-                 ostream<VertexPkt>& out1) {
+// A UpdateDemux routes input streams based on the specified bit in PeId.
+void UpdateDemux(int b, istream<Update>& in, ostream<Update>& out0,
+                 ostream<Update>& out1) {
 spin:
   for (;;) {
 #pragma HLS pipeline II = 1
-    VertexPkt data;
+    Update data;
     if (in.try_read(data)) {
       ap_uint<sizeof(data.addr) * CHAR_BIT>(data.addr).test(b)
           ? out1.write(data)
           : out0.write(data);
-    }
-  }
-}
-
-void VertexTagger(int id, istream<VidPkt>& pkt_q, ostream<PeId>& tag_q,
-                  ostream<Vid>& addr_q) {
-spin:
-  for (;;) {
-#pragma HLS pipeline II = 1
-    VidPkt pkt;
-    if (pkt_q.try_read(pkt)) {
-      CHECK_EQ(pkt.payload % kIntervalCount, id);
-      tag_q.write(pkt.addr);
-      addr_q.write(pkt.payload / kIntervalCount);
-    }
-  }
-}
-
-void VertexUntagger(istream<PeId>& tag_q, istream<Vertex>& data_q,
-                    ostream<packet<PeId, Vertex>>& pkt_q) {
-spin:
-  for (;;) {
-#pragma HLS pipeline II = 1
-    if (!tag_q.empty() && !data_q.empty()) {
-      pkt_q.write({tag_q.read(), data_q.read()});
     }
   }
 }
@@ -637,31 +597,29 @@ void ProcElemS1(
     // PE id.
     PeId id,
     // Task data.
-    tapa::istream<Edge>& task_s0_q, tapa::ostream<Update>& task_s1p0_q,
-    tapa::ostream<float>& task_s1p1_q,
+    tapa::istream<Edge>& task_s0_q, tapa::ostream<TaskOp>& task_resp_q,
     // Memory-maps.
-    ostream<VidPkt>& read_addr_q, istream<VertexPkt>& read_data_q) {
+    ostream<UpdateReq>& update_req_q, istream<Update>& update_resp_q) {
 spin:
   for (;;) {
     Edge task_s0;
     if (task_s0_q.try_read(task_s0)) {
       const auto src = task_s0.dst;
       const auto count = bit_cast<Vid>(task_s0.weight);
-      read_addr_q.write({id, src});
-      ap_wait();
-      const auto vertex_pkt = read_data_q.read();
-      CHECK_EQ(vertex_pkt.addr, id);
-      const auto src_distance = vertex_pkt.payload.distance;
-      task_s1p0_q.write({
-          .vid = src,
-          .distance = src_distance,
-          .count = count,
+      update_req_q.write({
+          .pkt =
+              {
+                  .addr = id,
+                  .payload = {.op = TaskOp::NOOP, .task = {.vid = src}},
+              },
       });
+      ap_wait();
+      const auto src_update = update_resp_q.read();
+      CHECK_EQ(src_update.addr, id);
+      const auto src_distance = src_update.payload.task.vertex.distance;
 
       DECL_BUF(Edge, task_s0);
-      DECL_BUF(VertexPkt, vertex);
-      bool task_s1p0_written = false;
-      bool read_addr_written = false;
+      DECL_BUF(Update, dst_update);
       VLOG_F(9, strt) << "shard[" << src % kShardCount << "]: src: " << src
                       << " #dst: " << count;
 
@@ -669,77 +627,136 @@ spin:
       for (Vid i_req = 0, i_resp = 0; i_resp < count;) {
 #pragma HLS pipeline II = 1
         if (i_req < count && i_req < i_resp + kMemLatency) {
-          SET(task_s0_valid, task_s0_q.try_read(task_s0));
-          if (task_s0_valid) {
-            SET(task_s1p0_written,
-                task_s1p0_q.try_write(
-                    {.vid = task_s0.dst, .distance = task_s0.weight}));
-            SET(read_addr_written, read_addr_q.try_write({id, task_s0.dst}));
-          }
-          if (task_s1p0_written && read_addr_written) {
-            task_s0_valid = false;
-            task_s1p0_written = false;
-            read_addr_written = false;
+          if (UPDATE(
+                  task_s0, task_s0_q.try_read(task_s0),
+                  update_req_q.try_write({
+                      .pkt =
+                          {
+                              .addr = id,
+                              .payload =
+                                  {
+                                      .op = TaskOp::NEW,
+                                      .task =
+                                          {
+                                              .vid = task_s0.dst,
+                                              .vertex =
+                                                  {
+                                                      .parent = src,
+                                                      .distance = src_distance,
+                                                  },
+                                          },
+                                  },
+                          },
+                      .weight = task_s0.weight,
+                  }))) {
             ++i_req;
           }
         }
 
-        if (UPDATE(vertex, read_data_q.try_read(vertex),
-                   task_s1p1_q.try_write(vertex.payload.distance))) {
+        if (UPDATE(dst_update, update_resp_q.try_read(dst_update),
+                   (dst_update.payload.op == TaskOp::NOOP ||
+                    task_resp_q.try_write({
+                        .op = TaskOp::NEW,
+                        .task = dst_update.payload.task,
+                    })))) {
           VLOG_F(9, recv) << "shard[" << src % kShardCount << "]: src: " << src
                           << " #dst: " << count << " #req: " << i_req
                           << " #resp: " << i_resp;
           ++i_resp;
         }
       }
+      task_resp_q.write({
+          .op = TaskOp::DONE,
+          .task = {.vid = count, .vertex = {.parent = src}},
+      });
       VLOG_F(9, done) << "shard[" << src % kShardCount << "]: src: " << src
                       << " #dst: " << count;
     }
   }
 }
 
-void ProcElemS2(
-    // Task data.
-    tapa::istream<Update>& task_s1p0_q, tapa::istream<float>& task_s1p1_q,
-    tapa::ostream<TaskOp>& task_resp_q) {
+// Calculate dst distance using src distance and edge weight.
+// This needs its own task due to its long latency.
+void ProcElemS2(istream<UpdateReq>& in_q, ostream<Update>& out_q) {
 spin:
   for (;;) {
 #pragma HLS pipeline II = 1
-    const auto task_s1p0 = task_s1p0_q.read();
-    const auto src = task_s1p0.vid;
-    const auto src_distance = task_s1p0.distance;
-    const auto count = task_s1p0.count;
-
-  gen_updates:
-    for (Vid i = 0; i < count; ++i) {
-      const auto task_s1p0 = task_s1p0_q.read();
-      const auto dst = task_s1p0.vid;
-      const auto dst_distance = task_s1p1_q.read();
-      const auto weight = task_s1p0.distance;
-
-      const auto new_distance = src_distance + weight;
-      if (new_distance < dst_distance) {
-        VLOG_F(9, info) << "distances[" << dst << "] = " << dst_distance
-                        << " -> distances[" << src << "] + " << weight << " = "
-                        << new_distance;
-        task_resp_q.write({
-            .op = TaskOp::NEW,
-            .task =
-                {
-                    .vid = dst,
-                    .vertex =
-                        {
-                            .parent = src,
-                            .distance = new_distance,
-                        },
-                },
-        });
-      }
+    if (!in_q.empty()) {
+      auto req = in_q.read(nullptr);
+      req.pkt.payload.task.vertex.distance += req.weight;
+      out_q.write(req.pkt);
     }
-    task_resp_q.write({
-        .op = TaskOp::DONE,
-        .task = {.vid = count, .vertex = {.parent = src}},
-    });
+  }
+}
+
+void VertexReaderS0(
+    // Input.
+    istream<Update>& update_in_q,
+    // Outputs.
+    ostream<Update>& update_out_q, ostream<Vid>& vertex_read_addr_q) {
+spin:
+  for (;;) {
+#pragma HLS pipeline II = 1
+    if (!update_in_q.empty()) {
+      const auto req = update_in_q.read(nullptr);
+      update_out_q.write(req);
+      vertex_read_addr_q.write(req.payload.task.vid / kIntervalCount);
+    }
+  }
+}
+
+void VertexReaderS1(
+    // Inputs.
+    istream<Update>& update_in_q, istream<Vertex>& vertex_read_data_q,
+    // Outputs.
+    ostream<Update>& new_q, ostream<Update>& noop_q, ostream<bool>& op_q) {
+spin:
+  for (;;) {
+#pragma HLS pipeline II = 1
+    if (!update_in_q.empty() && !vertex_read_data_q.empty()) {
+      auto req = update_in_q.read(nullptr);
+      const auto vertex = vertex_read_data_q.read(nullptr);
+      switch (req.payload.op) {
+        case TaskOp::NEW:  // Destination vertex.
+          if (vertex <= req.payload.task.vertex) {
+            req.payload.op = TaskOp::NOOP;
+          }
+          break;
+        case TaskOp::NOOP:  // Source vertex.
+          req.payload.task.vertex = vertex;
+          break;
+      }
+
+      switch (req.payload.op) {
+        case TaskOp::NEW:
+          new_q.write(req);
+          break;
+        case TaskOp::NOOP:
+          noop_q.write(req);
+          break;
+      }
+      op_q.write(req.payload.op == TaskOp::NOOP);
+    }
+  }
+}
+
+void VertexUpdater(istream<Update>& pkt_in_q, ostream<Update>& pkt_out_q,
+                   mmap<Vertex> vertices) {
+spin:
+  for (;;) {
+#pragma HLS pipeline
+    if (!pkt_in_q.empty()) {
+      auto pkt = pkt_in_q.read(nullptr);
+      CHECK_EQ(pkt.payload.op, TaskOp::NEW);
+      const auto addr = pkt.payload.task.vid / kIntervalCount;
+      const auto vertex = vertices[addr];
+      if (vertex <= pkt.payload.task.vertex) {
+        pkt.payload.op = TaskOp::NOOP;
+      } else {
+        vertices[addr] = pkt.payload.task.vertex;
+      }
+      pkt_out_q.write(pkt);
+    }
   }
 }
 
@@ -980,8 +997,7 @@ void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
 
   streams<Vid, kPeCount, kTaskCapPerPe> task_req_q("task_req");
   tapa::streams<Edge, kPeCount, 2> task_s0_q("task_stage0");
-  tapa::streams<Update, kPeCount, 64> task_s1p0_q("task_stage1_part0");
-  tapa::streams<float, kPeCount, 2> task_s1p1_q("task_stage1_part1");
+  tapa::streams<UpdateReq, kPeCount, 2> task_s1_q("task_stage1");
   tapa::streams<TaskOp, kPeCount, 256> task_resp_q("task_resp");
 
   // For edges.
@@ -992,35 +1008,39 @@ void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
   tapa::streams<PeId, kShardCount, 64> edge_pe_qi("edges.pe");
 
   // For vertices.
-  //   Connect PEs to the addr network.
-  streams<VidPkt, kPeCount, 2> vertex_read_addr_q;
-  streams<VidPkt, kPeCount / 2, 8> vertex_read_addr_qr1;
-  streams<VidPkt, kPeCount / 4, 8> vertex_read_addr_qr2;
-  //   Compose the addr network.
-  streams<VidPkt, kIntervalCount, 8> vertex_read_addr_qi1;
-  streams<VidPkt, kIntervalCount, 8> vertex_read_addr_0_qi0;
-  streams<VidPkt, kIntervalCount, 8> vertex_read_addr_1_qi0;
-  streams<bool, kIntervalCount, 64> vertex_select_qi0;
-  streams<VidPkt, kIntervalCount, 8> vertex_read_addr_qi0;
-  //   Connects the memory.
-  streams<Vid, kIntervalCount, 2> vertex_read_addr_qi;
-  streams<PeId, kIntervalCount, 64> vertex_tag_qi;
-  streams<Vertex, kIntervalCount, 2> vertex_read_data_qi;
-  //   Compose the data network.
-  streams<VertexPkt, kIntervalCount, 8> vertex_read_data_qi0;
-  streams<VertexPkt, kIntervalCount, 8> vertex_read_data_0_qi0;
-  streams<VertexPkt, kIntervalCount, 8> vertex_read_data_1_qi0;
-  streams<VertexPkt, kIntervalCount, 8> vertex_read_data_qi1;
-  //   Connect the data network to PEs.
-  streams<VertexPkt, kPeCount / 4, 8> vertex_read_data_qr2;
-  streams<VertexPkt, kPeCount / 2, 8> vertex_read_data_qr1;
-  streams<VertexPkt, kPeCount, 2> vertex_read_data_q;
+  //   Connect PEs to the update request network.
+  streams<Update, kPeCount, 2> update_req_q;
+  streams<Update, kPeCount / 2, 8> update_req_qr1;
+  streams<Update, kPeCount / 4, 8> update_req_qr2;
+  //   Compose the update request network.
+  streams<Update, kIntervalCount, 8> update_req_qi1;
+  streams<Update, kIntervalCount, 8> update_req_0_qi0;
+  streams<Update, kIntervalCount, 8> update_req_1_qi0;
+  streams<bool, kIntervalCount, 256> update_select_qi0;
+  streams<Update, kIntervalCount, 8> update_req_qi0;
+  //   Connect the vertex readers and updaters.
+  streams<Update, kIntervalCount, 256> update_qi0;
+  streams<Update, kIntervalCount, 256> update_new_qi0;
+  streams<Update, kIntervalCount, 2> update_new_qi1;
+  streams<Update, kIntervalCount, 2> update_noop_qi;
+  streams<bool, kIntervalCount, 256> update_op_qi;
+  streams<Vid, kIntervalCount, 2> vertex_read_addr_q;
+  streams<Vertex, kIntervalCount, 2> vertex_read_data_q;
+  //   Compose the update response network.
+  streams<Update, kIntervalCount, 8> update_resp_qi0;
+  streams<Update, kIntervalCount, 8> update_resp_0_qi0;
+  streams<Update, kIntervalCount, 8> update_resp_1_qi0;
+  streams<Update, kIntervalCount, 8> update_resp_qi1;
+  //   Connect the update response network to PEs.
+  streams<Update, kPeCount / 4, 8> update_resp_qr2;
+  streams<Update, kPeCount / 2, 8> update_resp_qr1;
+  streams<Update, kPeCount, 2> update_resp_q;
 
   tapa::task()
       .invoke<0>(Dispatcher, root, metadata, task_req_q, task_resp_q,
                  queue_req_q, queue_resp_q)
       .invoke<-1, kQueueCount>(TaskQueue, tapa::seq(), queue_req_qi,
-                               queue_resp_qi, vertices, heap_array, heap_index)
+                               queue_resp_qi, heap_array, heap_index)
       .invoke<-1>(QueueReqArbiter, queue_req_q, queue_req_qi)
       .invoke<-1>(QueueRespArbiter, queue_resp_qi, queue_resp_q)
 
@@ -1034,55 +1054,59 @@ void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
 
       // For vertices.
       // clang-format off
-      .invoke<detach>(VidMux, vertex_read_addr_q[0], vertex_read_addr_q[ 8], vertex_read_addr_qr1[0])
-      .invoke<detach>(VidMux, vertex_read_addr_q[1], vertex_read_addr_q[ 9], vertex_read_addr_qr1[1])
-      .invoke<detach>(VidMux, vertex_read_addr_q[2], vertex_read_addr_q[10], vertex_read_addr_qr1[2])
-      .invoke<detach>(VidMux, vertex_read_addr_q[3], vertex_read_addr_q[11], vertex_read_addr_qr1[3])
-      .invoke<detach>(VidMux, vertex_read_addr_q[4], vertex_read_addr_q[12], vertex_read_addr_qr1[4])
-      .invoke<detach>(VidMux, vertex_read_addr_q[5], vertex_read_addr_q[13], vertex_read_addr_qr1[5])
-      .invoke<detach>(VidMux, vertex_read_addr_q[6], vertex_read_addr_q[14], vertex_read_addr_qr1[6])
-      .invoke<detach>(VidMux, vertex_read_addr_q[7], vertex_read_addr_q[15], vertex_read_addr_qr1[7])
-      .invoke<detach>(VidMux, vertex_read_addr_qr1[0], vertex_read_addr_qr1[4], vertex_read_addr_qr2[0])
-      .invoke<detach>(VidMux, vertex_read_addr_qr1[1], vertex_read_addr_qr1[5], vertex_read_addr_qr2[1])
-      .invoke<detach>(VidMux, vertex_read_addr_qr1[2], vertex_read_addr_qr1[6], vertex_read_addr_qr2[2])
-      .invoke<detach>(VidMux, vertex_read_addr_qr1[3], vertex_read_addr_qr1[7], vertex_read_addr_qr2[3])
-      .invoke<detach>(VidMux, vertex_read_addr_qr2[0], vertex_read_addr_qr2[2], vertex_read_addr_qi1[0])
-      .invoke<detach>(VidMux, vertex_read_addr_qr2[1], vertex_read_addr_qr2[3], vertex_read_addr_qi1[1])
-      .invoke<detach, kIntervalCount>(VidDemux, 0, vertex_read_addr_qi1, vertex_select_qi0, vertex_read_addr_0_qi0, vertex_read_addr_1_qi0)
-      .invoke<detach>(VidMux, vertex_read_addr_0_qi0[0], vertex_read_addr_0_qi0[1], vertex_read_addr_qi0[0])
-      .invoke<detach>(VidMux, vertex_read_addr_1_qi0[0], vertex_read_addr_1_qi0[1], vertex_read_addr_qi0[1])
+      .invoke<detach>(VidMux, update_req_q[0], update_req_q[ 8], update_req_qr1[0])
+      .invoke<detach>(VidMux, update_req_q[1], update_req_q[ 9], update_req_qr1[1])
+      .invoke<detach>(VidMux, update_req_q[2], update_req_q[10], update_req_qr1[2])
+      .invoke<detach>(VidMux, update_req_q[3], update_req_q[11], update_req_qr1[3])
+      .invoke<detach>(VidMux, update_req_q[4], update_req_q[12], update_req_qr1[4])
+      .invoke<detach>(VidMux, update_req_q[5], update_req_q[13], update_req_qr1[5])
+      .invoke<detach>(VidMux, update_req_q[6], update_req_q[14], update_req_qr1[6])
+      .invoke<detach>(VidMux, update_req_q[7], update_req_q[15], update_req_qr1[7])
+      .invoke<detach>(VidMux, update_req_qr1[0], update_req_qr1[4], update_req_qr2[0])
+      .invoke<detach>(VidMux, update_req_qr1[1], update_req_qr1[5], update_req_qr2[1])
+      .invoke<detach>(VidMux, update_req_qr1[2], update_req_qr1[6], update_req_qr2[2])
+      .invoke<detach>(VidMux, update_req_qr1[3], update_req_qr1[7], update_req_qr2[3])
+      .invoke<detach>(VidMux, update_req_qr2[0], update_req_qr2[2], update_req_qi1[0])
+      .invoke<detach>(VidMux, update_req_qr2[1], update_req_qr2[3], update_req_qi1[1])
+      .invoke<detach, kIntervalCount>(VidDemux, 0, update_req_qi1, update_select_qi0, update_req_0_qi0, update_req_1_qi0)
+      .invoke<detach>(VidMux, update_req_0_qi0[0], update_req_0_qi0[1], update_req_qi0[0])
+      .invoke<detach>(VidMux, update_req_1_qi0[0], update_req_1_qi0[1], update_req_qi0[1])
       // clang-format on
-      .invoke<detach, kIntervalCount>(VertexTagger, seq(), vertex_read_addr_qi0,
-                                      vertex_tag_qi, vertex_read_addr_qi)
-      .invoke<detach, kIntervalCount>(VertexMem, vertex_read_addr_qi,
-                                      vertex_read_data_qi, vertices)
-      .invoke<detach, kIntervalCount>(VertexUntagger, vertex_tag_qi,
-                                      vertex_read_data_qi, vertex_read_data_qi0)
+      .invoke<detach, kIntervalCount>(VertexMem, vertex_read_addr_q,
+                                      vertex_read_data_q, vertices)
+      .invoke<detach, kIntervalCount>(VertexReaderS0, update_req_qi0,
+                                      update_qi0, vertex_read_addr_q)
+      .invoke<detach, kIntervalCount>(VertexReaderS1, update_qi0,
+                                      vertex_read_data_q, update_new_qi0,
+                                      update_noop_qi, update_op_qi)
+      .invoke<detach, kIntervalCount>(VertexUpdater, update_new_qi0,
+                                      update_new_qi1, vertices)
+      .invoke<detach, kIntervalCount>(UpdateMux, update_op_qi, update_new_qi1,
+                                      update_noop_qi, update_resp_qi0)
       // clang-format off
-      .invoke<detach, kIntervalCount>(VertexDemux, 0, vertex_read_data_qi0, vertex_read_data_0_qi0, vertex_read_data_1_qi0)
-      .invoke<detach>(VertexMux, vertex_select_qi0[0], vertex_read_data_0_qi0[0], vertex_read_data_0_qi0[1], vertex_read_data_qi1[0])
-      .invoke<detach>(VertexMux, vertex_select_qi0[1], vertex_read_data_1_qi0[0], vertex_read_data_1_qi0[1], vertex_read_data_qi1[1])
-      .invoke<detach>(VertexDemux, 1, vertex_read_data_qi1[0], vertex_read_data_qr2[0], vertex_read_data_qr2[2])
-      .invoke<detach>(VertexDemux, 1, vertex_read_data_qi1[1], vertex_read_data_qr2[1], vertex_read_data_qr2[3])
-      .invoke<detach>(VertexDemux, 2, vertex_read_data_qr2[0], vertex_read_data_qr1[0], vertex_read_data_qr1[4])
-      .invoke<detach>(VertexDemux, 2, vertex_read_data_qr2[1], vertex_read_data_qr1[1], vertex_read_data_qr1[5])
-      .invoke<detach>(VertexDemux, 2, vertex_read_data_qr2[2], vertex_read_data_qr1[2], vertex_read_data_qr1[6])
-      .invoke<detach>(VertexDemux, 2, vertex_read_data_qr2[3], vertex_read_data_qr1[3], vertex_read_data_qr1[7])
-      .invoke<detach>(VertexDemux, 3, vertex_read_data_qr1[0], vertex_read_data_q[0], vertex_read_data_q[ 8])
-      .invoke<detach>(VertexDemux, 3, vertex_read_data_qr1[1], vertex_read_data_q[1], vertex_read_data_q[ 9])
-      .invoke<detach>(VertexDemux, 3, vertex_read_data_qr1[2], vertex_read_data_q[2], vertex_read_data_q[10])
-      .invoke<detach>(VertexDemux, 3, vertex_read_data_qr1[3], vertex_read_data_q[3], vertex_read_data_q[11])
-      .invoke<detach>(VertexDemux, 3, vertex_read_data_qr1[4], vertex_read_data_q[4], vertex_read_data_q[12])
-      .invoke<detach>(VertexDemux, 3, vertex_read_data_qr1[5], vertex_read_data_q[5], vertex_read_data_q[13])
-      .invoke<detach>(VertexDemux, 3, vertex_read_data_qr1[6], vertex_read_data_q[6], vertex_read_data_q[14])
-      .invoke<detach>(VertexDemux, 3, vertex_read_data_qr1[7], vertex_read_data_q[7], vertex_read_data_q[15])
+      .invoke<detach, kIntervalCount>(UpdateDemux, 0, update_resp_qi0, update_resp_0_qi0, update_resp_1_qi0)
+      .invoke<detach>(UpdateMux, update_select_qi0[0], update_resp_0_qi0[0], update_resp_0_qi0[1], update_resp_qi1[0])
+      .invoke<detach>(UpdateMux, update_select_qi0[1], update_resp_1_qi0[0], update_resp_1_qi0[1], update_resp_qi1[1])
+      .invoke<detach>(UpdateDemux, 1, update_resp_qi1[0], update_resp_qr2[0], update_resp_qr2[2])
+      .invoke<detach>(UpdateDemux, 1, update_resp_qi1[1], update_resp_qr2[1], update_resp_qr2[3])
+      .invoke<detach>(UpdateDemux, 2, update_resp_qr2[0], update_resp_qr1[0], update_resp_qr1[4])
+      .invoke<detach>(UpdateDemux, 2, update_resp_qr2[1], update_resp_qr1[1], update_resp_qr1[5])
+      .invoke<detach>(UpdateDemux, 2, update_resp_qr2[2], update_resp_qr1[2], update_resp_qr1[6])
+      .invoke<detach>(UpdateDemux, 2, update_resp_qr2[3], update_resp_qr1[3], update_resp_qr1[7])
+      .invoke<detach>(UpdateDemux, 3, update_resp_qr1[0], update_resp_q[0], update_resp_q[ 8])
+      .invoke<detach>(UpdateDemux, 3, update_resp_qr1[1], update_resp_q[1], update_resp_q[ 9])
+      .invoke<detach>(UpdateDemux, 3, update_resp_qr1[2], update_resp_q[2], update_resp_q[10])
+      .invoke<detach>(UpdateDemux, 3, update_resp_qr1[3], update_resp_q[3], update_resp_q[11])
+      .invoke<detach>(UpdateDemux, 3, update_resp_qr1[4], update_resp_q[4], update_resp_q[12])
+      .invoke<detach>(UpdateDemux, 3, update_resp_qr1[5], update_resp_q[5], update_resp_q[13])
+      .invoke<detach>(UpdateDemux, 3, update_resp_qr1[6], update_resp_q[6], update_resp_q[14])
+      .invoke<detach>(UpdateDemux, 3, update_resp_qr1[7], update_resp_q[7], update_resp_q[15])
       // clang-format on
 
       // PEs.
       .invoke<-1, kPeCount>(ProcElemS0, task_req_q, task_s0_q, edge_read_addr_q,
                             edge_read_data_q)
-      .invoke<detach, kPeCount>(ProcElemS1, seq(), task_s0_q, task_s1p0_q,
-                                task_s1p1_q, vertex_read_addr_q,
-                                vertex_read_data_q)
-      .invoke<-1, kPeCount>(ProcElemS2, task_s1p0_q, task_s1p1_q, task_resp_q);
+      .invoke<detach, kPeCount>(ProcElemS1, seq(), task_s0_q, task_resp_q,
+                                task_s1_q, update_resp_q)
+      .invoke<detach, kPeCount>(ProcElemS2, task_s1_q, update_req_q);
 }
