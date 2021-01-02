@@ -753,6 +753,7 @@ spin:
       if (vertex <= pkt.payload.task.vertex) {
         pkt.payload.op = TaskOp::NOOP;
       } else {
+        pkt.payload.op = TaskOp::NEW;  // Necessasry due to bug in Vivado HLS.
         vertices[addr] = pkt.payload.task.vertex;
       }
       pkt_out_q.write(pkt);
