@@ -63,7 +63,6 @@ struct QueueOpResp {
   // indicates the queue is empty.
   TaskOp::Op task_op;
   Task task;  // Valid only when queue_op is POP and task_op is NEW.
-  Vid queue_size;
 };
 
 inline std::ostream& operator<<(std::ostream& os, const QueueOpResp& obj) {
@@ -88,7 +87,6 @@ inline std::ostream& operator<<(std::ostream& os, const QueueOpResp& obj) {
   if (obj.queue_op == QueueOp::POP && obj.task_op == TaskOp::NEW) {
     os << ", task: " << obj.task;
   }
-  os << ", queue_size: " << obj.queue_size;
   return os << "}";
 }
 

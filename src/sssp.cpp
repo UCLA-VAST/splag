@@ -246,7 +246,6 @@ spin:
         .queue_op = req.op,
         .task_op = TaskOp::NOOP,
         .task = req.task,
-        .queue_size = 0,
     };
     switch (req.op) {
       case QueueOp::PUSH: {
@@ -426,7 +425,6 @@ spin:
         break;
       }
     }
-    resp.queue_size = heap_size;
     queue_resp_q.write(resp);
   }
 }
@@ -794,17 +792,11 @@ spin:
 void QueueRespArbiter(tapa::istreams<QueueOpResp, kQueueCount>& resp_in_q,
                       tapa::ostream<QueueOpResp>& resp_out_q) {
   DECL_BUF(QueueOpResp, resp);
-  DECL_ARRAY(int32_t, queue_size, kQueueCount, 0);
-  int32_t total_queue_size = 0;
 spin:
   for (uint8_t q = 0;; ++q) {
 #pragma HLS pipeline II = 1
-    if (SET(resp_valid, resp_in_q[q % kQueueCount].try_read(resp))) {
-      total_queue_size += resp.queue_size - queue_size[q % kQueueCount];
-      queue_size[q % kQueueCount] = resp.queue_size;
-      resp.queue_size = total_queue_size;
-    }
-    RESET(resp_valid, resp_out_q.try_write(resp));
+    UPDATE(resp, resp_in_q[q % kQueueCount].try_read(resp),
+           resp_out_q.try_write(resp));
   }
 }
 
