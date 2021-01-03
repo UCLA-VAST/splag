@@ -1020,7 +1020,7 @@ void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
   streams<bool, kIntervalCount, 256> update_select_qi0;
   streams<Update, kIntervalCount, 8> update_req_qi0;
   //   Connect the vertex readers and updaters.
-  streams<Update, kIntervalCount, 256> update_qi0;
+  streams<Update, kIntervalCount, 64> update_qi0;
   streams<Update, kIntervalCount, 256> update_new_qi0;
   streams<Update, kIntervalCount, 2> update_new_qi1;
   streams<Update, kIntervalCount, 2> update_noop_qi;
