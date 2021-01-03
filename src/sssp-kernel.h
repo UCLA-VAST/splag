@@ -101,7 +101,7 @@ class TaskOnChip {
             .range(kFloatMsb, kFloatMsb - kFloatWidth + 1);
   }
   explicit operator Task() {
-    ap_uint<32> distance;
+    ap_uint<32> distance = 0;
     distance.range(kFloatMsb, kFloatMsb - kFloatWidth + 1) =
         data.range(distance_msb, distance_lsb);
     return {
