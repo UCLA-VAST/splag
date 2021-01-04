@@ -809,7 +809,7 @@ spin:
   }
 }
 
-constexpr int kTaskCapPerPe = 2;
+constexpr int kTaskCapPerPe = 1;
 constexpr int kTaskCapPerShard = kPeCount / kShardCount * kTaskCapPerPe;
 
 void Dispatcher(
@@ -996,7 +996,7 @@ void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
   tapa::streams<QueueOp, kQueueCount, 2> queue_req_qi("queue_req_i");
   tapa::streams<QueueOpResp, kQueueCount, 2> queue_resp_qi("queue_resp_i");
 
-  streams<Vid, kPeCount, kTaskCapPerPe> task_req_q("task_req");
+  streams<Vid, kPeCount, 2> task_req_q("task_req");
   tapa::streams<Edge, kPeCount, 2> task_s0_q("task_stage0");
   tapa::streams<UpdateReq, kPeCount, 2> task_s1_q("task_stage1");
   tapa::streams<TaskOp, kPeCount, 256> task_resp_q("task_resp");
