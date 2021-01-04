@@ -744,7 +744,6 @@ void VertexUpdater(istream<Update>& pkt_in_q, ostream<Update>& pkt_out_q,
                    mmap<Vertex> vertices) {
 spin:
   for (;;) {
-#pragma HLS pipeline
     if (!pkt_in_q.empty()) {
       auto pkt = pkt_in_q.read(nullptr);
       CHECK_EQ(pkt.payload.op, TaskOp::NEW);
