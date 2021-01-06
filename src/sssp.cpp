@@ -800,8 +800,8 @@ spin:
   }
 }
 
-constexpr int kTaskCapPerPe = 1;
-constexpr int kTaskCapPerShard = kPeCount / kShardCount * kTaskCapPerPe;
+using uint_pe_t = ap_uint<bit_length(kPeCount)>;
+using uint_pe_per_shart_t = ap_uint<bit_length(kPeCount / kShardCount)>;
 
 void Dispatcher(
     // Scalar.
@@ -819,20 +819,20 @@ void Dispatcher(
   bool queue_buf_valid = false;
   QueueOpResp queue_buf;
 
-  int32_t task_count = 1;  // Number of active tasks.
+  uint_pe_t task_count = 1;  // Number of active tasks.
 
   // Number of POP requests sent but not acknowledged.
-  DECL_ARRAY(int32_t, pop_count, kShardCount, 0);
+  DECL_ARRAY(uint_pe_per_shart_t, pop_count, kShardCount, 0);
 
   // Number of PUSH requests yet to send or not acknowledged.
-  int32_t push_count = 0;
+  uint_pe_t push_count = 0;
 
   DECL_ARRAY(bool, queue_empty, kQueueCount, true);
 
-  DECL_ARRAY(int32_t, task_count_per_shard, kShardCount, 0);
-  DECL_ARRAY(int32_t, task_count_per_pe, kPeCount, 0);
+  DECL_ARRAY(uint_pe_per_shart_t, task_count_per_shard, kShardCount, 0);
+  DECL_ARRAY(ap_uint<1>, task_count_per_pe, kPeCount, 0);
 
-  DECL_ARRAY(int32_t, pe_base_per_shard, kShardCount, 0);
+  DECL_ARRAY(uint_pe_per_shart_t, pe_base_per_shard, kShardCount, 0);
 
   task_req_q[root % kShardCount].write(root);
   ++task_count_per_shard[root % kShardCount];
@@ -909,7 +909,8 @@ spin:
       } else {
         ++queue_full_cycle_count;
       }
-    } else if (task_count_per_shard[sid] + pop_count[sid] < kTaskCapPerShard &&
+    } else if (task_count_per_shard[sid] + pop_count[sid] <
+                   kPeCount / kShardCount &&
                !(AllInShard(queue_empty, sid) && push_count == 0)) {
       // Dequeue tasks from the queue.
       if (queue_req_q.try_write({.op = QueueOp::POP, .task = {.vid = sid}})) {
