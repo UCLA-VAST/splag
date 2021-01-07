@@ -487,10 +487,10 @@ void EdgeReadAddrArbiter(tapa::istreams<Vid, kPeCount>& req_q,
   DECL_ARRAY(bool, addr_valid, kShardCount, false);
 
 spin:
-  for (ap_uint<bit_length(kPeCount / kShardCount - 1)> pe_sid = 0;; ++pe_sid) {
+  for (ap_uint<bit_length(kPeCount / kShardCount) + 2> pe_sid = 0;; ++pe_sid) {
 #pragma HLS pipeline II = 1
     RANGE(sid, kShardCount, {
-      const auto pe = pe_sid * kShardCount + sid;
+      const auto pe = pe_sid / 8 * kShardCount + sid;
       if (!id_valid[sid] &&
           SET(addr_valid[sid], req_q[pe].try_read(addr[sid]))) {
         id[sid] = pe;
