@@ -1026,7 +1026,7 @@ void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
   tapa::streams<Edge, kPeCount, 2> edge_read_data_q("edge_read_data");
   tapa::streams<Vid, kShardCount, 2> edge_read_addr_qi("edges.read_addr");
   tapa::streams<Edge, kShardCount, 2> edge_read_data_qi("edges.read_data");
-  tapa::streams<PeId, kShardCount, 64> edge_pe_qi("edges.pe");
+  tapa::streams<PeId, kShardCount, 256> edge_pe_qi("edges.pe");
 
   // For vertices.
   //   Connect PEs to the update request network.
