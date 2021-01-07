@@ -368,23 +368,29 @@ spin:
               i = max;
             }
 
+            auto heapify_down_cmp = [&](Task& task_max, Vid& max) {
+              heapify_down_cmp:
+                for (int j = 1; j <= kHeapOffChipWidth; ++j) {
+#pragma HLS pipeline
+                  const Vid child = i * kHeapOffChipWidth -
+                                    kHeapDiff * (kHeapOffChipWidth - 1) + j;
+                  if (child < heap_size) {
+                    const auto task_child = get_heap_elem_off_chip(child);
+                    if (!(task_child <= task_max)) {
+                      max = child;
+                      task_max = task_child;
+                    }
+                  }
+                }
+            };
+
             if (!(i < kHeapOnChipBound) && i < kHeapOnChipSize) {
               ++heapify_down_off_chip;
 
               Vid max = -1;
               Task task_max = task_i;
-              for (int j = 1; j <= kHeapOffChipWidth; ++j) {
-#pragma HLS unroll
-                const Vid child = i * kHeapOffChipWidth -
-                                  kHeapDiff * (kHeapOffChipWidth - 1) + j;
-                if (child < heap_size) {
-                  const auto task_child = get_heap_elem_off_chip(child);
-                  if (!(task_child <= task_max)) {
-                    max = child;
-                    task_max = task_child;
-                  }
-                }
-              }
+              heapify_down_cmp(task_max, max);
+
               if (max != -1) {
                 set_heap_elem_on_chip(i, task_max);
                 set_heap_index(task_max.vid, i);
@@ -394,23 +400,11 @@ spin:
 
           heapify_down_off_chip:
             for (; !(i < kHeapOnChipSize);) {
-#pragma HLS pipeline
               ++heapify_down_off_chip;
 
               Vid max = -1;
               Task task_max = task_i;
-              for (int j = 1; j <= kHeapOffChipWidth; ++j) {
-#pragma HLS unroll
-                const Vid child = i * kHeapOffChipWidth -
-                                  kHeapDiff * (kHeapOffChipWidth - 1) + j;
-                if (child < heap_size) {
-                  const auto task_child = get_heap_elem_off_chip(child);
-                  if (!(task_child <= task_max)) {
-                    max = child;
-                    task_max = task_child;
-                  }
-                }
-              }
+              heapify_down_cmp(task_max, max);
               if (max == -1) break;
 
               set_heap_elem_off_chip(i, task_max);
