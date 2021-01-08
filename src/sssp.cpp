@@ -532,6 +532,43 @@ spin:
   }
 }
 
+void UpdateReqArbiter(tapa::istreams<Update, kPeCount>& in_q,
+                      tapa::ostreams<Update, kIntervalCount>& out_q) {
+  DECL_ARRAY(Update, update, kIntervalCount, Update());
+  DECL_ARRAY(bool, update_valid, kIntervalCount, false);
+
+spin:
+  for (;;) {
+#pragma HLS pipeline II = 1
+    RANGE(iid, kIntervalCount, {
+      RANGE(pe_iid, kPeCount / kIntervalCount, {
+        const auto pe = pe_iid * kIntervalCount + iid;
+        UNUSED SET(update_valid[iid], in_q[pe].try_read(update[iid]));
+      });
+      UNUSED RESET(update_valid[iid], out_q[iid].try_write(update[iid]));
+    });
+  }
+}
+
+void UpdateRespArbiter(tapa::istreams<Update, kIntervalCount>& data_in_q,
+                       tapa::ostreams<Update, kPeCount>& data_out_q) {
+  DECL_ARRAY(Update, data, kIntervalCount, Update());
+  DECL_ARRAY(bool, data_valid, kIntervalCount, false);
+
+spin:
+  for (;;) {
+#pragma HLS pipeline II = 1
+    RANGE(iid, kIntervalCount, {
+      UNUSED SET(data_valid[iid], data_in_q[iid].try_read(data[iid]));
+      RANGE(pe_iid, kPeCount / kShardCount, {
+        const auto pe = pe_iid * kShardCount + iid;
+        UNUSED RESET(data_valid[iid], data[iid].addr == pe &&
+                                          data_out_q[pe].try_write(data[iid]));
+      });
+    });
+  }
+}
+
 void EdgeMem(tapa::istream<Vid>& read_addr_q, tapa::ostream<Edge>& read_data_q,
              tapa::async_mmap<Edge> mem) {
 #pragma HLS data_pack variable = mem.read_data
@@ -997,8 +1034,6 @@ void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
   // For vertices.
   //   Connect PEs to the update request network.
   streams<Update, kPeCount, 2> update_req_q;
-  streams<Update, kPeCount / 2, 8> update_req_qr1;
-  streams<Update, kPeCount / 4, 8> update_req_qr2;
   //   Compose the update request network.
   streams<Update, kIntervalCount, 8> update_req_qi1;
   streams<Update, kIntervalCount, 8> update_req_0_qi0;
@@ -1019,8 +1054,6 @@ void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
   streams<Update, kIntervalCount, 8> update_resp_1_qi0;
   streams<Update, kIntervalCount, 8> update_resp_qi1;
   //   Connect the update response network to PEs.
-  streams<Update, kPeCount / 4, 8> update_resp_qr2;
-  streams<Update, kPeCount / 2, 8> update_resp_qr1;
   streams<Update, kPeCount, 2> update_resp_q;
 
   tapa::task()
@@ -1041,20 +1074,7 @@ void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
 
       // For vertices.
       // clang-format off
-      .invoke<detach>(VidMux, update_req_q[0], update_req_q[ 8], update_req_qr1[0])
-      .invoke<detach>(VidMux, update_req_q[1], update_req_q[ 9], update_req_qr1[1])
-      .invoke<detach>(VidMux, update_req_q[2], update_req_q[10], update_req_qr1[2])
-      .invoke<detach>(VidMux, update_req_q[3], update_req_q[11], update_req_qr1[3])
-      .invoke<detach>(VidMux, update_req_q[4], update_req_q[12], update_req_qr1[4])
-      .invoke<detach>(VidMux, update_req_q[5], update_req_q[13], update_req_qr1[5])
-      .invoke<detach>(VidMux, update_req_q[6], update_req_q[14], update_req_qr1[6])
-      .invoke<detach>(VidMux, update_req_q[7], update_req_q[15], update_req_qr1[7])
-      .invoke<detach>(VidMux, update_req_qr1[0], update_req_qr1[4], update_req_qr2[0])
-      .invoke<detach>(VidMux, update_req_qr1[1], update_req_qr1[5], update_req_qr2[1])
-      .invoke<detach>(VidMux, update_req_qr1[2], update_req_qr1[6], update_req_qr2[2])
-      .invoke<detach>(VidMux, update_req_qr1[3], update_req_qr1[7], update_req_qr2[3])
-      .invoke<detach>(VidMux, update_req_qr2[0], update_req_qr2[2], update_req_qi1[0])
-      .invoke<detach>(VidMux, update_req_qr2[1], update_req_qr2[3], update_req_qi1[1])
+      .invoke<detach>(UpdateReqArbiter, update_req_q, update_req_qi1)
       .invoke<detach, kIntervalCount>(VidDemux, 0, update_req_qi1, update_select_qi0, update_req_0_qi0, update_req_1_qi0)
       .invoke<detach>(VidMux, update_req_0_qi0[0], update_req_0_qi0[1], update_req_qi0[0])
       .invoke<detach>(VidMux, update_req_1_qi0[0], update_req_1_qi0[1], update_req_qi0[1])
@@ -1074,20 +1094,7 @@ void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
       .invoke<detach, kIntervalCount>(UpdateDemux, 0, update_resp_qi0, update_resp_0_qi0, update_resp_1_qi0)
       .invoke<detach>(UpdateMux, update_select_qi0[0], update_resp_0_qi0[0], update_resp_0_qi0[1], update_resp_qi1[0])
       .invoke<detach>(UpdateMux, update_select_qi0[1], update_resp_1_qi0[0], update_resp_1_qi0[1], update_resp_qi1[1])
-      .invoke<detach>(UpdateDemux, 1, update_resp_qi1[0], update_resp_qr2[0], update_resp_qr2[2])
-      .invoke<detach>(UpdateDemux, 1, update_resp_qi1[1], update_resp_qr2[1], update_resp_qr2[3])
-      .invoke<detach>(UpdateDemux, 2, update_resp_qr2[0], update_resp_qr1[0], update_resp_qr1[4])
-      .invoke<detach>(UpdateDemux, 2, update_resp_qr2[1], update_resp_qr1[1], update_resp_qr1[5])
-      .invoke<detach>(UpdateDemux, 2, update_resp_qr2[2], update_resp_qr1[2], update_resp_qr1[6])
-      .invoke<detach>(UpdateDemux, 2, update_resp_qr2[3], update_resp_qr1[3], update_resp_qr1[7])
-      .invoke<detach>(UpdateDemux, 3, update_resp_qr1[0], update_resp_q[0], update_resp_q[ 8])
-      .invoke<detach>(UpdateDemux, 3, update_resp_qr1[1], update_resp_q[1], update_resp_q[ 9])
-      .invoke<detach>(UpdateDemux, 3, update_resp_qr1[2], update_resp_q[2], update_resp_q[10])
-      .invoke<detach>(UpdateDemux, 3, update_resp_qr1[3], update_resp_q[3], update_resp_q[11])
-      .invoke<detach>(UpdateDemux, 3, update_resp_qr1[4], update_resp_q[4], update_resp_q[12])
-      .invoke<detach>(UpdateDemux, 3, update_resp_qr1[5], update_resp_q[5], update_resp_q[13])
-      .invoke<detach>(UpdateDemux, 3, update_resp_qr1[6], update_resp_q[6], update_resp_q[14])
-      .invoke<detach>(UpdateDemux, 3, update_resp_qr1[7], update_resp_q[7], update_resp_q[15])
+      .invoke<detach>(UpdateRespArbiter, update_resp_qi1, update_resp_q)
       // clang-format on
 
       // PEs.
