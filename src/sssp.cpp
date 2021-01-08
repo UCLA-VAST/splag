@@ -70,7 +70,7 @@ void TaskQueue(
 
   constexpr int kIndexCacheSize = 4096 * 4;
   tapa::packet<Vid, Vid> heap_index_cache[kIndexCacheSize];
-#pragma HLS resource variable = heap_index_cache core = RAM_2P_URAM latency = 2
+#pragma HLS resource variable = heap_index_cache core = RAM_2P_URAM latency = 4
 #pragma HLS data_pack variable = heap_index_cache
   int32_t read_hit = 0;
   int32_t read_miss = 0;
