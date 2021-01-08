@@ -581,11 +581,16 @@ void VertexMem(tapa::istream<Vid>& read_addr_q,
   ReadOnlyMem(read_addr_q, read_data_q, mem);
 }
 
+struct TaskS0 {
+  Edge edge;
+  float src_distance;
+};
+
 void ProcElemS0(
     // Task requests.
-    tapa::istream<Vid>& task_req_q,
+    tapa::istream<Task>& task_req_q,
     // Stage #0 of task data.
-    tapa::ostream<Edge>& task_s0_q,
+    tapa::ostream<TaskS0>& task_s0_q,
     // Memory-maps.
     tapa::ostream<Vid>& edges_read_addr_q,
     tapa::istream<Edge>& edges_read_data_q) {
@@ -593,10 +598,14 @@ void ProcElemS0(
 
 spin:
   for (;;) {
-    const auto src = task_req_q.read();
+    const auto task = task_req_q.read();
+    const auto src = task.vid;
     const Index index = (edges_read_addr_q.write(src / kShardCount), ap_wait(),
                          bit_cast<Index>(edges_read_data_q.read()));
-    task_s0_q.write({.dst = src, .weight = bit_cast<float>(index.count)});
+    task_s0_q.write({
+        .edge = {.dst = src, .weight = bit_cast<float>(index.count)},
+        .src_distance = task.vertex.distance,
+    });
     VLOG_F(9, strt) << "shard[" << src % kShardCount << "]: src: " << src
                     << " #dst: " << index.count;
   read_edges:
@@ -607,7 +616,7 @@ spin:
       }
 
       if (UPDATE(edge, edges_read_data_q.try_read(edge),
-                 task_s0_q.try_write(edge))) {
+                 task_s0_q.try_write({.edge = edge}))) {
         VLOG_F(9, recv) << "shard[" << src % kShardCount << "]: src: " << src
                         << " #dst: " << index.count << " #req: " << eid_req
                         << " #resp: " << eid_resp;
@@ -623,28 +632,18 @@ void ProcElemS1(
     // PE id.
     PeId id,
     // Task data.
-    tapa::istream<Edge>& task_s0_q, tapa::ostream<TaskOp>& task_resp_q,
+    tapa::istream<TaskS0>& task_s0_q, tapa::ostream<TaskOp>& task_resp_q,
     // Memory-maps.
     ostream<UpdateReq>& update_req_q, istream<Update>& update_resp_q) {
 spin:
   for (;;) {
-    Edge task_s0;
+    TaskS0 task_s0;
     if (task_s0_q.try_read(task_s0)) {
-      const auto src = task_s0.dst;
-      const auto count = bit_cast<Vid>(task_s0.weight);
-      update_req_q.write({
-          .pkt =
-              {
-                  .addr = id,
-                  .payload = {.op = TaskOp::NOOP, .task = {.vid = src}},
-              },
-      });
-      ap_wait();
-      const auto src_update = update_resp_q.read();
-      CHECK_EQ(src_update.addr, id);
-      const auto src_distance = src_update.payload.task.vertex.distance;
+      const auto src = task_s0.edge.dst;
+      const auto count = bit_cast<Vid>(task_s0.edge.weight);
+      const auto src_distance = task_s0.src_distance;
 
-      DECL_BUF(Edge, task_s0);
+      DECL_BUF(TaskS0, task_s0);
       DECL_BUF(Update, dst_update);
       VLOG_F(9, strt) << "shard[" << src % kShardCount << "]: src: " << src
                       << " #dst: " << count;
@@ -664,7 +663,7 @@ spin:
                                       .op = TaskOp::NEW,
                                       .task =
                                           {
-                                              .vid = task_s0.dst,
+                                              .vid = task_s0.edge.dst,
                                               .vertex =
                                                   {
                                                       .parent = src,
@@ -673,7 +672,7 @@ spin:
                                           },
                                   },
                           },
-                      .weight = task_s0.weight,
+                      .weight = task_s0.edge.weight,
                   }))) {
             ++i_req;
           }
@@ -837,7 +836,7 @@ void Dispatcher(
     // Metadata.
     tapa::mmap<int64_t> metadata,
     // Task and queue requests.
-    tapa::ostreams<Vid, kPeCount>& task_req_q,
+    tapa::ostreams<Task, kPeCount>& task_req_q,
     tapa::istreams<TaskOp, kPeCount>& task_resp_q,
     tapa::ostream<QueueOp>& queue_req_q,
     tapa::istream<QueueOpResp>& queue_resp_q) {
@@ -862,7 +861,8 @@ void Dispatcher(
 
   DECL_ARRAY(uint_pe_per_shart_t, pe_base_per_shard, kShardCount, 0);
 
-  task_req_q[root % kShardCount].write(root);
+  task_req_q[root % kShardCount].write(
+      {.vid = root, .vertex = {.parent = root, .distance = 0}});
   ++task_count_per_shard[root % kShardCount];
   ++task_count_per_pe[root % kShardCount];
 
@@ -954,7 +954,7 @@ spin:
       const auto sid = queue_buf.task.vid % kShardCount;
       const auto pe = (pe_base_per_shard[sid] * kShardCount + sid) % kPeCount;
       if (queue_buf_valid) {
-        if (task_req_q[pe].try_write(queue_buf.task.vid)) {
+        if (task_req_q[pe].try_write(queue_buf.task)) {
           queue_buf_valid = false;
           ++task_count_per_pe[pe];
         } else {
@@ -1016,8 +1016,8 @@ void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
   tapa::streams<QueueOp, kQueueCount, 2> queue_req_qi("queue_req_i");
   tapa::streams<QueueOpResp, kQueueCount, 2> queue_resp_qi("queue_resp_i");
 
-  streams<Vid, kPeCount, 2> task_req_q("task_req");
-  tapa::streams<Edge, kPeCount, 2> task_s0_q("task_stage0");
+  streams<Task, kPeCount, 2> task_req_q("task_req");
+  tapa::streams<TaskS0, kPeCount, 2> task_s0_q("task_stage0");
   tapa::streams<UpdateReq, kPeCount, 2> task_s1_q("task_stage1");
   tapa::streams<TaskOp, kPeCount, 256> task_resp_q("task_resp");
 
