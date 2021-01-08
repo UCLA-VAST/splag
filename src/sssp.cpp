@@ -536,13 +536,12 @@ void UpdateReqArbiter(tapa::istreams<Update, kPeCount>& in_q,
   DECL_ARRAY(bool, update_valid, kIntervalCount, false);
 
 spin:
-  for (;;) {
+  for (ap_uint<bit_length(kPeCount / kIntervalCount - 1)> pe_iid = 0;;
+       ++pe_iid) {
 #pragma HLS pipeline II = 1
     RANGE(iid, kIntervalCount, {
-      RANGE(pe_iid, kPeCount / kIntervalCount, {
-        const auto pe = pe_iid * kIntervalCount + iid;
-        UNUSED SET(update_valid[iid], in_q[pe].try_read(update[iid]));
-      });
+      const auto pe = pe_iid * kIntervalCount + iid;
+      UNUSED SET(update_valid[iid], in_q[pe].try_read(update[iid]));
       UNUSED RESET(update_valid[iid], out_q[iid].try_write(update[iid]));
     });
   }
