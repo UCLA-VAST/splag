@@ -651,7 +651,7 @@ spin:
     fwd:
       for (Vid i_req = 0, i_resp = 0; i_resp < count;) {
 #pragma HLS pipeline II = 1
-        if (i_req < count && i_req < i_resp + kMemLatency) {
+        if (i_req < count) {
           if (UPDATE(
                   task_s0, task_s0_q.try_read(task_s0),
                   update_req_q.try_write({
