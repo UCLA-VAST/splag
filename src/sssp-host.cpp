@@ -296,7 +296,7 @@ void Refine(
   }
 }
 
-void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
+void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
           tapa::async_mmaps<Edge, kShardCount> edges,
           tapa::async_mmaps<Vertex, kIntervalCount> vertices,
           tapa::mmap<Task> heap_array, tapa::mmap<Vid> heap_index);
@@ -423,10 +423,22 @@ int main(int argc, char* argv[]) {
     std::fill(heap_index.begin(), heap_index.end(), kNullVid);
     vertices[root % kIntervalCount][root / kIntervalCount] = {
         .parent = Vid(root), .distance = 0.f};
+    for (int64_t vid = 0; vid < vertex_count; ++vid) {
+      const auto index =
+          bit_cast<Index>(edges[vid % kShardCount][vid / kShardCount]);
+      auto& vertex = vertices[vid % kIntervalCount][vid / kIntervalCount];
+      vertex.offset = index.offset;
+      vertex.degree = index.count;
+    }
 
     unsetenv("KERNEL_TIME_NS");
     auto tic = steady_clock::now();
-    SSSP(vertex_count, root, metadata, edges, vertices, heap_array, heap_index);
+    SSSP(vertex_count,
+         {
+             .vid = Vid(root),
+             .vertex = vertices[root % kIntervalCount][root / kIntervalCount],
+         },
+         metadata, edges, vertices, heap_array, heap_index);
     double elapsed_time =
         1e-9 * duration_cast<nanoseconds>(steady_clock::now() - tic).count();
     if (auto env = getenv("KERNEL_TIME_NS")) {

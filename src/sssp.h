@@ -40,6 +40,9 @@ struct Vertex {
   Vid parent;
   float distance;
 
+  Eid offset;
+  Vid degree;
+
   // Compares distance.
   bool operator<=(const Vertex& other) const {
     return bit_cast<uint32_t>(distance) <= bit_cast<uint32_t>(other.distance);
@@ -81,7 +84,7 @@ inline std::ostream& operator<<(std::ostream& os, const Index& obj) {
 struct Task {
   Vid vid;
   Vertex vertex;
-  uint32_t padding;
+  uint32_t padding[3];
 
   // Compares priority.
   bool operator<=(const Task& other) const { return other.vertex <= vertex; }

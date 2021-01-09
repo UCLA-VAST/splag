@@ -15,7 +15,7 @@
 #include "sssp.h"
 #include "util.h"
 
-void SSSP(Vid vertex_count, Vid root, tapa::mmap<int64_t> metadata,
+void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
           tapa::async_mmaps<Edge, kShardCount> edges,
           tapa::async_mmaps<Vertex, kIntervalCount> vertices,
           tapa::mmap<Task> heap_array, tapa::mmap<Vid> heap_index) {

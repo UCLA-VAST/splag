@@ -15,7 +15,7 @@ using PeId = uint8_t;
 // ProcElemS1 -> Dispatcher
 struct TaskOp {
   // ProcElemS1 -> Dispatcher: Valid values are NEW and DONE.
-  enum Op { NEW, NOOP, DONE = NOOP } op;
+  enum Op { NEW, NOOP, DONE } op;
   Task task;  // Valid only when op is NEW.
 };
 
@@ -23,25 +23,19 @@ inline std::ostream& operator<<(std::ostream& os, const TaskOp& obj) {
   switch (obj.op) {
     case TaskOp::NEW:
       return os << "{ op: NEW, task: " << obj.task << " }";
-    default:
-      return os << "{ op: NOOP/DONE }";
+    case TaskOp::NOOP:
+      return os << "{ op: NOOP }";
+    case TaskOp::DONE:
+      return os << "{ op: DONE }";
   }
 }
 
 // Used in:
 //
-// ProcElemS2 -> (net)
+// ProcElemS1 -> (net)
 // (net) -> VertexReaderS0 -> VertexReaderS1 -> VertexUpdater -> (net)
 // (net) -> ProcElemS1
 using Update = tapa::packet<PeId, TaskOp>;
-
-// Used in:
-//
-// ProcElemS1 -> ProcElemS2
-struct UpdateReq {
-  Update pkt;
-  float weight;
-};
 
 // Used in:
 //
@@ -83,6 +77,9 @@ inline std::ostream& operator<<(std::ostream& os, const QueueOpResp& obj) {
     case TaskOp::NOOP:
       os << "NOOP";
       break;
+    case TaskOp::DONE:
+      os << "DONE";
+      break;
   }
   if (obj.queue_op == QueueOp::POP && obj.task_op == TaskOp::NEW) {
     os << ", task: " << obj.task;
@@ -99,6 +96,8 @@ class TaskOnChip {
     data.range(distance_msb, distance_lsb) =
         ap_uint<32>(bit_cast<uint32_t>(task.vertex.distance))
             .range(kFloatMsb, kFloatMsb - kFloatWidth + 1);
+    data.range(offset_msb, offset_lsb) = task.vertex.offset;
+    data.range(degree_msb, degree_lsb) = task.vertex.degree;
   }
   explicit operator Task() {
     ap_uint<32> distance = 0;
@@ -110,15 +109,19 @@ class TaskOnChip {
             {
                 .parent = Vid(data.range(parent_msb, parent_lsb)),
                 .distance = bit_cast<float>(distance.to_uint()),
+                .offset = Eid(data.range(offset_msb, offset_lsb)),
+                .degree = Vid(data.range(degree_msb, degree_lsb)),
             },
     };
   }
 
  private:
-  ap_uint<72> data;
-  static constexpr int kVidWidth = 24;
-  static constexpr int kFloatWidth = 24;
-  static_assert(kVidWidth * 2 + kFloatWidth == decltype(data)::width,
+  ap_uint<144> data;
+  static constexpr int kVidWidth = 27;
+  static constexpr int kFloatWidth = 31;
+  static constexpr int kEidWidth = 32;
+  static_assert(kVidWidth * 3 + kFloatWidth + kEidWidth ==
+                    decltype(data)::width,
                 "invalid TaskOnChip configuration");
 
   // kFloatWidth bits from kFloatMsb is used.
@@ -132,6 +135,10 @@ class TaskOnChip {
   static constexpr int parent_msb = parent_lsb + kVidWidth - 1;
   static constexpr int distance_lsb = parent_msb + 1;
   static constexpr int distance_msb = distance_lsb + kFloatWidth - 1;
+  static constexpr int offset_lsb = distance_msb + 1;
+  static constexpr int offset_msb = offset_lsb + kEidWidth - 1;
+  static constexpr int degree_lsb = offset_msb + 1;
+  static constexpr int degree_msb = degree_lsb + kVidWidth - 1;
 };
 
 // Convenient functions and macros.
