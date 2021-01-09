@@ -10,110 +10,42 @@
 
 using PeId = uint8_t;
 
-// Used in:
-//
-// ProcElemS1 -> Dispatcher
-struct TaskOp {
-  // ProcElemS1 -> Dispatcher: Valid values are NEW and DONE.
-  enum Op { NEW, NOOP, DONE } op;
-  Task task;  // Valid only when op is NEW.
-};
-
-inline std::ostream& operator<<(std::ostream& os, const TaskOp& obj) {
-  switch (obj.op) {
-    case TaskOp::NEW:
-      return os << "{ op: NEW, task: " << obj.task << " }";
-    case TaskOp::NOOP:
-      return os << "{ op: NOOP }";
-    case TaskOp::DONE:
-      return os << "{ op: DONE }";
-  }
-}
-
-// Used in:
-//
-// ProcElemS1 -> (net)
-// (net) -> VertexReaderS0 -> VertexReaderS1 -> VertexUpdater -> (net)
-// (net) -> ProcElemS1
-using Update = tapa::packet<PeId, TaskOp>;
-
-// Used in:
-//
-// Dispatcher -> TaskQueue
-struct QueueOp {
-  enum Op { PUSH, POP } op;
-  Task task;  // Valid only when op is PUSH.
-};
-
-// Used in:
-//
-// TaskQueue -> Dispatcher
-struct QueueOpResp {
-  QueueOp::Op queue_op;
-  // Valid values are NEW and NOOP.
-  // If queue_op is PUSH, NEW indicates a new task is created; NOOP indicates
-  // the priority of existing task is increased.
-  // If queue_op is POP, NEW indicates a task is dequeued and returned; NOOP
-  // indicates the queue is empty.
-  TaskOp::Op task_op;
-  Task task;  // Valid only when queue_op is POP and task_op is NEW.
-};
-
-inline std::ostream& operator<<(std::ostream& os, const QueueOpResp& obj) {
-  os << "{queue_op: ";
-  switch (obj.queue_op) {
-    case QueueOp::PUSH:
-      os << "PUSH";
-      break;
-    case QueueOp::POP:
-      os << "POP";
-      break;
-  }
-  os << ", task_op: ";
-  switch (obj.task_op) {
-    case TaskOp::NEW:
-      os << "NEW";
-      break;
-    case TaskOp::NOOP:
-      os << "NOOP";
-      break;
-    case TaskOp::DONE:
-      os << "DONE";
-      break;
-  }
-  if (obj.queue_op == QueueOp::POP && obj.task_op == TaskOp::NEW) {
-    os << ", task: " << obj.task;
-  }
-  return os << "}";
-}
-
 class TaskOnChip {
  public:
   TaskOnChip() {}
-  explicit TaskOnChip(const Task& task) {
-    data.range(vid_msb, vid_lsb) = task.vid;
-    data.range(parent_msb, parent_lsb) = task.vertex.parent;
-    data.range(distance_msb, distance_lsb) =
-        ap_uint<32>(bit_cast<uint32_t>(task.vertex.distance))
-            .range(kFloatMsb, kFloatMsb - kFloatWidth + 1);
-    data.range(offset_msb, offset_lsb) = task.vertex.offset;
-    data.range(degree_msb, degree_lsb) = task.vertex.degree;
+
+  TaskOnChip(const Task& task) {
+    set_vid(task.vid);
+    set_parent(task.vertex.parent);
+    set_distance(task.vertex.distance);
+    set_offset(task.vertex.offset);
+    set_degree(task.vertex.degree);
   }
-  explicit operator Task() {
+
+  operator Task() const { return {.vid = vid(), .vertex = vertex()}; }
+
+  Vid vid() const { return data.range(vid_msb, vid_lsb); };
+  Vertex vertex() const {
     ap_uint<32> distance = 0;
     distance.range(kFloatMsb, kFloatMsb - kFloatWidth + 1) =
         data.range(distance_msb, distance_lsb);
     return {
-        .vid = Vid(data.range(vid_msb, vid_lsb)),
-        .vertex =
-            {
-                .parent = Vid(data.range(parent_msb, parent_lsb)),
-                .distance = bit_cast<float>(distance.to_uint()),
-                .offset = Eid(data.range(offset_msb, offset_lsb)),
-                .degree = Vid(data.range(degree_msb, degree_lsb)),
-            },
+        .parent = Vid(data.range(parent_msb, parent_lsb)),
+        .distance = bit_cast<float>(distance.to_uint()),
+        .offset = Eid(data.range(offset_msb, offset_lsb)),
+        .degree = Vid(data.range(degree_msb, degree_lsb)),
     };
   }
+
+  void set_vid(Vid vid) { data.range(vid_msb, vid_lsb) = vid; }
+  void set_parent(Vid parent) { data.range(parent_msb, parent_lsb) = parent; }
+  void set_distance(float distance) {
+    data.range(distance_msb, distance_lsb) =
+        ap_uint<32>(bit_cast<uint32_t>(distance))
+            .range(kFloatMsb, kFloatMsb - kFloatWidth + 1);
+  }
+  void set_offset(Eid offset) { data.range(offset_msb, offset_lsb) = offset; }
+  void set_degree(Vid degree) { data.range(degree_msb, degree_lsb) = degree; }
 
  private:
   ap_uint<144> data;
@@ -140,6 +72,83 @@ class TaskOnChip {
   static constexpr int degree_lsb = offset_msb + 1;
   static constexpr int degree_msb = degree_lsb + kVidWidth - 1;
 };
+
+// Used in:
+//
+// ProcElemS1 -> Dispatcher
+struct TaskOp {
+  // ProcElemS1 -> Dispatcher: Valid values are NEW and DONE.
+  enum Op { NEW, NOOP, DONE } op;
+  TaskOnChip task;  // Valid only when op is NEW.
+};
+
+inline std::ostream& operator<<(std::ostream& os, const TaskOp& obj) {
+  switch (obj.op) {
+    case TaskOp::NEW:
+      return os << "{ op: NEW, task: " << Task(obj.task) << " }";
+    case TaskOp::NOOP:
+      return os << "{ op: NOOP }";
+    case TaskOp::DONE:
+      return os << "{ op: DONE }";
+  }
+}
+
+// Used in:
+//
+// ProcElemS1 -> (net)
+// (net) -> VertexReaderS0 -> VertexReaderS1 -> VertexUpdater -> (net)
+// (net) -> ProcElemS1
+using Update = tapa::packet<PeId, TaskOp>;
+
+// Used in:
+//
+// Dispatcher -> TaskQueue
+struct QueueOp {
+  enum Op { PUSH, POP } op;
+  TaskOnChip task;  // Valid only when op is PUSH.
+};
+
+// Used in:
+//
+// TaskQueue -> Dispatcher
+struct QueueOpResp {
+  QueueOp::Op queue_op;
+  // Valid values are NEW and NOOP.
+  // If queue_op is PUSH, NEW indicates a new task is created; NOOP indicates
+  // the priority of existing task is increased.
+  // If queue_op is POP, NEW indicates a task is dequeued and returned; NOOP
+  // indicates the queue is empty.
+  TaskOp::Op task_op;
+  TaskOnChip task;  // Valid only when queue_op is POP and task_op is NEW.
+};
+
+inline std::ostream& operator<<(std::ostream& os, const QueueOpResp& obj) {
+  os << "{queue_op: ";
+  switch (obj.queue_op) {
+    case QueueOp::PUSH:
+      os << "PUSH";
+      break;
+    case QueueOp::POP:
+      os << "POP";
+      break;
+  }
+  os << ", task_op: ";
+  switch (obj.task_op) {
+    case TaskOp::NEW:
+      os << "NEW";
+      break;
+    case TaskOp::NOOP:
+      os << "NOOP";
+      break;
+    case TaskOp::DONE:
+      os << "DONE";
+      break;
+  }
+  if (obj.queue_op == QueueOp::POP && obj.task_op == TaskOp::NEW) {
+    os << ", task: " << Task(obj.task);
+  }
+  return os << "}";
+}
 
 // Convenient functions and macros.
 

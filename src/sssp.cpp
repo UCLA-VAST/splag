@@ -246,7 +246,7 @@ spin:
     };
     switch (req.op) {
       case QueueOp::PUSH: {
-        const auto new_task = req.task;
+        const auto new_task = Task(req.task);
         CHECK_EQ(new_task.vid % kQueueCount, qid);
         CHECK_EQ(new_task.vid % kIntervalCount, qid % kIntervalCount);
         const Vid task_index = get_heap_index(new_task.vid);
@@ -324,7 +324,7 @@ spin:
         break;
       }
       case QueueOp::POP: {
-        resp.task.vid = qid;
+        resp.task.set_vid(qid);
         if (heap_size != 0) {
           const Task front(heap_array_cache[0]);
           clear_heap_index(front.vid);
@@ -452,7 +452,7 @@ spin:
 #pragma HLS pipeline II = 1
     Update data;
     if (in.try_read(data)) {
-      const auto addr = data.payload.task.vid;
+      const auto addr = data.payload.task.vid();
       const bool select = ap_uint<sizeof(addr) * CHAR_BIT>(addr).test(b);
       select ? out1.write(data) : out0.write(data);
       select_q.write(select);
@@ -578,7 +578,7 @@ void VertexMem(tapa::istream<Vid>& read_addr_q,
   ReadOnlyMem(read_addr_q, read_data_q, mem);
 }
 
-void ProcElemS0(istream<Task>& task_in_q, ostream<Task>& task_out_q,
+void ProcElemS0(istream<TaskOnChip>& task_in_q, ostream<TaskOnChip>& task_out_q,
                 ostream<Vid>& edges_read_addr_q) {
 spin:
   for (;;) {
@@ -586,14 +586,14 @@ spin:
     task_out_q.write(task);
 
   read_edges:
-    for (Eid i = 0; i < task.vertex.degree; ++i) {
+    for (Eid i = 0; i < task.vertex().degree; ++i) {
 #pragma HLS pipeline II = 1
-      edges_read_addr_q.write(task.vertex.offset + i);
+      edges_read_addr_q.write(task.vertex().offset + i);
     }
   }
 }
 
-void ProcElemS1(PeId id, istream<Task>& task_in_q,
+void ProcElemS1(PeId id, istream<TaskOnChip>& task_in_q,
                 istream<Edge>& edges_read_data_q,
                 ostream<Update>& update_out_q) {
 spin:
@@ -601,7 +601,7 @@ spin:
     const auto task = task_in_q.read();
 
   fwd:
-    for (Vid i = 0; i < task.vertex.degree;) {
+    for (Vid i = 0; i < task.vertex().degree;) {
 #pragma HLS pipeline II = 1
       Edge edge;
       if (edges_read_data_q.try_read(edge)) {
@@ -615,9 +615,9 @@ spin:
                             .vid = edge.dst,
                             .vertex =
                                 {
-                                    .parent = task.vid,
+                                    .parent = task.vid(),
                                     .distance =
-                                        task.vertex.distance + edge.weight,
+                                        task.vertex().distance + edge.weight,
                                 },
                         },
                 },
@@ -644,7 +644,7 @@ spin:
     if (!update_in_q.empty()) {
       const auto req = update_in_q.read(nullptr);
       update_out_q.write(req);
-      vertex_read_addr_q.write(req.payload.task.vid / kIntervalCount);
+      vertex_read_addr_q.write(req.payload.task.vid() / kIntervalCount);
     }
   }
 }
@@ -662,7 +662,7 @@ spin:
       const auto vertex = vertex_read_data_q.read(nullptr);
       switch (req.payload.op) {
         case TaskOp::NEW:
-          if (vertex <= req.payload.task.vertex) {
+          if (vertex <= req.payload.task.vertex()) {
             req.payload.op = TaskOp::NOOP;
           }
           break;
@@ -693,15 +693,15 @@ spin:
     if (!pkt_in_q.empty()) {
       auto pkt = pkt_in_q.read(nullptr);
       CHECK_EQ(pkt.payload.op, TaskOp::NEW);
-      const auto addr = pkt.payload.task.vid / kIntervalCount;
+      const auto addr = pkt.payload.task.vid() / kIntervalCount;
       const auto vertex = vertices[addr];
-      if (vertex <= pkt.payload.task.vertex) {
+      if (vertex <= pkt.payload.task.vertex()) {
         pkt.payload.op = TaskOp::NOOP;
       } else {
         pkt.payload.op = TaskOp::NEW;  // Necessasry due to bug in Vivado HLS.
-        pkt.payload.task.vertex.offset = vertex.offset;
-        pkt.payload.task.vertex.degree = vertex.degree;
-        vertices[addr] = pkt.payload.task.vertex;
+        pkt.payload.task.set_offset(vertex.offset);
+        pkt.payload.task.set_degree(vertex.degree);
+        vertices[addr] = pkt.payload.task.vertex();
       }
       pkt_out_q.write(pkt);
     }
@@ -734,16 +734,16 @@ spin:
       switch (req.op) {
         case QueueOp::PUSH:
           UNUSED RESET(req_valid,
-                       req_out_q[req.task.vid % kQueueCount].try_write(req));
+                       req_out_q[req.task.vid() % kQueueCount].try_write(req));
           break;
         case QueueOp::POP:
-          CHECK_LT(req.task.vid, kShardCount);
+          CHECK_LT(req.task.vid(), kShardCount);
           const auto qid =
-              (sid_base[req.task.vid] * kShardCount + req.task.vid) %
+              (sid_base[req.task.vid()] * kShardCount + req.task.vid()) %
               kQueueCount;
           if (req_out_q[qid].try_write(req)) {
             req_valid = false;
-            ++sid_base[req.task.vid];
+            ++sid_base[req.task.vid()];
           }
           break;
       }
@@ -771,7 +771,7 @@ void Dispatcher(
     // Metadata.
     tapa::mmap<int64_t> metadata,
     // Task and queue requests.
-    tapa::ostreams<Task, kPeCount>& task_req_q,
+    tapa::ostreams<TaskOnChip, kPeCount>& task_req_q,
     tapa::istreams<Update, kIntervalCount>& task_resp_q,
     tapa::ostream<QueueOp>& queue_req_q,
     tapa::istream<QueueOpResp>& queue_resp_q) {
@@ -831,7 +831,7 @@ spin:
     const auto pe = cycle_count % kPeCount;
     // Process response messages from the queue.
     if (SET(queue_buf_valid, queue_resp_q.try_read(queue_buf))) {
-      queue_empty[queue_buf.task.vid % kQueueCount] = false;
+      queue_empty[queue_buf.task.vid() % kQueueCount] = false;
       switch (queue_buf.queue_op) {
         case QueueOp::PUSH:
           // PUSH requests do not need further processing.
@@ -846,16 +846,16 @@ spin:
           ++queue_count;
           break;
         case QueueOp::POP:
-          --pop_count[queue_buf.task.vid % kShardCount];
+          --pop_count[queue_buf.task.vid() % kShardCount];
           if (queue_buf.task_op == TaskOp::NEW) {
             // POP request returned a new task.
             ++task_count;
-            ++task_count_per_shard[queue_buf.task.vid % kShardCount];
+            ++task_count_per_shard[queue_buf.task.vid() % kShardCount];
             STATS(recv, "QUEUE: NEW ");
           } else {
             // The queue is empty.
             queue_buf_valid = false;
-            queue_empty[queue_buf.task.vid % kQueueCount] = true;
+            queue_empty[queue_buf.task.vid() % kQueueCount] = true;
             STATS(recv, "QUEUE: NOOP");
           }
           break;
@@ -878,7 +878,8 @@ spin:
                    kPeCount / kShardCount &&
                !(AllInShard(queue_empty, sid) && push_count == 0)) {
       // Dequeue tasks from the queue.
-      if (queue_req_q.try_write({.op = QueueOp::POP, .task = {.vid = sid}})) {
+      if (queue_req_q.try_write(
+              {.op = QueueOp::POP, .task = Task{.vid = sid}})) {
         ++pop_count[sid];
         STATS(send, "QUEUE: POP ");
       } else {
@@ -888,7 +889,7 @@ spin:
 
     // Assign tasks to PEs.
     {
-      const auto sid = queue_buf.task.vid % kShardCount;
+      const auto sid = queue_buf.task.vid() % kShardCount;
       const auto pe = (pe_base_per_shard[sid] * kShardCount + sid) % kPeCount;
       if (queue_buf_valid) {
         if (task_req_q[pe].try_write(queue_buf.task)) {
@@ -916,12 +917,12 @@ spin:
         case TaskOp::DONE:
           task_buf_valid = false;
           --task_count;
-          --task_count_per_shard[task_buf.payload.task.vid % kShardCount];
+          --task_count_per_shard[task_buf.payload.task.vid() % kShardCount];
           --task_count_per_pe[pe];
 
           // Update statistics.
           ++visited_vertex_count;
-          visited_edge_count += task_buf.payload.task.vertex.degree;
+          visited_edge_count += task_buf.payload.task.vertex().degree;
           STATS(recv, "TASK : DONE");
           break;
       }
@@ -961,8 +962,8 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   tapa::streams<QueueOp, kQueueCount, 2> queue_req_qi("queue_req_i");
   tapa::streams<QueueOpResp, kQueueCount, 2> queue_resp_qi("queue_resp_i");
 
-  streams<Task, kPeCount, 2> task_req_q("task_req");
-  streams<Task, kPeCount, 2> task_req_qi("task_req_i");
+  streams<TaskOnChip, kPeCount, 2> task_req_q("task_req");
+  streams<TaskOnChip, kPeCount, 2> task_req_qi("task_req_i");
   streams<Update, kIntervalCount, 256> task_resp_q("task_resp");
 
   // For edges.
