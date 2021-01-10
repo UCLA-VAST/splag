@@ -152,70 +152,6 @@ inline std::ostream& operator<<(std::ostream& os, const QueueOpResp& obj) {
 
 // Convenient functions and macros.
 
-/// Returns whether singleton @p array contains @p value.
-///
-/// @tparam T     Type of each element in @p array and @p value.
-/// @param array  An array of type @p T[1].
-/// @param value  A value of type @p T.
-/// @return       True if @p array contains @p value.
-template <typename T>
-inline bool Contains(const volatile T (&array)[1], const T& value) {
-#pragma HLS inline
-  return array[0] == value;
-}
-
-/// Returns whether @p array contains @p value.
-///
-/// @tparam T     Type of each element in @p array and @p value.
-/// @tparam N     Number of elements in @p array.
-/// @param array  An array of type @p T[N].
-/// @param value  A value of type @p T.
-/// @return       True if @p array contains @p value.
-template <typename T, int N>
-inline bool Contains(const volatile T (&array)[N], const T& value) {
-#pragma HLS inline
-  return Contains((const T(&)[N / 2])(array), value) ||
-         Contains((const T(&)[N - N / 2])(array[N / 2]), value);
-}
-
-inline bool All(const bool (&array)[1]) {
-#pragma HLS inline
-  return array[0];
-}
-
-template <int N>
-inline bool All(const bool (&array)[N]) {
-#pragma HLS inline
-  return All((const bool(&)[N / 2])(array)) &&
-         All((const bool(&)[N - N / 2])(array[N / 2]));
-}
-
-template <typename T>
-inline bool Any(const T (&array)[1]) {
-#pragma HLS inline
-  return array[0];
-}
-
-template <typename T, int N>
-inline bool Any(const T (&array)[N]) {
-#pragma HLS inline
-  return Any((const T(&)[N / 2])(array)) &&
-         Any((const T(&)[N - N / 2])(array[N / 2]));
-}
-
-template <typename T>
-inline void MemSet(T (&array)[1], T value) {
-#pragma HLS inline
-  array[0] = value;
-}
-
-template <typename T, int N>
-inline void MemSet(T (&array)[N], T value) {
-#pragma HLS inline
-  MemSet((T(&)[N / 2])(array), value);
-  MemSet((T(&)[N - N / 2])(array[N / 2]), value);
-}
-
 #ifdef __SYNTHESIS__
 #define CLEAN_UP(...)
 #else  // __SYNTHESIS__
@@ -293,6 +229,65 @@ struct CleanUp {
   SET(buf##_valid, producer), RESET(buf##_valid, consumer)
 
 #define UNUSED (void)
+
+template <typename T, int N, typename UnaryFunction>
+inline void for_each(const T (&array)[N], UnaryFunction f) {
+  for (int i = 0; i < N; ++i) {
+#pragma HLS unroll
+    f(array[i]);
+  }
+}
+
+template <typename T, int N, typename BinaryOperation>
+inline T accumulate(const T (&array)[N], T init, BinaryOperation op) {
+#pragma HLS inline
+  for_each(array, [&](T value) { init = op(init, value); });
+  return init;
+}
+
+template <typename T, int N, typename UnaryPredicate>
+inline bool all_of(const T (&array)[N], UnaryPredicate p) {
+#pragma HLS inline
+  bool result = true;
+  for_each(array, [&](T value) { result &= p(value); });
+  return result;
+}
+
+template <typename T, int N, typename UnaryPredicate>
+inline bool any_of(const T (&array)[N], UnaryPredicate p) {
+#pragma HLS inline
+  bool result = false;
+  for_each(array, [&](T value) { result |= p(value); });
+  return result;
+}
+
+template <typename T, int N, typename UnaryPredicate>
+inline bool none_of(const T (&array)[N], UnaryPredicate p) {
+#pragma HLS inline
+  return !all_of(array, [&](T value) { return !p(value); });
+}
+
+template <typename T, int N>
+inline bool all_of(const T (&array)[N]) {
+#pragma HLS inline
+  bool result = true;
+  for_each(array, [&](T value) { result &= bool(value); });
+  return result;
+}
+
+template <typename T, int N>
+inline bool any_of(const T (&array)[N]) {
+#pragma HLS inline
+  bool result = false;
+  for_each(array, [&](T value) { result |= bool(value); });
+  return result;
+}
+
+template <typename T, int N>
+inline bool none_of(const T (&array)[N]) {
+#pragma HLS inline
+  return !all_of(array, [&](T value) { return !value; });
+}
 
 #ifndef __SYNTHESIS__
 inline void ap_wait() {}

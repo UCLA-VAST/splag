@@ -27,18 +27,6 @@ static_assert(kQueueCount % kShardCount == 0,
               "current implementation requires that queue count is a multiple "
               "of shard count");
 
-inline bool AllInShard(const bool (&array)[kShardCount], int sid) {
-#pragma HLS inline
-  return array[sid];
-}
-
-template <int N>
-inline bool AllInShard(const bool (&array)[N], int sid) {
-#pragma HLS inline
-  return AllInShard((const bool(&)[N / 2])(array), sid) &&
-         AllInShard((const bool(&)[N - N / 2])(array[N / 2]), sid);
-}
-
 // Verbosity definitions:
 //   v=5: O(1)
 //   v=8: O(#vertex)
@@ -803,8 +791,15 @@ void Dispatcher(
     CHECK_GE(task_count, 0);                                                   \
   } while (0)
 
+  auto shard_is_done = [&](int sid) {
+    bool result = true;
+    RANGE(i, kQueueCount / kShardCount,
+          result &= queue_empty[i * kShardCount + sid]);
+    return result;
+  };
+
 spin:
-  for (; task_count || push_count || Any(pop_count) || !All(queue_empty);
+  for (; task_count || push_count || any_of(pop_count) || !all_of(queue_empty);
        ++cycle_count) {
 #pragma HLS pipeline II = 1
     RANGE(pe, kPeCount, task_count_per_pe[pe] && ++pe_active_count[pe]);
@@ -857,7 +852,7 @@ spin:
       }
     } else if (task_count_per_shard[sid] + pop_count[sid] <
                    kPeCount / kShardCount &&
-               !(AllInShard(queue_empty, sid) && push_count == 0)) {
+               !(shard_is_done(sid) && push_count == 0)) {
       // Dequeue tasks from the queue.
       if (queue_req_q.try_write(
               {.op = QueueOp::POP, .task = Task{.vid = sid}})) {
