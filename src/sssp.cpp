@@ -544,25 +544,6 @@ spin:
   }
 }
 
-void UpdateRespArbiter(tapa::istreams<Update, kIntervalCount>& data_in_q,
-                       tapa::ostreams<Update, kPeCount>& data_out_q) {
-  DECL_ARRAY(Update, data, kIntervalCount, Update());
-  DECL_ARRAY(bool, data_valid, kIntervalCount, false);
-
-spin:
-  for (;;) {
-#pragma HLS pipeline II = 1
-    RANGE(iid, kIntervalCount, {
-      UNUSED SET(data_valid[iid], data_in_q[iid].try_read(data[iid]));
-      RANGE(pe_iid, kPeCount / kShardCount, {
-        const auto pe = pe_iid * kShardCount + iid;
-        UNUSED RESET(data_valid[iid], data[iid].addr == pe &&
-                                          data_out_q[pe].try_write(data[iid]));
-      });
-    });
-  }
-}
-
 void EdgeMem(tapa::istream<Vid>& read_addr_q, tapa::ostream<Edge>& read_data_q,
              tapa::async_mmap<Edge> mem) {
 #pragma HLS data_pack variable = mem.read_data
