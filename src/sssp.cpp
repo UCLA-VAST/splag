@@ -161,7 +161,7 @@ heap_index_cache_init:
    */
 
   TaskOnChip heap_array_cache[kHeapOnChipSize];
-#pragma HLS resource variable = heap_array_cache core = RAM_2P_URAM
+#pragma HLS resource variable = heap_array_cache core = RAM_2P_URAM latency = 2
 #pragma HLS data_pack variable = heap_array_cache
 
   auto get_heap_array_index = [&](Vid i) {
