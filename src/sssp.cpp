@@ -20,9 +20,6 @@ using tapa::task;
 
 constexpr int kQueueCount = 4;
 
-static_assert(kQueueCount % kIntervalCount == 0,
-              "current implementation requires that queue count is a multiple "
-              "of interval count");
 static_assert(kQueueCount % kShardCount == 0,
               "current implementation requires that queue count is a multiple "
               "of shard count");
@@ -236,7 +233,6 @@ spin:
       case QueueOp::PUSH: {
         const auto new_task = Task(req.task);
         CHECK_EQ(new_task.vid % kQueueCount, qid);
-        CHECK_EQ(new_task.vid % kIntervalCount, qid % kIntervalCount);
         const Vid task_index = get_heap_index(new_task.vid);
         bool heapify = true;
         Vid heapify_index = task_index;
