@@ -985,12 +985,14 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
                   edge_read_data_q)
 
       // For vertices.
-      // clang-format off
       .invoke<detach>(UpdateReqArbiter, update_req_q, update_req_qi1)
+
+      // clang-format off
       .invoke<detach, kIntervalCount>(VidDemux, 0, update_req_qi1, update_req_0_qi0, update_req_1_qi0)
       .invoke<detach>(VidMux, update_req_0_qi0[0], update_req_0_qi0[1], update_req_qi0[0])
       .invoke<detach>(VidMux, update_req_1_qi0[0], update_req_1_qi0[1], update_req_qi0[1])
       // clang-format on
+
       .invoke<detach, kIntervalCount>(VertexMem, vertex_read_addr_q,
                                       vertex_read_data_q, vertices)
       .invoke<detach, kIntervalCount>(VertexReaderS0, update_req_qi0,
@@ -1002,6 +1004,7 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
                                       update_new_qi1, vertices)
       .invoke<detach, kIntervalCount>(VidMux, update_new_qi1, update_noop_qi,
                                       update_resp_qi0)
+
       // clang-format off
       .invoke<detach, kIntervalCount>(UpdateDemux, 0, update_resp_qi0, update_resp_0_qi0, update_resp_1_qi0)
       .invoke<detach>(VidMux, update_resp_0_qi0[0], update_resp_0_qi0[1], update_resp_q[0])
