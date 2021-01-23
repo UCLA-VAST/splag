@@ -26,6 +26,7 @@ add_tapa_target(
   sssp-hw-xo
   INPUT src/sssp.cpp
   TOP SSSP
+  CONNECTIVITY ${CMAKE_CURRENT_SOURCE_DIR}/link_config.ini
   CONSTRAINT ${CMAKE_CURRENT_BINARY_DIR}/constraint.tcl
   PLATFORM xilinx_u280_xdma_201920_3)
 
