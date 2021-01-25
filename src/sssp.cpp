@@ -961,10 +961,6 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   streams<Update, kIntervalCount, 2> update_noop_qi;
   streams<Vid, kIntervalCount, 2> vertex_read_addr_q;
   streams<Vertex, kIntervalCount, 2> vertex_read_data_q;
-  //   Compose the update response network.
-  streams<Update, kIntervalCount, 8> update_resp_qi0;
-  streams<Update, kIntervalCount, 8> update_resp_0_qi0;
-  streams<Update, kIntervalCount, 8> update_resp_1_qi0;
 
   streams<Update, kIntervalCount, 256> update_resp_q;
 
@@ -1003,13 +999,7 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
       .invoke<detach, kIntervalCount>(VertexUpdater, update_new_qi0,
                                       update_new_qi1, vertices)
       .invoke<detach, kIntervalCount>(VidMux, update_new_qi1, update_noop_qi,
-                                      update_resp_qi0)
-
-      // clang-format off
-      .invoke<detach, kIntervalCount>(UpdateDemux, 0, update_resp_qi0, update_resp_0_qi0, update_resp_1_qi0)
-      .invoke<detach>(VidMux, update_resp_0_qi0[0], update_resp_0_qi0[1], update_resp_q[0])
-      .invoke<detach>(VidMux, update_resp_1_qi0[0], update_resp_1_qi0[1], update_resp_q[1])
-      // clang-format on
+                                      update_resp_q)
 
       // PEs.
       .invoke<detach, kPeCount>(ProcElemS0, task_req_q, task_req_qi,
