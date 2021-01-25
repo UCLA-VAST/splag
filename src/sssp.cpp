@@ -784,6 +784,10 @@ void Dispatcher(
 
 spin:
   for (; active_task_count || pending_task_count; ++cycle_count) {
+    // Technically the loop should also check if there are active tasks not
+    // acknowledged by the PEs (`any_of(task_count_per_pe)`), because if the
+    // updates arrive before the task responses (which is only very rarely
+    // possible in csim), the loop may leave the responses unconsumed.
 #pragma HLS pipeline II = 1
     RANGE(pe, kPeCount, task_count_per_pe[pe] && ++pe_active_count[pe]);
     // Process response messages from the queue.
