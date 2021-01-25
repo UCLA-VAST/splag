@@ -614,15 +614,9 @@ spin:
       CHECK_EQ(req.payload.op, TaskOp::NEW);
       if (vertex <= req.payload.task.vertex()) {
         req.payload.op = TaskOp::NOOP;
-      }
-
-      switch (req.payload.op) {
-        case TaskOp::NEW:
-          new_q.write(req);
-          break;
-        case TaskOp::NOOP:
-          noop_q.write(req);
-          break;
+        noop_q.write(req);
+      } else {
+        new_q.write(req);
       }
     }
   }
