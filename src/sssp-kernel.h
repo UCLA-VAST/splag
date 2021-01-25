@@ -73,12 +73,9 @@ class TaskOnChip {
   static constexpr int degree_msb = degree_lsb + kVidWidth - 1;
 };
 
-// Used in:
-//
-// ProcElemS1 -> Dispatcher
+// Used only in Update.
 struct TaskOp {
-  // ProcElemS1 -> Dispatcher: Valid values are NEW and DONE.
-  enum Op { NEW, NOOP, DONE } op;
+  enum Op { NEW, NOOP } op;
   TaskOnChip task;  // Valid only when op is NEW.
 };
 
@@ -88,16 +85,13 @@ inline std::ostream& operator<<(std::ostream& os, const TaskOp& obj) {
       return os << "{ op: NEW, task: " << Task(obj.task) << " }";
     case TaskOp::NOOP:
       return os << "{ op: NOOP }";
-    case TaskOp::DONE:
-      return os << "{ op: DONE }";
   }
 }
 
 // Used in:
 //
 // ProcElemS1 -> (net)
-// (net) -> VertexReaderS0 -> VertexReaderS1 -> VertexUpdater -> (net)
-// (net) -> ProcElemS1
+// (net) -> VertexReaderS0 -> VertexReaderS1 -> VertexUpdater -> Dispatcher
 using Update = tapa::packet<PeId, TaskOp>;
 
 // Used in:
@@ -139,9 +133,6 @@ inline std::ostream& operator<<(std::ostream& os, const QueueOpResp& obj) {
       break;
     case TaskOp::NOOP:
       os << "NOOP";
-      break;
-    case TaskOp::DONE:
-      os << "DONE";
       break;
   }
   if (obj.queue_op == QueueOp::POP && obj.task_op == TaskOp::NEW) {

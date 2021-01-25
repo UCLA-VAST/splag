@@ -611,16 +611,9 @@ spin:
     if (!update_in_q.empty() && !vertex_read_data_q.empty()) {
       auto req = update_in_q.read(nullptr);
       const auto vertex = vertex_read_data_q.read(nullptr);
-      switch (req.payload.op) {
-        case TaskOp::NEW:
-          if (vertex <= req.payload.task.vertex()) {
-            req.payload.op = TaskOp::NOOP;
-          }
-          break;
-        case TaskOp::NOOP:
-        case TaskOp::DONE:
-          CHECK_EQ(req.payload.op, TaskOp::DONE);
-          break;
+      CHECK_EQ(req.payload.op, TaskOp::NEW);
+      if (vertex <= req.payload.task.vertex()) {
+        req.payload.op = TaskOp::NOOP;
       }
 
       switch (req.payload.op) {
@@ -628,7 +621,6 @@ spin:
           new_q.write(req);
           break;
         case TaskOp::NOOP:
-        case TaskOp::DONE:
           noop_q.write(req);
           break;
       }
@@ -888,11 +880,6 @@ spin:
 
           // Statistics.
           ++visited_edge_count;
-          break;
-        case TaskOp::DONE:
-          task_buf_valid = false;
-
-          STATS(recv, "TASK : DONE");
           break;
       }
     }
