@@ -418,23 +418,9 @@ spin:
   }
 }
 
-// A UpdateMux merges two input streams into one based on a selection stream.
-void UpdateMux(istream<bool>& select_q, istream<Update>& in0,
-               istream<Update>& in1, ostream<Update>& out) {
-  DECL_BUF(bool, select);
-spin:
-  for (;;) {
-#pragma HLS pipeline II = 1
-    Update data;
-    UPDATE(select, select_q.try_read(select),
-           (select ? in1.try_read(data) : in0.try_read(data)) &&
-               (out.write(data), true));
-  }
-}
-
 // A VidDemux routes input streams based on the specified bit in Vid.
-void VidDemux(int b, istream<Update>& in, ostream<bool>& select_q,
-              ostream<Update>& out0, ostream<Update>& out1) {
+void VidDemux(int b, istream<Update>& in, ostream<Update>& out0,
+              ostream<Update>& out1) {
 spin:
   for (;;) {
 #pragma HLS pipeline II = 1
@@ -443,7 +429,6 @@ spin:
       const auto addr = data.payload.task.vid();
       const bool select = ap_uint<sizeof(addr) * CHAR_BIT>(addr).test(b);
       select ? out1.write(data) : out0.write(data);
-      select_q.write(select);
     }
   }
 }
@@ -619,7 +604,7 @@ void VertexReaderS1(
     // Inputs.
     istream<Update>& update_in_q, istream<Vertex>& vertex_read_data_q,
     // Outputs.
-    ostream<Update>& new_q, ostream<Update>& noop_q, ostream<bool>& op_q) {
+    ostream<Update>& new_q, ostream<Update>& noop_q) {
 spin:
   for (;;) {
 #pragma HLS pipeline II = 1
@@ -647,7 +632,6 @@ spin:
           noop_q.write(req);
           break;
       }
-      op_q.write(req.payload.op != TaskOp::NEW);
     }
   }
 }
@@ -969,14 +953,12 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   streams<Update, kIntervalCount, 8> update_req_qi1;
   streams<Update, kIntervalCount, 8> update_req_0_qi0;
   streams<Update, kIntervalCount, 8> update_req_1_qi0;
-  streams<bool, kIntervalCount, 256> update_select_qi0;
   streams<Update, kIntervalCount, 8> update_req_qi0;
   //   Connect the vertex readers and updaters.
   streams<Update, kIntervalCount, 64> update_qi0;
   streams<Update, kIntervalCount, 256> update_new_qi0;
   streams<Update, kIntervalCount, 2> update_new_qi1;
   streams<Update, kIntervalCount, 2> update_noop_qi;
-  streams<bool, kIntervalCount, 256> update_op_qi;
   streams<Vid, kIntervalCount, 2> vertex_read_addr_q;
   streams<Vertex, kIntervalCount, 2> vertex_read_data_q;
   //   Compose the update response network.
@@ -1005,7 +987,7 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
       // For vertices.
       // clang-format off
       .invoke<detach>(UpdateReqArbiter, update_req_q, update_req_qi1)
-      .invoke<detach, kIntervalCount>(VidDemux, 0, update_req_qi1, update_select_qi0, update_req_0_qi0, update_req_1_qi0)
+      .invoke<detach, kIntervalCount>(VidDemux, 0, update_req_qi1, update_req_0_qi0, update_req_1_qi0)
       .invoke<detach>(VidMux, update_req_0_qi0[0], update_req_0_qi0[1], update_req_qi0[0])
       .invoke<detach>(VidMux, update_req_1_qi0[0], update_req_1_qi0[1], update_req_qi0[1])
       // clang-format on
@@ -1015,15 +997,15 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
                                       update_qi0, vertex_read_addr_q)
       .invoke<detach, kIntervalCount>(VertexReaderS1, update_qi0,
                                       vertex_read_data_q, update_new_qi0,
-                                      update_noop_qi, update_op_qi)
+                                      update_noop_qi)
       .invoke<detach, kIntervalCount>(VertexUpdater, update_new_qi0,
                                       update_new_qi1, vertices)
-      .invoke<detach, kIntervalCount>(UpdateMux, update_op_qi, update_new_qi1,
-                                      update_noop_qi, update_resp_qi0)
+      .invoke<detach, kIntervalCount>(VidMux, update_new_qi1, update_noop_qi,
+                                      update_resp_qi0)
       // clang-format off
       .invoke<detach, kIntervalCount>(UpdateDemux, 0, update_resp_qi0, update_resp_0_qi0, update_resp_1_qi0)
-      .invoke<detach>(UpdateMux, update_select_qi0[0], update_resp_0_qi0[0], update_resp_0_qi0[1], update_resp_q[0])
-      .invoke<detach>(UpdateMux, update_select_qi0[1], update_resp_1_qi0[0], update_resp_1_qi0[1], update_resp_q[1])
+      .invoke<detach>(VidMux, update_resp_0_qi0[0], update_resp_0_qi0[1], update_resp_q[0])
+      .invoke<detach>(VidMux, update_resp_1_qi0[0], update_resp_1_qi0[1], update_resp_q[1])
       // clang-format on
 
       // PEs.
