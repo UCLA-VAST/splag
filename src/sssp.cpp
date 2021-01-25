@@ -604,7 +604,7 @@ void VertexReaderS1(
     // Inputs.
     istream<Update>& update_in_q, istream<Vertex>& vertex_read_data_q,
     // Outputs.
-    ostream<Update>& new_q, ostream<Update>& noop_q) {
+    ostream<Update>& new_q, ostream<bool>& noop_q) {
 spin:
   for (;;) {
 #pragma HLS pipeline II = 1
@@ -613,8 +613,7 @@ spin:
       const auto vertex = vertex_read_data_q.read(nullptr);
       CHECK_EQ(req.payload.op, TaskOp::NEW);
       if (vertex <= req.payload.task.vertex()) {
-        req.payload.op = TaskOp::NOOP;
-        noop_q.write(req);
+        noop_q.write(false);
       } else {
         new_q.write(req);
       }
@@ -644,14 +643,17 @@ spin:
   }
 }
 
-void UpdateFilter(istream<Update>& pkt_in_q, ostream<Update>& pkt_out_q) {
+using uint_interval_t = ap_uint<bit_length(kIntervalCount)>;
+
+void NoopMerger(tapa::istreams<bool, kIntervalCount>& pkt_in_q,
+                ostream<uint_interval_t>& pkt_out_q) {
 spin:
   for (;;) {
-    if (!pkt_in_q.empty()) {
-      const auto pkt = pkt_in_q.read(nullptr);
-      if (pkt.payload.op != TaskOp::NOOP) {
-        pkt_out_q.write(pkt);
-      }
+    uint_interval_t count = 0;
+    bool buf;
+    RANGE(iid, kIntervalCount, pkt_in_q[iid].try_read(buf) && ++count);
+    if (count) {
+      pkt_out_q.write(count);
     }
   }
 }
@@ -710,6 +712,7 @@ void Dispatcher(
     tapa::ostreams<TaskOnChip, kPeCount>& task_req_q,
     tapa::istreams<Vid, kPeCount>& task_resp_q,
     tapa::istreams<Update, kIntervalCount>& update_resp_q,
+    istream<uint_interval_t>& update_noop_q,
     tapa::ostream<QueueOp>& queue_req_q,
     tapa::istream<QueueOpResp>& queue_resp_q) {
   // Process finished tasks.
@@ -879,6 +882,14 @@ spin:
     }
 
     {
+      uint_interval_t count;
+      if (update_noop_q.try_read(count)) {
+        active_task_count -= count;
+        visited_edge_count += count;
+      }
+    }
+
+    {
       Vid vid;
       const auto pe = cycle_count % kPeCount;
       if (task_resp_q[pe].try_read(vid)) {
@@ -941,17 +952,17 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   streams<Update, kIntervalCount, 8> update_req_qi0;
   //   Connect the vertex readers and updaters.
   streams<Update, kIntervalCount, 64> update_qi0;
-  streams<Update, kIntervalCount, 256> update_new_qi0;
-  streams<Update, kIntervalCount, 2> update_new_qi1;
-  streams<Update, kIntervalCount, 2> update_noop_qi;
+  streams<Update, kIntervalCount, 256> update_new_qi;
+  streams<bool, kIntervalCount, 2> update_noop_qi;
   streams<Vid, kIntervalCount, 2> vertex_read_addr_q;
   streams<Vertex, kIntervalCount, 2> vertex_read_data_q;
 
   streams<Update, kIntervalCount, 256> update_resp_q;
+  stream<uint_interval_t, 2> update_noop_q;
 
   tapa::task()
       .invoke<0>(Dispatcher, root, metadata, task_req_q, task_resp_q,
-                 update_resp_q, queue_req_q, queue_resp_q)
+                 update_resp_q, update_noop_q, queue_req_q, queue_resp_q)
       .invoke<-1, kQueueCount>(TaskQueue, tapa::seq(), queue_req_qi,
                                queue_resp_qi, heap_array, heap_index)
       .invoke<-1>(QueueReqArbiter, queue_req_q, queue_req_qi)
@@ -979,12 +990,11 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
       .invoke<detach, kIntervalCount>(VertexReaderS0, update_req_qi0,
                                       update_qi0, vertex_read_addr_q)
       .invoke<detach, kIntervalCount>(VertexReaderS1, update_qi0,
-                                      vertex_read_data_q, update_new_qi0,
+                                      vertex_read_data_q, update_new_qi,
                                       update_noop_qi)
-      .invoke<detach, kIntervalCount>(VertexUpdater, update_new_qi0,
-                                      update_new_qi1, vertices)
-      .invoke<detach, kIntervalCount>(VidMux, update_new_qi1, update_noop_qi,
-                                      update_resp_q)
+      .invoke<detach, kIntervalCount>(VertexUpdater, update_new_qi,
+                                      update_resp_q, vertices)
+      .invoke<detach>(NoopMerger, update_noop_qi, update_noop_q)
 
       // PEs.
       .invoke<detach, kPeCount>(ProcElemS0, task_req_q, task_req_qi,
