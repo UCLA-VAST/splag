@@ -548,7 +548,7 @@ void VertexMem(tapa::istream<Vid>& read_addr_q,
 }
 
 void ProcElemS0(istream<TaskOnChip>& task_in_q, ostream<TaskOnChip>& task_out_q,
-                ostream<Vid>& edges_read_addr_q) {
+                ostream<Vid>& task_resp_q, ostream<Vid>& edges_read_addr_q) {
 spin:
   for (;;) {
     const auto task = task_in_q.read();
@@ -559,6 +559,8 @@ spin:
 #pragma HLS pipeline II = 1
       edges_read_addr_q.write(task.vertex().offset + i);
     }
+
+    task_resp_q.write(task.vid());
   }
 }
 
@@ -741,7 +743,8 @@ void Dispatcher(
     tapa::mmap<int64_t> metadata,
     // Task and queue requests.
     tapa::ostreams<TaskOnChip, kPeCount>& task_req_q,
-    tapa::istreams<Update, kIntervalCount>& task_resp_q,
+    tapa::istreams<Vid, kPeCount>& task_resp_q,
+    tapa::istreams<Update, kIntervalCount>& update_resp_q,
     tapa::ostream<QueueOp>& queue_req_q,
     tapa::istream<QueueOpResp>& queue_resp_q) {
   // Process finished tasks.
@@ -804,7 +807,6 @@ spin:
   for (; active_task_count || pending_task_count; ++cycle_count) {
 #pragma HLS pipeline II = 1
     RANGE(pe, kPeCount, task_count_per_pe[pe] && ++pe_active_count[pe]);
-    const auto pe = cycle_count % kPeCount;
     // Process response messages from the queue.
     if (SET(queue_buf_valid, queue_resp_q.try_read(queue_buf))) {
       queue_empty[queue_buf.task.vid() % kQueueCount] = false;
@@ -886,7 +888,7 @@ spin:
 
     // Receive tasks generated from PEs.
     if (SET(task_buf_valid,
-            task_resp_q[cycle_count % kIntervalCount].try_read(task_buf))) {
+            update_resp_q[cycle_count % kIntervalCount].try_read(task_buf))) {
       --active_task_count;
       const auto pe = task_buf.addr;
       switch (task_buf.payload.op) {
@@ -906,11 +908,18 @@ spin:
           break;
         case TaskOp::DONE:
           task_buf_valid = false;
-          --task_count_per_shard[task_buf.payload.task.vid() % kShardCount];
-          --task_count_per_pe[pe];
 
           STATS(recv, "TASK : DONE");
           break;
+      }
+    }
+
+    {
+      Vid vid;
+      const auto pe = cycle_count % kPeCount;
+      if (task_resp_q[pe].try_read(vid)) {
+        --task_count_per_shard[vid % kShardCount];
+        --task_count_per_pe[pe];
       }
     }
   }
@@ -949,7 +958,7 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
 
   streams<TaskOnChip, kPeCount, 2> task_req_q("task_req");
   streams<TaskOnChip, kPeCount, 2> task_req_qi("task_req_i");
-  streams<Update, kIntervalCount, 256> task_resp_q("task_resp");
+  streams<Vid, kPeCount, 2> task_resp_q("task_resp");
 
   // For edges.
   tapa::streams<Vid, kPeCount, 2> edge_read_addr_q("edge_read_addr");
@@ -980,9 +989,11 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   streams<Update, kIntervalCount, 8> update_resp_0_qi0;
   streams<Update, kIntervalCount, 8> update_resp_1_qi0;
 
+  streams<Update, kIntervalCount, 256> update_resp_q;
+
   tapa::task()
       .invoke<0>(Dispatcher, root, metadata, task_req_q, task_resp_q,
-                 queue_req_q, queue_resp_q)
+                 update_resp_q, queue_req_q, queue_resp_q)
       .invoke<-1, kQueueCount>(TaskQueue, tapa::seq(), queue_req_qi,
                                queue_resp_qi, heap_array, heap_index)
       .invoke<-1>(QueueReqArbiter, queue_req_q, queue_req_qi)
@@ -1016,13 +1027,13 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
                                       update_noop_qi, update_resp_qi0)
       // clang-format off
       .invoke<detach, kIntervalCount>(UpdateDemux, 0, update_resp_qi0, update_resp_0_qi0, update_resp_1_qi0)
-      .invoke<detach>(UpdateMux, update_select_qi0[0], update_resp_0_qi0[0], update_resp_0_qi0[1], task_resp_q[0])
-      .invoke<detach>(UpdateMux, update_select_qi0[1], update_resp_1_qi0[0], update_resp_1_qi0[1], task_resp_q[1])
+      .invoke<detach>(UpdateMux, update_select_qi0[0], update_resp_0_qi0[0], update_resp_0_qi0[1], update_resp_q[0])
+      .invoke<detach>(UpdateMux, update_select_qi0[1], update_resp_1_qi0[0], update_resp_1_qi0[1], update_resp_q[1])
       // clang-format on
 
       // PEs.
       .invoke<detach, kPeCount>(ProcElemS0, task_req_q, task_req_qi,
-                                edge_read_addr_q)
+                                task_resp_q, edge_read_addr_q)
       .invoke<detach, kPeCount>(ProcElemS1, seq(), task_req_qi,
                                 edge_read_data_q, update_req_q);
 }
