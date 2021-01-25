@@ -775,7 +775,7 @@ void Dispatcher(
   ++task_count_per_pe[root.vid % kShardCount];
 
   // Statistics.
-  int32_t visited_vertex_count = 0;
+  int32_t visited_vertex_count = 1;
   int32_t visited_edge_count = 0;
   int32_t queue_count = 0;
   int64_t cycle_count = 0;
@@ -874,6 +874,9 @@ spin:
           --pending_task_count;
           queue_buf_valid = false;
           ++task_count_per_pe[pe];
+
+          // Statistics.
+          ++visited_vertex_count;
         } else {
           ++pe_fullcycle_count;
         }
@@ -884,27 +887,28 @@ spin:
     // Receive tasks generated from PEs.
     if (SET(task_buf_valid,
             task_resp_q[cycle_count % kIntervalCount].try_read(task_buf))) {
+      --active_task_count;
       const auto pe = task_buf.addr;
       switch (task_buf.payload.op) {
         case TaskOp::NEW:
           ++push_count;
           STATS(recv, "TASK : NEW ");
-          --active_task_count;
           ++pending_task_count;
+
+          // Statistics.
+          ++visited_edge_count;
           break;
         case TaskOp::NOOP:
           task_buf_valid = false;
-          --active_task_count;
+
+          // Statistics.
+          ++visited_edge_count;
           break;
         case TaskOp::DONE:
           task_buf_valid = false;
           --task_count_per_shard[task_buf.payload.task.vid() % kShardCount];
           --task_count_per_pe[pe];
-          --active_task_count;
 
-          // Update statistics.
-          ++visited_vertex_count;
-          visited_edge_count += task_buf.payload.task.vertex().degree;
           STATS(recv, "TASK : DONE");
           break;
       }
