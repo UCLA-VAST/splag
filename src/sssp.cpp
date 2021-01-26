@@ -671,13 +671,12 @@ spin:
                        req_out_q[req.task.vid() % kQueueCount].try_write(req));
           break;
         case QueueOp::POP:
-          CHECK_LT(req.task.vid(), kShardCount);
-          const auto qid =
-              (sid_base[req.task.vid()] * kShardCount + req.task.vid()) %
-              kQueueCount;
+          const auto sid = req.task.vid() % kShardCount;
+          const auto qid = (sid_base[sid] * kShardCount + sid) % kQueueCount;
+          req.task.set_vid(qid);
           if (req_out_q[qid].try_write(req)) {
             req_valid = false;
-            ++sid_base[req.task.vid()];
+            ++sid_base[sid];
           }
           break;
       }
