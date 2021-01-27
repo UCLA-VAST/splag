@@ -412,6 +412,210 @@ spin:
   }
 }
 
+using SpqElem = TaskOnChip;
+
+const SpqElem kSpqElemMin(Task{.vertex = {.distance = kInfDistance}});
+const SpqElem kSpqElemMax(Task{.vertex = {.distance = 0}});
+
+constexpr int kSpqSize = 7;
+
+SpqElem SpqUpdate(SpqElem& a, SpqElem& b, SpqElem& c) {
+  // Make c <= b <= a by updating a and b, invalidating the old c, and returning
+  // the new c.
+
+  const bool x = b <= a;
+  const bool y = c <= a;
+  const bool z = c <= b;
+  // a <= b <= c : !x && !y && !z
+  // a <= c <= b : !x && !y &&  z
+  // b <= a <= c :  x && !y && !z
+  // c <= a <= b : !x &&  y &&  z
+  // b <= c <= a :  x &&  y && !z
+  // c <= b <= a :  x &&  y &&  z
+  const auto new_a = x && y ? a : z ? b : c;
+  const auto new_b = x == y ? y == z ? b : c : a;
+  const auto new_c = y && z ? c : x ? b : a;
+
+  a = new_a;
+  b = new_b;
+  c = kSpqElemMin;
+  return new_c;
+}
+
+void SystolicQueue(
+    // Queue ID.
+    int id,
+    // Request-response interfaces.
+    istream<QueueOp>& req_q, ostream<QueueOpResp>& resp_q,
+    // Connection to overflow queue.
+    ostream<SpqElem>& overflow_q) {
+  DECL_ARRAY(SpqElem, a, kSpqSize + 1, kSpqElemMin);
+  DECL_ARRAY(SpqElem, b, kSpqSize + 1, kSpqElemMin);
+  const auto& front = a[0];
+  auto& overflow = b[kSpqSize];
+
+spin:
+  for (;;) {
+    // Do not pipeline to avoid Vivado HLS bug.
+    if (!req_q.empty()) {
+      const auto spq_op = req_q.read();
+      switch (spq_op.op) {
+        case QueueOp::PUSH:
+          a[0] = spq_op.task;
+          b[0] = kSpqElemMax;
+          break;
+        case QueueOp::PUSHPOP:
+          a[0] = spq_op.task;
+          b[0] = kSpqElemMin;
+          break;
+        case QueueOp::POP:
+          a[0] = b[0] = kSpqElemMin;
+          break;
+      }
+
+      for (int i = 1; i <= kSpqSize; i += 2) {
+#pragma HLS unroll
+        b[i] = SpqUpdate(a[i - 1], a[i], b[i - 1]);
+      }
+
+      for (int i = 2; i <= kSpqSize; i += 2) {
+#pragma HLS unroll
+        b[i] = SpqUpdate(a[i - 1], a[i], b[i - 1]);
+      }
+
+      QueueOpResp resp{
+          .queue_op = spq_op.op,
+          .task_op = front.vertex().is_inf() ? TaskOp::NOOP : TaskOp::NEW,
+          .task = spq_op.is_push() ? spq_op.task : front,
+      };
+      if (resp.is_pop_noop()) {
+        resp.task.set_vid(id);
+      }
+      CHECK_GT(resp.task.vertex().distance, 0);
+      CHECK_EQ(resp.task.vid() % kQueueCount, id);
+      resp_q.write(resp);
+
+      if (!overflow.vertex().is_inf()) {
+        overflow_q.write(overflow);
+      }
+    }
+  }
+}
+
+void CascadedQueue(
+    // Queue ID.
+    int id,
+    // Request-response interfaces.
+    istream<QueueOp>& req_q, ostream<QueueOpResp>& resp_q,
+    // Connection to systolic queue.
+    ostream<QueueOp>& spq_req_q, istream<QueueOpResp>& spq_resp_q,
+    istream<SpqElem>& spq_overflow_q,
+    // Connection to overflow queue.
+    ostream<QueueOp>& ofq_req_q, istream<QueueOpResp>& ofq_resp_q) {
+  DECL_BUF(QueueOpResp, spq_resp);
+  DECL_BUF(QueueOpResp, ofq_resp);
+  bool both_pending = false;
+  bool ofq_pending = false;
+  bool pushpop_pending = false;
+  bool spq_was_empty = false;
+
+spin:
+  for (;;) {
+#pragma HLS pipeline II = 1
+    UPDATE(spq_resp, spq_resp_q.try_read(spq_resp), spq_resp.is_push());
+    UPDATE(ofq_resp, ofq_resp_q.try_read(ofq_resp), ofq_resp.is_push());
+
+    // Buffers for output streams.
+    DECL_BUF(QueueOpResp, resp);
+    DECL_BUF(QueueOp, spq_req);
+    DECL_BUF(QueueOp, ofq_req);
+
+    // Handle overflow elements.
+    if (!spq_overflow_q.empty()) {
+      ofq_req.op = QueueOp::PUSH;                   // ofq_req_q.write(...);
+      ofq_req.task = spq_overflow_q.read(nullptr);  // ofq_req_q.write(...);
+      ofq_req_valid = true;                         // ofq_req_q.write(...);
+    }
+
+    // Send POP response, step 1.
+    if (both_pending && spq_resp_valid) {
+      spq_was_empty = spq_resp.is_pop_noop();
+      if (!spq_was_empty) {
+        resp = spq_resp, resp_valid = true;  // resp_q.write(spq_resp);
+      }
+
+      both_pending = spq_resp_valid = false;
+      ofq_pending = true;
+    } else if (pushpop_pending && spq_resp_valid) {
+      // Or, send PUSHPOP response.
+      CHECK_EQ(spq_resp.queue_op, QueueOp::PUSHPOP);
+      CHECK_EQ(spq_resp.task_op, TaskOp::NEW);
+
+      resp = spq_resp, resp_valid = true;  // resp_q.write(spq_resp);
+
+      pushpop_pending = spq_resp_valid = false;
+    }
+
+    // Send POP response, step 2.
+    if (ofq_pending &&     // Systolic queue response has been processed.
+        ofq_resp_valid &&  // Overflow queue response is valid.
+        !(spq_was_empty && resp_valid)  // Response can be sent.
+    ) {
+      if (spq_was_empty) {
+        resp = ofq_resp, resp_valid = true;  // resp_q.write(ofq_resp);
+      } else if (ofq_resp.is_pop_new()) {
+        spq_req.op = QueueOp::PUSH;    // spq_req_q.write(...);
+        spq_req.task = ofq_resp.task;  // spq_req_q.write(...);
+        spq_req_valid = true;          // spq_req_q.write(...);
+      }
+
+      ofq_pending = ofq_resp_valid = false;
+    }
+
+    // Handle new requests.
+    if (!resp_valid &&                    // Response can be sent.
+        !spq_req_valid &&                 // Systolic queue request can be sent.
+        !ofq_req_valid &&                 // Overflow queue request can be sent.
+        !both_pending && !ofq_pending &&  // Not waiting for POP response.
+        !pushpop_pending &&               // Not waiting for PUSHPOP response.
+        !req_q.empty()                    // Request is valid.
+    ) {
+      const auto req = req_q.read(nullptr);
+      spq_req = req, spq_req_valid = true;  // spq_req_q.write(req);
+      switch (req.op) {
+        case QueueOp::PUSH:
+          resp = {
+              .queue_op = req.op,  // resp_q.write(req);
+              .task_op = {},       // resp_q.write(req);
+              .task = req.task,    // resp_q.write(req);
+          };                       // resp_q.write(req);
+          resp_valid = true;       // resp_q.write(req);
+          break;
+        case QueueOp::PUSHPOP:
+          pushpop_pending = true;
+          break;
+        case QueueOp::POP:
+          ofq_req = req, ofq_req_valid = true;  // ofq_req_q.write(req);
+          both_pending = true;
+          break;
+      }
+    }
+
+    if (resp_valid) {
+      resp_q.write(resp);
+      CHECK_EQ(resp.task.vid() % kQueueCount, id);
+    }
+    if (spq_req_valid) {
+      spq_req_q.write(spq_req);
+      CHECK_EQ(spq_req.task.vid() % kQueueCount, id);
+    }
+    if (ofq_req_valid) {
+      ofq_req_q.write(ofq_req);
+      CHECK_EQ(ofq_req.task.vid() % kQueueCount, id);
+    }
+  }
+}
+
 // A VidMux merges two input streams into one.
 void VidMux(istream<TaskOp>& in0, istream<TaskOp>& in1, ostream<TaskOp>& out) {
 spin:
@@ -924,6 +1128,12 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   tapa::streams<QueueOp, kQueueCount, 2> queue_req_qi("queue_req_i");
   tapa::streams<QueueOpResp, kQueueCount, 2> queue_resp_qi("queue_resp_i");
 
+  streams<QueueOp, kQueueCount, 2> spq_req_q("systolic_req");
+  streams<QueueOpResp, kQueueCount, 2> spq_resp_q("systolic_resp");
+  streams<TaskOnChip, kQueueCount, 2> spq_overflow_q("systolic_overflow");
+  streams<QueueOp, kQueueCount, 512> ofq_req_q("overflow_req");
+  streams<QueueOpResp, kQueueCount, 2> ofq_resp_q("overflow_resp");
+
   streams<TaskOnChip, kPeCount, 2> task_req_q("task_req");
   streams<TaskOnChip, kPeCount, 2> task_req_qi("task_req_i");
   streams<Vid, kPeCount, 2> task_resp_q("task_resp");
@@ -956,8 +1166,13 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   tapa::task()
       .invoke<0>(Dispatcher, root, metadata, task_req_q, task_resp_q,
                  update_resp_q, update_noop_q, queue_req_q, queue_resp_q)
-      .invoke<-1, kQueueCount>(TaskQueue, tapa::seq(), queue_req_qi,
-                               queue_resp_qi, heap_array, heap_index)
+      .invoke<detach, kQueueCount>(CascadedQueue, seq(), queue_req_qi,
+                                   queue_resp_qi, spq_req_q, spq_resp_q,
+                                   spq_overflow_q, ofq_req_q, ofq_resp_q)
+      .invoke<detach, kQueueCount>(SystolicQueue, seq(), spq_req_q, spq_resp_q,
+                                   spq_overflow_q)
+      .invoke<detach, kQueueCount>(TaskQueue, seq(), ofq_req_q, ofq_resp_q,
+                                   heap_array, heap_index)
       .invoke<-1>(QueueReqArbiter, queue_req_q, queue_req_qi)
       .invoke<-1>(QueueRespArbiter, queue_resp_qi, queue_resp_q)
 

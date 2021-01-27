@@ -24,6 +24,10 @@ class TaskOnChip {
 
   operator Task() const { return {.vid = vid(), .vertex = vertex()}; }
 
+  bool operator<=(const TaskOnChip& other) const {
+    return Task(*this) <= Task(other);
+  }
+
   Vid vid() const { return data.range(vid_msb, vid_lsb); };
   Vertex vertex() const {
     ap_uint<32> distance = 0;
@@ -97,6 +101,9 @@ inline std::ostream& operator<<(std::ostream& os, const TaskOp& obj) {
 struct QueueOp {
   enum Op { PUSH, PUSHPOP, POP } op;
   TaskOnChip task;  // Valid only when op is PUSH.
+
+  bool is_push() const { return op == QueueOp::PUSH; }
+  bool is_pop() const { return op == QueueOp::POP; }
 };
 
 // Used in:
@@ -111,6 +118,14 @@ struct QueueOpResp {
   // indicates the queue is empty.
   TaskOp::Op task_op;
   TaskOnChip task;  // Valid only when queue_op is POP and task_op is NEW.
+
+  bool is_push() const { return queue_op == QueueOp::PUSH; }
+  bool is_pop_noop() const {
+    return queue_op == QueueOp::POP && task_op == TaskOp::NOOP;
+  }
+  bool is_pop_new() const {
+    return queue_op == QueueOp::POP && task_op == TaskOp::NEW;
+  }
 };
 
 inline std::ostream& operator<<(std::ostream& os, const QueueOpResp& obj) {

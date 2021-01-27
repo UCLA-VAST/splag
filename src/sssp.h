@@ -47,6 +47,10 @@ struct Vertex {
   bool operator<=(const Vertex& other) const {
     return bit_cast<uint32_t>(distance) <= bit_cast<uint32_t>(other.distance);
   }
+
+  bool is_inf() const {
+    return bit_cast<uint32_t>(distance) == bit_cast<uint32_t>(kInfDistance);
+  }
 };
 
 inline std::ostream& operator<<(std::ostream& os, const Vertex& obj) {
