@@ -405,41 +405,26 @@ spin:
 }
 
 // A VidMux merges two input streams into one.
-void VidMux(istream<Update>& in0, istream<Update>& in1, ostream<Update>& out) {
+void VidMux(istream<TaskOp>& in0, istream<TaskOp>& in1, ostream<TaskOp>& out) {
 spin:
   for (bool flag = false;; flag = !flag) {
 #pragma HLS pipeline II = 1
-    Update data;
+    TaskOp data;
     if (flag ? in0.try_read(data) : in1.try_read(data)) out.write(data);
   }
 }
 
 // A VidDemux routes input streams based on the specified bit in Vid.
-void VidDemux(int b, istream<Update>& in, ostream<Update>& out0,
-              ostream<Update>& out1) {
+void VidDemux(int b, istream<TaskOp>& in, ostream<TaskOp>& out0,
+              ostream<TaskOp>& out1) {
 spin:
   for (;;) {
 #pragma HLS pipeline II = 1
-    Update data;
+    TaskOp data;
     if (in.try_read(data)) {
-      const auto addr = data.payload.task.vid();
+      const auto addr = data.task.vid();
       const bool select = ap_uint<sizeof(addr) * CHAR_BIT>(addr).test(b);
       select ? out1.write(data) : out0.write(data);
-    }
-  }
-}
-
-// A UpdateDemux routes input streams based on the specified bit in PeId.
-void UpdateDemux(int b, istream<Update>& in, ostream<Update>& out0,
-                 ostream<Update>& out1) {
-spin:
-  for (;;) {
-#pragma HLS pipeline II = 1
-    Update data;
-    if (in.try_read(data)) {
-      ap_uint<sizeof(data.addr) * CHAR_BIT>(data.addr).test(b)
-          ? out1.write(data)
-          : out0.write(data);
     }
   }
 }
@@ -496,9 +481,9 @@ spin:
   }
 }
 
-void UpdateReqArbiter(tapa::istreams<Update, kPeCount>& in_q,
-                      tapa::ostreams<Update, kIntervalCount>& out_q) {
-  DECL_ARRAY(Update, update, kIntervalCount, Update());
+void UpdateReqArbiter(tapa::istreams<TaskOp, kPeCount>& in_q,
+                      tapa::ostreams<TaskOp, kIntervalCount>& out_q) {
+  DECL_ARRAY(TaskOp, update, kIntervalCount, TaskOp());
   DECL_ARRAY(bool, update_valid, kIntervalCount, false);
 
 spin:
@@ -547,7 +532,7 @@ spin:
 
 void ProcElemS1(PeId id, istream<TaskOnChip>& task_in_q,
                 istream<Edge>& edges_read_data_q,
-                ostream<Update>& update_out_q) {
+                ostream<TaskOp>& update_out_q) {
 spin:
   for (;;) {
     const auto task = task_in_q.read();
@@ -558,21 +543,17 @@ spin:
       Edge edge;
       if (edges_read_data_q.try_read(edge)) {
         update_out_q.write({
-            .addr = id,
-            .payload =
-                {
-                    .op = TaskOp::NEW,
-                    .task =
-                        Task{
-                            .vid = edge.dst,
-                            .vertex =
-                                {
-                                    .parent = task.vid(),
-                                    .distance =
-                                        task.vertex().distance + edge.weight,
-                                },
+            .op = TaskOp::NEW,
+            .task =
+                Task{
+                    .vid = edge.dst,
+                    .vertex =
+                        {
+                            .parent = task.vid(),
+                            .distance = task.vertex().distance + edge.weight,
                         },
                 },
+
         });
         ++i;
       }
@@ -582,33 +563,33 @@ spin:
 
 void VertexReaderS0(
     // Input.
-    istream<Update>& update_in_q,
+    istream<TaskOp>& update_in_q,
     // Outputs.
-    ostream<Update>& update_out_q, ostream<Vid>& vertex_read_addr_q) {
+    ostream<TaskOp>& update_out_q, ostream<Vid>& vertex_read_addr_q) {
 spin:
   for (;;) {
 #pragma HLS pipeline II = 1
     if (!update_in_q.empty()) {
       const auto req = update_in_q.read(nullptr);
       update_out_q.write(req);
-      vertex_read_addr_q.write(req.payload.task.vid() / kIntervalCount);
+      vertex_read_addr_q.write(req.task.vid() / kIntervalCount);
     }
   }
 }
 
 void VertexReaderS1(
     // Inputs.
-    istream<Update>& update_in_q, istream<Vertex>& vertex_read_data_q,
+    istream<TaskOp>& update_in_q, istream<Vertex>& vertex_read_data_q,
     // Outputs.
-    ostream<Update>& new_q, ostream<bool>& noop_q) {
+    ostream<TaskOp>& new_q, ostream<bool>& noop_q) {
 spin:
   for (;;) {
 #pragma HLS pipeline II = 1
     if (!update_in_q.empty() && !vertex_read_data_q.empty()) {
       auto req = update_in_q.read(nullptr);
       const auto vertex = vertex_read_data_q.read(nullptr);
-      CHECK_EQ(req.payload.op, TaskOp::NEW);
-      if (vertex <= req.payload.task.vertex()) {
+      CHECK_EQ(req.op, TaskOp::NEW);
+      if (vertex <= req.task.vertex()) {
         noop_q.write(false);
       } else {
         new_q.write(req);
@@ -617,22 +598,22 @@ spin:
   }
 }
 
-void VertexUpdater(istream<Update>& pkt_in_q, ostream<Update>& pkt_out_q,
+void VertexUpdater(istream<TaskOp>& pkt_in_q, ostream<TaskOp>& pkt_out_q,
                    mmap<Vertex> vertices) {
 spin:
   for (;;) {
     if (!pkt_in_q.empty()) {
       auto pkt = pkt_in_q.read(nullptr);
-      CHECK_EQ(pkt.payload.op, TaskOp::NEW);
-      const auto addr = pkt.payload.task.vid() / kIntervalCount;
+      CHECK_EQ(pkt.op, TaskOp::NEW);
+      const auto addr = pkt.task.vid() / kIntervalCount;
       const auto vertex = vertices[addr];
-      if (vertex <= pkt.payload.task.vertex()) {
-        pkt.payload.op = TaskOp::NOOP;
+      if (vertex <= pkt.task.vertex()) {
+        pkt.op = TaskOp::NOOP;
       } else {
-        pkt.payload.op = TaskOp::NEW;  // Necessasry due to bug in Vivado HLS.
-        pkt.payload.task.set_offset(vertex.offset);
-        pkt.payload.task.set_degree(vertex.degree);
-        vertices[addr] = pkt.payload.task.vertex();
+        pkt.op = TaskOp::NEW;  // Necessasry due to bug in Vivado HLS.
+        pkt.task.set_offset(vertex.offset);
+        pkt.task.set_degree(vertex.degree);
+        vertices[addr] = pkt.task.vertex();
       }
       pkt_out_q.write(pkt);
     }
@@ -706,13 +687,13 @@ void Dispatcher(
     // Task and queue requests.
     tapa::ostreams<TaskOnChip, kPeCount>& task_req_q,
     tapa::istreams<Vid, kPeCount>& task_resp_q,
-    tapa::istreams<Update, kIntervalCount>& update_resp_q,
+    tapa::istreams<TaskOp, kIntervalCount>& update_resp_q,
     istream<uint_interval_t>& update_noop_q,
     tapa::ostream<QueueOp>& queue_req_q,
     tapa::istream<QueueOpResp>& queue_resp_q) {
   // Process finished tasks.
   bool task_buf_valid = false;
-  Update task_buf;
+  TaskOp task_buf;
   bool queue_buf_valid = false;
   QueueOpResp queue_buf;
 
@@ -783,7 +764,7 @@ spin:
           queue_buf_valid = false;
           --push_count;
 
-          // Update statistics.
+          // TaskOp statistics.
           ++queue_count;
           break;
         case QueueOp::POP:
@@ -807,7 +788,7 @@ spin:
       // Enqueue tasks generated from PEs.
       if (queue_req_q.try_write({
               .op = QueueOp::PUSH,
-              .task = task_buf.payload.task,
+              .task = task_buf.task,
           })) {
         task_buf_valid = false;
         STATS(send, "QUEUE: PUSH");
@@ -851,13 +832,12 @@ spin:
     if (SET(task_buf_valid,
             update_resp_q[cycle_count % kIntervalCount].try_read(task_buf))) {
       --active_task_count;
-      const auto pe = task_buf.addr;
-      switch (task_buf.payload.op) {
+      switch (task_buf.op) {
         case TaskOp::NEW:
           ++push_count;
           STATS(recv, "TASK : NEW ");
           ++pending_task_count;
-          queue_empty[task_buf.payload.task.vid() % kQueueCount] = false;
+          queue_empty[task_buf.task.vid() % kQueueCount] = false;
 
           // Statistics.
           ++visited_edge_count;
@@ -935,20 +915,20 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
 
   // For vertices.
   //   Connect PEs to the update request network.
-  streams<Update, kPeCount, 2> update_req_q;
+  streams<TaskOp, kPeCount, 2> update_req_q;
   //   Compose the update request network.
-  streams<Update, kIntervalCount, 8> update_req_qi1;
-  streams<Update, kIntervalCount, 8> update_req_0_qi0;
-  streams<Update, kIntervalCount, 8> update_req_1_qi0;
-  streams<Update, kIntervalCount, 8> update_req_qi0;
+  streams<TaskOp, kIntervalCount, 8> update_req_qi1;
+  streams<TaskOp, kIntervalCount, 8> update_req_0_qi0;
+  streams<TaskOp, kIntervalCount, 8> update_req_1_qi0;
+  streams<TaskOp, kIntervalCount, 8> update_req_qi0;
   //   Connect the vertex readers and updaters.
-  streams<Update, kIntervalCount, 64> update_qi0;
-  streams<Update, kIntervalCount, 256> update_new_qi;
+  streams<TaskOp, kIntervalCount, 64> update_qi0;
+  streams<TaskOp, kIntervalCount, 256> update_new_qi;
   streams<bool, kIntervalCount, 2> update_noop_qi;
   streams<Vid, kIntervalCount, 2> vertex_read_addr_q;
   streams<Vertex, kIntervalCount, 2> vertex_read_data_q;
 
-  streams<Update, kIntervalCount, 256> update_resp_q;
+  streams<TaskOp, kIntervalCount, 256> update_resp_q;
   stream<uint_interval_t, 2> update_noop_q;
 
   tapa::task()

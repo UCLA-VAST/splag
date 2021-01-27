@@ -73,7 +73,10 @@ class TaskOnChip {
   static constexpr int degree_msb = degree_lsb + kVidWidth - 1;
 };
 
-// Used only in Update.
+// Used in:
+//
+// ProcElemS1 -> (net)
+// (net) -> VertexReaderS0 -> VertexReaderS1 -> VertexUpdater -> Dispatcher
 struct TaskOp {
   enum Op { NEW, NOOP } op;
   TaskOnChip task;  // Valid only when op is NEW.
@@ -87,12 +90,6 @@ inline std::ostream& operator<<(std::ostream& os, const TaskOp& obj) {
       return os << "{ op: NOOP }";
   }
 }
-
-// Used in:
-//
-// ProcElemS1 -> (net)
-// (net) -> VertexReaderS0 -> VertexReaderS1 -> VertexUpdater -> Dispatcher
-using Update = tapa::packet<PeId, TaskOp>;
 
 // Used in:
 //
