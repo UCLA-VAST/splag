@@ -307,12 +307,17 @@ spin:
         }
         break;
       }
+      case QueueOp::PUSHPOP:
       case QueueOp::POP: {
-        resp.task.set_vid(qid);
+        CHECK_EQ(resp.task.vid() % kQueueCount, qid);
+        const bool is_pushpop = req.op == QueueOp::PUSHPOP;
         if (heap_size != 0) {
           const Task front(heap_array_cache[0]);
           clear_heap_index(front.vid);
-          --heap_size;
+
+          if (!is_pushpop) {
+            --heap_size;
+          }
 
           resp.task_op = TaskOp::NEW;
           resp.task = front;
@@ -321,7 +326,8 @@ spin:
             ++heapify_down_count;
 
             // Find proper index `i` for `task_i`.
-            const Task task_i = get_heap_elem(heap_size);
+            const Task task_i =
+                is_pushpop ? Task(req.task) : get_heap_elem(heap_size);
             Vid i = 0;
 
           heapify_down_on_chip:
@@ -396,6 +402,8 @@ spin:
             set_heap_elem(i, task_i);
             set_heap_index(task_i.vid, i);
           }
+        } else if (is_pushpop) {
+          resp.task_op = TaskOp::NEW;
         }
         break;
       }
@@ -648,6 +656,7 @@ spin:
     if (req_valid) {
       switch (req.op) {
         case QueueOp::PUSH:
+        case QueueOp::PUSHPOP:
           UNUSED RESET(req_valid,
                        req_out_q[req.task.vid() % kQueueCount].try_write(req));
           break;
@@ -767,6 +776,14 @@ spin:
           // TaskOp statistics.
           ++queue_count;
           break;
+        case QueueOp::PUSHPOP:
+          CHECK_EQ(queue_buf.task_op, TaskOp::NEW);
+          --push_count;
+          --pop_count[queue_buf.task.vid() % kShardCount];
+
+          // TaskOp statistics.
+          ++queue_count;
+          break;
         case QueueOp::POP:
           --pop_count[queue_buf.task.vid() % kShardCount];
           if (queue_buf.task_op == TaskOp::NEW) {
@@ -782,21 +799,26 @@ spin:
       }
     }
 
-    const Vid sid = cycle_count % kShardCount;
+    const Vid sid =
+        (task_buf_valid ? task_buf.task.vid() : cycle_count) % kShardCount;
+    const bool should_pop =
+        task_count_per_shard[sid] + pop_count[sid] < kPeCount / kShardCount &&
+        !(shard_is_done(sid) && push_count == 0);
     if (task_buf_valid) {
       // Enqueue tasks generated from PEs.
       if (queue_req_q.try_write({
-              .op = QueueOp::PUSH,
+              .op = should_pop ? QueueOp::PUSHPOP : QueueOp::PUSH,
               .task = task_buf.task,
           })) {
         task_buf_valid = false;
+        if (should_pop) {
+          ++pop_count[sid];
+        }
         STATS(send, "QUEUE: PUSH");
       } else {
         ++queue_full_cycle_count;
       }
-    } else if (task_count_per_shard[sid] + pop_count[sid] <
-                   kPeCount / kShardCount &&
-               !(shard_is_done(sid) && push_count == 0)) {
+    } else if (should_pop) {
       // Dequeue tasks from the queue.
       if (queue_req_q.try_write(
               {.op = QueueOp::POP, .task = Task{.vid = sid}})) {

@@ -95,7 +95,7 @@ inline std::ostream& operator<<(std::ostream& os, const TaskOp& obj) {
 //
 // Dispatcher -> TaskQueue
 struct QueueOp {
-  enum Op { PUSH, POP } op;
+  enum Op { PUSH, PUSHPOP, POP } op;
   TaskOnChip task;  // Valid only when op is PUSH.
 };
 
