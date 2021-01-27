@@ -767,7 +767,7 @@ void Dispatcher(
   };
 
 spin:
-  for (; active_task_count || pending_task_count; ++cycle_count) {
+  for (; active_task_count || !all_of(queue_empty); ++cycle_count) {
     // Technically the loop should also check if there are active tasks not
     // acknowledged by the PEs (`any_of(task_count_per_pe)`), because if the
     // updates arrive before the task responses (which is only very rarely
@@ -782,12 +782,6 @@ spin:
           // PUSH requests do not need further processing.
           queue_buf_valid = false;
           --push_count;
-          if (queue_buf.task_op == TaskOp::NOOP) {
-            // PUSH request updated priority of existing tasks.
-            --pending_task_count;
-            CHECK_GT(pending_task_count, 0);
-            STATS(recv, "QUEUE: DECR");
-          }
 
           // Update statistics.
           ++queue_count;
@@ -863,6 +857,7 @@ spin:
           ++push_count;
           STATS(recv, "TASK : NEW ");
           ++pending_task_count;
+          queue_empty[task_buf.payload.task.vid() % kQueueCount] = false;
 
           // Statistics.
           ++visited_edge_count;
@@ -894,13 +889,14 @@ spin:
     }
   }
 
+#ifndef __SYNTHESIS__
   RANGE(sid, kShardCount, {
     CHECK_EQ(pop_count[sid], 0);
     CHECK_EQ(task_count_per_shard[sid], 0);
   });
   RANGE(pe, kPeCount, CHECK_EQ(task_count_per_pe[pe], 0));
   CHECK_EQ(active_task_count, 0);
-  CHECK_EQ(pending_task_count, 0);
+#endif  // __SYNTHESIS__
 
   metadata[0] = visited_edge_count;
   metadata[2] = queue_count;
