@@ -48,9 +48,9 @@ class TaskOnChip {
   void set_degree(Vid degree) { data.range(degree_msb, degree_lsb) = degree; }
 
  private:
-  ap_uint<144> data;
+  ap_uint<143> data;
   static constexpr int kVidWidth = 27;
-  static constexpr int kFloatWidth = 31;
+  static constexpr int kFloatWidth = 30;
   static constexpr int kEidWidth = 32;
   static_assert(kVidWidth * 3 + kFloatWidth + kEidWidth ==
                     decltype(data)::width,
