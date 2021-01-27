@@ -119,6 +119,9 @@ inline std::ostream& operator<<(std::ostream& os, const QueueOpResp& obj) {
     case QueueOp::PUSH:
       os << "PUSH";
       break;
+    case QueueOp::PUSHPOP:
+      os << "PUSHPOP";
+      break;
     case QueueOp::POP:
       os << "POP";
       break;
@@ -132,7 +135,7 @@ inline std::ostream& operator<<(std::ostream& os, const QueueOpResp& obj) {
       os << "NOOP";
       break;
   }
-  if (obj.queue_op == QueueOp::POP && obj.task_op == TaskOp::NEW) {
+  if (obj.queue_op != QueueOp::PUSH && obj.task_op == TaskOp::NEW) {
     os << ", task: " << Task(obj.task);
   }
   return os << "}";
