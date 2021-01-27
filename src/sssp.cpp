@@ -716,9 +716,6 @@ void Dispatcher(
   // Number of POP requests sent but not acknowledged.
   DECL_ARRAY(uint_pe_per_shart_t, pop_count, kShardCount, 0);
 
-  // Number of PUSH requests yet to send or not acknowledged.
-  uint_pe_t push_count = 0;
-
   DECL_ARRAY(bool, queue_empty, kQueueCount, true);
 
   DECL_ARRAY(uint_pe_per_shart_t, task_count_per_shard, kShardCount, 0);
@@ -771,14 +768,12 @@ spin:
         case QueueOp::PUSH:
           // PUSH requests do not need further processing.
           queue_buf_valid = false;
-          --push_count;
 
           // TaskOp statistics.
           ++queue_count;
           break;
         case QueueOp::PUSHPOP:
           CHECK_EQ(queue_buf.task_op, TaskOp::NEW);
-          --push_count;
           --pop_count[queue_buf.task.vid() % kShardCount];
 
           // TaskOp statistics.
@@ -803,7 +798,7 @@ spin:
         (task_buf_valid ? task_buf.task.vid() : cycle_count) % kShardCount;
     const bool should_pop =
         task_count_per_shard[sid] + pop_count[sid] < kPeCount / kShardCount &&
-        !(shard_is_done(sid) && push_count == 0);
+        !shard_is_done(sid);
     if (task_buf_valid) {
       // Enqueue tasks generated from PEs.
       if (queue_req_q.try_write({
@@ -856,7 +851,6 @@ spin:
       --active_task_count;
       switch (task_buf.op) {
         case TaskOp::NEW:
-          ++push_count;
           STATS(recv, "TASK : NEW ");
           ++pending_task_count;
           queue_empty[task_buf.task.vid() % kQueueCount] = false;
