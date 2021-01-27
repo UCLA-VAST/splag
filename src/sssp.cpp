@@ -771,7 +771,6 @@ spin:
           --pop_count[queue_buf.task.vid() % kShardCount];
           if (queue_buf.task_op == TaskOp::NEW) {
             // POP request returned a new task.
-            ++task_count_per_shard[queue_buf.task.vid() % kShardCount];
             STATS(recv, "QUEUE: NEW ");
           } else {
             // The queue is empty.
@@ -817,6 +816,7 @@ spin:
           active_task_count += queue_buf.task.vertex().degree;
           --pending_task_count;
           queue_buf_valid = false;
+          ++task_count_per_shard[sid];
           ++task_count_per_pe[pe];
 
           // Statistics.
