@@ -755,7 +755,12 @@ void Dispatcher(
   };
 
 spin:
-  for (; active_task_count || !all_of(queue_empty); ++cycle_count) {
+  for (; active_task_count || !all_of(queue_empty)
+#ifndef __SYNTHESIS__
+         || any_of(task_count_per_shard)
+#endif  // __SYNTHESIS__
+           ;
+       ++cycle_count) {
     // Technically the loop should also check if there are active tasks not
     // acknowledged by the PEs (`any_of(task_count_per_pe)`), because if the
     // updates arrive before the task responses (which is only very rarely
