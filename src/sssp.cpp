@@ -1014,7 +1014,8 @@ spin:
     const Vid sid =
         (task_buf_valid ? task_buf.task.vid() : cycle_count) % kShardCount;
     const bool should_pop =
-        task_count_per_shard[sid] + pop_count[sid] < kPeCount / kShardCount &&
+        task_count_per_shard[sid] + pop_count[sid] + queue_buf_valid <
+            kPeCount / kShardCount &&
         !shard_is_done(sid);
     if (task_buf_valid) {
       // Enqueue tasks generated from PEs.
@@ -1046,7 +1047,8 @@ spin:
       const auto sid = queue_buf.task.vid() % kShardCount;
       const auto pe = (pe_base_per_shard[sid] * kShardCount + sid) % kPeCount;
       if (queue_buf_valid) {
-        if (task_req_q[pe].try_write(queue_buf.task)) {
+        if (task_count_per_pe[pe] == 0 &&
+            task_req_q[pe].try_write(queue_buf.task)) {
           active_task_count += queue_buf.task.vertex().degree;
           --pending_task_count;
           queue_buf_valid = false;
