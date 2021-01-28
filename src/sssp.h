@@ -55,7 +55,7 @@ struct Vertex {
 
 inline std::ostream& operator<<(std::ostream& os, const Vertex& obj) {
   return os << "{parent: " << obj.parent << ", distance: " << obj.distance
-            << "}";
+            << ", offset: " << obj.offset << ", degree: " << obj.degree << "}";
 }
 
 // Push-based.
