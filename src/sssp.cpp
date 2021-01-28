@@ -754,7 +754,7 @@ spin:
   }
 }
 
-void ProcElemS1(PeId id, istream<TaskOnChip>& task_in_q,
+void ProcElemS1(istream<TaskOnChip>& task_in_q,
                 istream<Edge>& edges_read_data_q,
                 ostream<TaskOnChip>& update_out_q) {
   Vid vid;
@@ -1214,6 +1214,6 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
       // PEs.
       .invoke<detach, kPeCount>(ProcElemS0, task_req_q, task_req_qi,
                                 task_resp_q, edge_read_addr_q)
-      .invoke<detach, kPeCount>(ProcElemS1, seq(), task_req_qi,
-                                edge_read_data_q, update_req_q);
+      .invoke<detach, kPeCount>(ProcElemS1, task_req_qi, edge_read_data_q,
+                                update_req_q);
 }
