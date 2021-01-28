@@ -617,24 +617,25 @@ spin:
 }
 
 // A VidMux merges two input streams into one.
-void VidMux(istream<TaskOp>& in0, istream<TaskOp>& in1, ostream<TaskOp>& out) {
+void VidMux(istream<TaskOnChip>& in0, istream<TaskOnChip>& in1,
+            ostream<TaskOnChip>& out) {
 spin:
   for (bool flag = false;; flag = !flag) {
 #pragma HLS pipeline II = 1
-    TaskOp data;
+    TaskOnChip data;
     if (flag ? in0.try_read(data) : in1.try_read(data)) out.write(data);
   }
 }
 
 // A VidDemux routes input streams based on the specified bit in Vid.
-void VidDemux(int b, istream<TaskOp>& in, ostream<TaskOp>& out0,
-              ostream<TaskOp>& out1) {
+void VidDemux(int b, istream<TaskOnChip>& in, ostream<TaskOnChip>& out0,
+              ostream<TaskOnChip>& out1) {
 spin:
   for (;;) {
 #pragma HLS pipeline II = 1
-    TaskOp data;
+    TaskOnChip data;
     if (in.try_read(data)) {
-      const auto addr = data.task.vid();
+      const auto addr = data.vid();
       const bool select = ap_uint<sizeof(addr) * CHAR_BIT>(addr).test(b);
       select ? out1.write(data) : out0.write(data);
     }
@@ -693,9 +694,9 @@ spin:
   }
 }
 
-void UpdateReqArbiter(tapa::istreams<TaskOp, kPeCount>& in_q,
-                      tapa::ostreams<TaskOp, kIntervalCount>& out_q) {
-  DECL_ARRAY(TaskOp, update, kIntervalCount, TaskOp());
+void UpdateReqArbiter(tapa::istreams<TaskOnChip, kPeCount>& in_q,
+                      tapa::ostreams<TaskOnChip, kIntervalCount>& out_q) {
+  DECL_ARRAY(TaskOnChip, update, kIntervalCount, TaskOnChip());
   DECL_ARRAY(bool, update_valid, kIntervalCount, false);
 
 spin:
@@ -744,28 +745,22 @@ spin:
 
 void ProcElemS1(PeId id, istream<TaskOnChip>& task_in_q,
                 istream<Edge>& edges_read_data_q,
-                ostream<TaskOp>& update_out_q) {
+                ostream<TaskOnChip>& update_out_q) {
 spin:
   for (;;) {
     const auto task = task_in_q.read();
 
-  fwd:
-    for (Vid i = 0; i < task.vertex().degree;) {
+  for (Eid i = 0;;) {
 #pragma HLS pipeline II = 1
       Edge edge;
       if (edges_read_data_q.try_read(edge)) {
-        update_out_q.write({
-            .op = TaskOp::NEW,
-            .task =
-                Task{
-                    .vid = edge.dst,
-                    .vertex =
-                        {
-                            .parent = task.vid(),
-                            .distance = task.vertex().distance + edge.weight,
-                        },
+        update_out_q.write(Task{
+            .vid = edge.dst,
+            .vertex =
+                {
+                    .parent = task.vid(),
+                    .distance = task.vertex().distance + edge.weight,
                 },
-
         });
         ++i;
       }
@@ -775,33 +770,32 @@ spin:
 
 void VertexReaderS0(
     // Input.
-    istream<TaskOp>& update_in_q,
+    istream<TaskOnChip>& update_in_q,
     // Outputs.
-    ostream<TaskOp>& update_out_q, ostream<Vid>& vertex_read_addr_q) {
+    ostream<TaskOnChip>& update_out_q, ostream<Vid>& vertex_read_addr_q) {
 spin:
   for (;;) {
 #pragma HLS pipeline II = 1
     if (!update_in_q.empty()) {
       const auto req = update_in_q.read(nullptr);
       update_out_q.write(req);
-      vertex_read_addr_q.write(req.task.vid() / kIntervalCount);
+      vertex_read_addr_q.write(req.vid() / kIntervalCount);
     }
   }
 }
 
 void VertexReaderS1(
     // Inputs.
-    istream<TaskOp>& update_in_q, istream<Vertex>& vertex_read_data_q,
+    istream<TaskOnChip>& update_in_q, istream<Vertex>& vertex_read_data_q,
     // Outputs.
-    ostream<TaskOp>& new_q, ostream<bool>& noop_q) {
+    ostream<TaskOnChip>& new_q, ostream<bool>& noop_q) {
 spin:
   for (;;) {
 #pragma HLS pipeline II = 1
     if (!update_in_q.empty() && !vertex_read_data_q.empty()) {
       auto req = update_in_q.read(nullptr);
       const auto vertex = vertex_read_data_q.read(nullptr);
-      CHECK_EQ(req.op, TaskOp::NEW);
-      if (vertex <= req.task.vertex()) {
+      if (vertex <= req.vertex()) {
         noop_q.write(false);
       } else {
         new_q.write(req);
@@ -810,16 +804,17 @@ spin:
   }
 }
 
-void VertexUpdater(istream<TaskOp>& pkt_in_q, ostream<TaskOp>& pkt_out_q,
+void VertexUpdater(istream<TaskOnChip>& pkt_in_q, ostream<TaskOp>& pkt_out_q,
                    mmap<Vertex> vertices) {
 spin:
   for (;;) {
     if (!pkt_in_q.empty()) {
-      auto pkt = pkt_in_q.read(nullptr);
-      CHECK_EQ(pkt.op, TaskOp::NEW);
-      const auto addr = pkt.task.vid() / kIntervalCount;
+      const auto task = pkt_in_q.read(nullptr);
+      TaskOp pkt;
+      pkt.task = task;
+      const auto addr = task.vid() / kIntervalCount;
       const auto vertex = vertices[addr];
-      if (vertex <= pkt.task.vertex()) {
+      if (vertex <= task.vertex()) {
         pkt.op = TaskOp::NOOP;
       } else {
         pkt.op = TaskOp::NEW;  // Necessasry due to bug in Vivado HLS.
@@ -1147,15 +1142,15 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
 
   // For vertices.
   //   Connect PEs to the update request network.
-  streams<TaskOp, kPeCount, 2> update_req_q;
+  streams<TaskOnChip, kPeCount, 2> update_req_q;
   //   Compose the update request network.
-  streams<TaskOp, kIntervalCount, 8> update_req_qi1;
-  streams<TaskOp, kIntervalCount, 8> update_req_0_qi0;
-  streams<TaskOp, kIntervalCount, 8> update_req_1_qi0;
-  streams<TaskOp, kIntervalCount, 8> update_req_qi0;
+  streams<TaskOnChip, kIntervalCount, 8> update_req_qi1;
+  streams<TaskOnChip, kIntervalCount, 8> update_req_0_qi0;
+  streams<TaskOnChip, kIntervalCount, 8> update_req_1_qi0;
+  streams<TaskOnChip, kIntervalCount, 8> update_req_qi0;
   //   Connect the vertex readers and updaters.
-  streams<TaskOp, kIntervalCount, 64> update_qi0;
-  streams<TaskOp, kIntervalCount, 256> update_new_qi;
+  streams<TaskOnChip, kIntervalCount, 64> update_qi0;
+  streams<TaskOnChip, kIntervalCount, 256> update_new_qi;
   streams<bool, kIntervalCount, 2> update_noop_qi;
   streams<Vid, kIntervalCount, 2> vertex_read_addr_q;
   streams<Vertex, kIntervalCount, 2> vertex_read_data_q;
