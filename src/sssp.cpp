@@ -728,42 +728,54 @@ void VertexMem(tapa::istream<Vid>& read_addr_q,
 
 void ProcElemS0(istream<TaskOnChip>& task_in_q, ostream<TaskOnChip>& task_out_q,
                 ostream<Vid>& task_resp_q, ostream<Vid>& edges_read_addr_q) {
-spin:
-  for (;;) {
-    const auto task = task_in_q.read();
-    task_out_q.write(task);
+  Vid vid;
+  Eid offset;
 
-  read_edges:
-    for (Eid i = 0; i < task.vertex().degree; ++i) {
+spin:
+  for (Eid i = 0;;) {
 #pragma HLS pipeline II = 1
-      edges_read_addr_q.write(task.vertex().offset + i);
+    if (i == 0 && !task_in_q.empty()) {
+      const auto task = task_in_q.read(nullptr);
+      task_out_q.write(task);
+      vid = task.vid();
+      offset = task.vertex().offset;
+      i = task.vertex().degree;
     }
 
-    task_resp_q.write(task.vid());
+    if (i > 0) {
+      edges_read_addr_q.write(offset);
+      if (i == 1) {
+        task_resp_q.write(vid);
+      }
+
+      ++offset;
+      --i;
+    }
   }
 }
 
 void ProcElemS1(PeId id, istream<TaskOnChip>& task_in_q,
                 istream<Edge>& edges_read_data_q,
                 ostream<TaskOnChip>& update_out_q) {
-spin:
-  for (;;) {
-    const auto task = task_in_q.read();
+  Vid vid;
+  float distance;
 
   for (Eid i = 0;;) {
 #pragma HLS pipeline II = 1
-      Edge edge;
-      if (edges_read_data_q.try_read(edge)) {
-        update_out_q.write(Task{
-            .vid = edge.dst,
-            .vertex =
-                {
-                    .parent = task.vid(),
-                    .distance = task.vertex().distance + edge.weight,
-                },
-        });
-        ++i;
-      }
+    if (i == 0 && !task_in_q.empty()) {
+      const auto task = task_in_q.read(nullptr);
+      vid = task.vid();
+      distance = task.vertex().distance;
+      i = task.vertex().degree;
+    }
+
+    if (i > 0 && !edges_read_data_q.empty()) {
+      const auto edge = edges_read_data_q.read(nullptr);
+      update_out_q.write(Task{
+          .vid = edge.dst,
+          .vertex = {.parent = vid, .distance = distance + edge.weight},
+      });
+      --i;
     }
   }
 }
