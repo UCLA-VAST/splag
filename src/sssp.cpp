@@ -634,6 +634,7 @@ void NoopMerger(tapa::istreams<bool, kIntervalCount>& pkt_in_q,
                 ostream<uint_interval_t>& pkt_out_q) {
 spin:
   for (;;) {
+#pragma HLS pipeline II = 1
     uint_interval_t count = 0;
     bool buf;
     RANGE(iid, kIntervalCount, pkt_in_q[iid].try_read(buf) && ++count);
