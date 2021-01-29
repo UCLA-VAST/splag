@@ -43,7 +43,7 @@ void TaskQueue(
     // Scalar
     Vid qid,
     // Queue requests.
-    tapa::istream<QueueOp>& queue_req_q,
+    istream<TaskOnChip>& push_req_q, istream<bool>& pop_req_q,
     tapa::ostream<QueueOpResp>& queue_resp_q, tapa::mmap<Task> heap_array,
     tapa::mmap<Vid> heap_index) {
 #pragma HLS inline recursive
@@ -223,7 +223,22 @@ heap_index_cache_init:
 
 spin:
   for (;;) {
-    QueueOp req = queue_req_q.read();
+    bool do_push = false;
+    bool do_pop = false;
+    const auto push_req = push_req_q.read(do_push);
+    pop_req_q.read(do_pop);
+
+    QueueOp req;
+    if (do_push) {
+      req.task = push_req;
+      req.op = do_pop ? QueueOp::PUSHPOP : QueueOp::PUSH;
+    } else if (do_pop) {
+      req.task.set_vid(qid);
+      req.op = QueueOp::POP;
+    } else {
+      continue;
+    }
+
     QueueOpResp resp{
         .queue_op = req.op,
         .task_op = TaskOp::NOOP,
@@ -506,12 +521,12 @@ void CascadedQueue(
     // Queue ID.
     int id,
     // Request-response interfaces.
-    istream<QueueOp>& req_q, ostream<QueueOpResp>& resp_q,
+    istream<TaskOnChip>& push_req_q, istream<bool>& pop_req_q,
+    ostream<QueueOpResp>& resp_q,
     // Connection to systolic queue.
     ostream<QueueOp>& spq_req_q, istream<QueueOpResp>& spq_resp_q,
-    istream<SpqElem>& spq_overflow_q,
     // Connection to overflow queue.
-    ostream<QueueOp>& ofq_req_q, istream<QueueOpResp>& ofq_resp_q) {
+    ostream<bool>& ofq_pop_req_q, istream<QueueOpResp>& ofq_resp_q) {
   DECL_BUF(QueueOpResp, spq_resp);
   DECL_BUF(QueueOpResp, ofq_resp);
   bool both_pending = false;
@@ -528,14 +543,7 @@ spin:
     // Buffers for output streams.
     DECL_BUF(QueueOpResp, resp);
     DECL_BUF(QueueOp, spq_req);
-    DECL_BUF(QueueOp, ofq_req);
-
-    // Handle overflow elements.
-    if (!spq_overflow_q.empty()) {
-      ofq_req.op = QueueOp::PUSH;                   // ofq_req_q.write(...);
-      ofq_req.task = spq_overflow_q.read(nullptr);  // ofq_req_q.write(...);
-      ofq_req_valid = true;                         // ofq_req_q.write(...);
-    }
+    DECL_BUF(bool, ofq_pop_req);
 
     // Send POP response, step 1.
     if (both_pending && spq_resp_valid) {
@@ -575,29 +583,36 @@ spin:
     // Handle new requests.
     if (!resp_valid &&                    // Response can be sent.
         !spq_req_valid &&                 // Systolic queue request can be sent.
-        !ofq_req_valid &&                 // Overflow queue request can be sent.
+        !ofq_pop_req_valid &&             // Overflow queue request can be sent.
         !both_pending && !ofq_pending &&  // Not waiting for POP response.
         !pushpop_pending &&               // Not waiting for PUSHPOP response.
-        !req_q.empty()                    // Request is valid.
+        (!push_req_q.empty() || !pop_req_q.empty())  // Request is valid.
     ) {
-      const auto req = req_q.read(nullptr);
-      spq_req = req, spq_req_valid = true;  // spq_req_q.write(req);
-      switch (req.op) {
-        case QueueOp::PUSH:
-          resp = {
-              .queue_op = req.op,  // resp_q.write(req);
-              .task_op = {},       // resp_q.write(req);
-              .task = req.task,    // resp_q.write(req);
-          };                       // resp_q.write(req);
-          resp_valid = true;       // resp_q.write(req);
-          break;
-        case QueueOp::PUSHPOP:
+      spq_req_valid = true;  // spq_req_q.write(req);
+
+      bool do_push = false;
+      bool do_pop = false;
+      const auto push_req = push_req_q.read(do_push);
+      pop_req_q.read(do_pop);
+      if (do_push) {
+        spq_req.task = push_req;
+        if (do_pop) {
+          spq_req.op = QueueOp::PUSHPOP;
           pushpop_pending = true;
-          break;
-        case QueueOp::POP:
-          ofq_req = req, ofq_req_valid = true;  // ofq_req_q.write(req);
-          both_pending = true;
-          break;
+        } else {
+          spq_req.op = QueueOp::PUSH;
+          resp = {
+              .queue_op = QueueOp::PUSH,  // resp_q.write(req);
+              .task_op = {},              // resp_q.write(req);
+              .task = push_req,           // resp_q.write(req);
+          };                              // resp_q.write(req);
+          resp_valid = true;              // resp_q.write(req);
+        }
+      } else if (do_pop) {
+        spq_req.task.set_vid(id);
+        spq_req.op = QueueOp::POP;
+        ofq_pop_req_valid = true;  // ofq_req_q.write(req);
+        both_pending = true;
       }
     }
 
@@ -609,9 +624,8 @@ spin:
       spq_req_q.write(spq_req);
       CHECK_EQ(spq_req.task.vid() % kQueueCount, id);
     }
-    if (ofq_req_valid) {
-      ofq_req_q.write(ofq_req);
-      CHECK_EQ(ofq_req.task.vid() % kQueueCount, id);
+    if (ofq_pop_req_valid) {
+      ofq_pop_req_q.write(ofq_pop_req);
     }
   }
 }
@@ -816,71 +830,82 @@ spin:
   }
 }
 
-void VertexUpdater(istream<TaskOnChip>& pkt_in_q, ostream<TaskOp>& pkt_out_q,
+void VertexUpdater(istream<TaskOnChip>& task_in_q,
+                   ostream<TaskOnChip>& task_out_q, ostream<bool>& noop_q,
                    mmap<Vertex> vertices) {
 spin:
   for (;;) {
-    if (!pkt_in_q.empty()) {
-      const auto task = pkt_in_q.read(nullptr);
-      TaskOp pkt;
-      pkt.task = task;
+    if (!task_in_q.empty()) {
+      auto task = task_in_q.read(nullptr);
       const auto addr = task.vid() / kIntervalCount;
       const auto vertex = vertices[addr];
       if (vertex <= task.vertex()) {
-        pkt.op = TaskOp::NOOP;
+        noop_q.write(false);
       } else {
-        pkt.op = TaskOp::NEW;  // Necessasry due to bug in Vivado HLS.
-        pkt.task.set_offset(vertex.offset);
-        pkt.task.set_degree(vertex.degree);
-        vertices[addr] = pkt.task.vertex();
+        task.set_offset(vertex.offset);
+        task.set_degree(vertex.degree);
+        vertices[addr] = task.vertex();
+        task_out_q.write(task);
       }
-      pkt_out_q.write(pkt);
     }
   }
 }
 
-using uint_interval_t = ap_uint<bit_length(kIntervalCount)>;
+using uint_noop_t = ap_uint<bit_length(kIntervalCount * 2)>;
 
-void NoopMerger(tapa::istreams<bool, kIntervalCount>& pkt_in_q,
-                ostream<uint_interval_t>& pkt_out_q) {
+void NoopMerger(tapa::istreams<bool, kIntervalCount>& pkt_in_q1,
+                tapa::istreams<bool, kIntervalCount>& pkt_in_q2,
+                ostream<uint_noop_t>& pkt_out_q) {
 spin:
   for (;;) {
 #pragma HLS pipeline II = 1
-    uint_interval_t count = 0;
+    uint_noop_t count = 0;
     bool buf;
-    RANGE(iid, kIntervalCount, pkt_in_q[iid].try_read(buf) && ++count);
+    RANGE(iid, kIntervalCount, pkt_in_q1[iid].try_read(buf) && ++count);
+    RANGE(iid, kIntervalCount, pkt_in_q2[iid].try_read(buf) && ++count);
     if (count) {
       pkt_out_q.write(count);
     }
   }
 }
 
-void QueueReqArbiter(tapa::istream<QueueOp>& req_in_q,
-                     tapa::ostreams<QueueOp, kQueueCount>& req_out_q) {
+void PushReqArbiter(tapa::istreams<TaskOnChip, kIntervalCount>& in_q,
+                    tapa::ostreams<TaskOnChip, kQueueCount>& out_q) {
+  static_assert(kQueueCount % kIntervalCount == 0,
+                "current implementation requires that queue count is a "
+                "multiple of interval count");
+  DECL_ARRAY(TaskOnChip, task, kIntervalCount, TaskOnChip());
+  DECL_ARRAY(bool, task_valid, kIntervalCount, false);
+
+spin:
+  for (;;) {
+#pragma HLS pipeline II = 1
+    RANGE(iid, kIntervalCount, {
+      UNUSED SET(task_valid[iid], in_q[iid].try_read(task[iid]));
+      const auto qid =
+          task[iid].vid() % kQueueCount / kIntervalCount * kIntervalCount + iid;
+      UNUSED RESET(task_valid[iid], out_q[qid].try_write(task[iid]));
+    });
+  }
+}
+
+using uint_sid_t = ap_uint<bit_length(kShardCount - 1)>;
+
+void PopReqArbiter(istream<uint_sid_t>& req_in_q,
+                   tapa::ostreams<bool, kQueueCount>& req_out_q) {
   static_assert(is_power_of(kQueueCount, 2), "invalid queue count");
-  DECL_BUF(QueueOp, req);
+  DECL_BUF(uint_sid_t, sid);
   DECL_ARRAY(ap_uint<bit_length(kQueueCount / kShardCount)>, sid_base,
              kShardCount, 0);
 spin:
   for (;;) {
 #pragma HLS pipeline II = 1
-    UNUSED SET(req_valid, req_in_q.try_read(req));
-    if (req_valid) {
-      switch (req.op) {
-        case QueueOp::PUSH:
-        case QueueOp::PUSHPOP:
-          UNUSED RESET(req_valid,
-                       req_out_q[req.task.vid() % kQueueCount].try_write(req));
-          break;
-        case QueueOp::POP:
-          const auto sid = req.task.vid() % kShardCount;
-          const auto qid = (sid_base[sid] * kShardCount + sid) % kQueueCount;
-          req.task.set_vid(qid);
-          if (req_out_q[qid].try_write(req)) {
-            req_valid = false;
-            ++sid_base[sid];
-          }
-          break;
+    UNUSED SET(sid_valid, req_in_q.try_read(sid));
+    if (sid_valid) {
+      const auto qid = (sid_base[sid] * kShardCount + sid) % kQueueCount;
+      if (req_out_q[qid].try_write(false)) {
+        sid_valid = false;
+        ++sid_base[sid];
       }
     }
   }
@@ -908,9 +933,7 @@ void Dispatcher(
     // Task and queue requests.
     tapa::ostreams<TaskOnChip, kPeCount>& task_req_q,
     tapa::istreams<Vid, kPeCount>& task_resp_q,
-    tapa::istreams<TaskOp, kIntervalCount>& update_resp_q,
-    istream<uint_interval_t>& update_noop_q,
-    tapa::ostream<QueueOp>& queue_req_q,
+    istream<uint_noop_t>& update_noop_q, ostream<uint_sid_t>& queue_req_q,
     tapa::istream<QueueOpResp>& queue_resp_q) {
   // Process finished tasks.
   bool task_buf_valid = false;
@@ -985,6 +1008,8 @@ spin:
         case QueueOp::PUSH:
           // PUSH requests do not need further processing.
           queue_buf_valid = false;
+          --active_task_count;
+          ++pending_task_count;
 
           // TaskOp statistics.
           ++queue_count;
@@ -992,6 +1017,8 @@ spin:
         case QueueOp::PUSHPOP:
           CHECK_EQ(queue_buf.task_op, TaskOp::NEW);
           --pop_count[queue_buf.task.vid() % kShardCount];
+          --active_task_count;
+          ++pending_task_count;
 
           // TaskOp statistics.
           ++queue_count;
@@ -1017,24 +1044,9 @@ spin:
         task_count_per_shard[sid] + pop_count[sid] + queue_buf_valid <
             kPeCount / kShardCount &&
         !shard_is_done(sid);
-    if (task_buf_valid) {
-      // Enqueue tasks generated from PEs.
-      if (queue_req_q.try_write({
-              .op = should_pop ? QueueOp::PUSHPOP : QueueOp::PUSH,
-              .task = task_buf.task,
-          })) {
-        task_buf_valid = false;
-        if (should_pop) {
-          ++pop_count[sid];
-        }
-        STATS(send, "QUEUE: PUSH");
-      } else {
-        ++queue_full_cycle_count;
-      }
-    } else if (should_pop) {
+    if (should_pop) {
       // Dequeue tasks from the queue.
-      if (queue_req_q.try_write(
-              {.op = QueueOp::POP, .task = Task{.vid = sid}})) {
+      if (queue_req_q.try_write(sid)) {
         ++pop_count[sid];
         STATS(send, "QUEUE: POP ");
       } else {
@@ -1064,30 +1076,8 @@ spin:
       }
     }
 
-    // Receive tasks generated from PEs.
-    if (SET(task_buf_valid,
-            update_resp_q[cycle_count % kIntervalCount].try_read(task_buf))) {
-      --active_task_count;
-      switch (task_buf.op) {
-        case TaskOp::NEW:
-          STATS(recv, "TASK : NEW ");
-          ++pending_task_count;
-          queue_empty[task_buf.task.vid() % kQueueCount] = false;
-
-          // Statistics.
-          ++visited_edge_count;
-          break;
-        case TaskOp::NOOP:
-          task_buf_valid = false;
-
-          // Statistics.
-          ++visited_edge_count;
-          break;
-      }
-    }
-
     {
-      uint_interval_t count;
+      uint_noop_t count;
       if (update_noop_q.try_read(count)) {
         active_task_count -= count;
         visited_edge_count += count;
@@ -1132,15 +1122,17 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
           tapa::async_mmaps<Vertex, kIntervalCount> vertices,
           // For queues.
           tapa::mmap<Task> heap_array, tapa::mmap<Vid> heap_index) {
-  tapa::stream<QueueOp, 256> queue_req_q("queue_req");
+  streams<TaskOnChip, kIntervalCount, 2> push_req_q;
+  streams<TaskOnChip, kQueueCount, 512> push_req_qi;
+  stream<uint_sid_t, 2> pop_req_q("pop_req");
+  streams<bool, kQueueCount, 2> pop_req_qi("pop_req_i");
   tapa::stream<QueueOpResp, 2> queue_resp_q("queue_resp");
-  tapa::streams<QueueOp, kQueueCount, 2> queue_req_qi("queue_req_i");
   tapa::streams<QueueOpResp, kQueueCount, 2> queue_resp_qi("queue_resp_i");
 
   streams<QueueOp, kQueueCount, 2> spq_req_q("systolic_req");
   streams<QueueOpResp, kQueueCount, 2> spq_resp_q("systolic_resp");
   streams<TaskOnChip, kQueueCount, 2> spq_overflow_q("systolic_overflow");
-  streams<QueueOp, kQueueCount, 512> ofq_req_q("overflow_req");
+  streams<bool, kQueueCount, 512> ofq_pop_req_q("overflow_pop_req");
   streams<QueueOpResp, kQueueCount, 2> ofq_resp_q("overflow_resp");
 
   streams<TaskOnChip, kPeCount, 2> task_req_q("task_req");
@@ -1165,24 +1157,31 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   //   Connect the vertex readers and updaters.
   streams<TaskOnChip, kIntervalCount, 64> update_qi0;
   streams<TaskOnChip, kIntervalCount, 256> update_new_qi;
-  streams<bool, kIntervalCount, 2> update_noop_qi;
+  streams<bool, kIntervalCount, 2> update_noop_qi1;
+  streams<bool, kIntervalCount, 2> update_noop_qi2;
   streams<Vid, kIntervalCount, 2> vertex_read_addr_q;
   streams<Vertex, kIntervalCount, 2> vertex_read_data_q;
 
-  streams<TaskOp, kIntervalCount, 256> update_resp_q;
-  stream<uint_interval_t, 2> update_noop_q;
+  stream<uint_noop_t, 2> update_noop_q;
 
   tapa::task()
       .invoke<0>(Dispatcher, root, metadata, task_req_q, task_resp_q,
-                 update_resp_q, update_noop_q, queue_req_q, queue_resp_q)
-      .invoke<detach, kQueueCount>(CascadedQueue, seq(), queue_req_qi,
-                                   queue_resp_qi, spq_req_q, spq_resp_q,
-                                   spq_overflow_q, ofq_req_q, ofq_resp_q)
+                 update_noop_q, pop_req_q, queue_resp_q)
+#if 1
+      .invoke<detach, kQueueCount>(CascadedQueue, seq(), push_req_qi,
+                                   pop_req_qi, queue_resp_qi, spq_req_q,
+                                   spq_resp_q, ofq_pop_req_q, ofq_resp_q)
       .invoke<detach, kQueueCount>(SystolicQueue, seq(), spq_req_q, spq_resp_q,
                                    spq_overflow_q)
-      .invoke<detach, kQueueCount>(TaskQueue, seq(), ofq_req_q, ofq_resp_q,
-                                   heap_array, heap_index)
-      .invoke<-1>(QueueReqArbiter, queue_req_q, queue_req_qi)
+      .invoke<detach, kQueueCount>(TaskQueue, seq(), spq_overflow_q,
+                                   ofq_pop_req_q, ofq_resp_q, heap_array,
+                                   heap_index)
+#else
+      .invoke<detach, kQueueCount>(TaskQueue, seq(), push_req_qi, pop_req_qi,
+                                   queue_resp_qi, heap_array, heap_index)
+#endif
+      .invoke<detach>(PushReqArbiter, push_req_q, push_req_qi)
+      .invoke<detach>(PopReqArbiter, pop_req_q, pop_req_qi)
       .invoke<-1>(QueueRespArbiter, queue_resp_qi, queue_resp_q)
 
       // For edges.
@@ -1208,10 +1207,11 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
                                       update_qi0, vertex_read_addr_q)
       .invoke<detach, kIntervalCount>(VertexReaderS1, update_qi0,
                                       vertex_read_data_q, update_new_qi,
-                                      update_noop_qi)
-      .invoke<detach, kIntervalCount>(VertexUpdater, update_new_qi,
-                                      update_resp_q, vertices)
-      .invoke<detach>(NoopMerger, update_noop_qi, update_noop_q)
+                                      update_noop_qi1)
+      .invoke<detach, kIntervalCount>(VertexUpdater, update_new_qi, push_req_q,
+                                      update_noop_qi2, vertices)
+      .invoke<detach>(NoopMerger, update_noop_qi1, update_noop_qi2,
+                      update_noop_q)
 
       // PEs.
       .invoke<detach, kPeCount>(ProcElemS0, task_req_q, task_req_qi,

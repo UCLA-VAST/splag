@@ -124,7 +124,7 @@ struct QueueOpResp {
     return queue_op == QueueOp::POP && task_op == TaskOp::NOOP;
   }
   bool is_pop_new() const {
-    return queue_op == QueueOp::POP && task_op == TaskOp::NEW;
+    return queue_op != QueueOp::PUSH && task_op == TaskOp::NEW;
   }
 };
 
