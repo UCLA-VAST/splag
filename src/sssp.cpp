@@ -1122,7 +1122,7 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
           tapa::async_mmaps<Vertex, kIntervalCount> vertices,
           // For queues.
           tapa::mmap<Task> heap_array, tapa::mmap<Vid> heap_index) {
-  streams<TaskOnChip, kIntervalCount, 2> push_req_q;
+  streams<TaskOnChip, kIntervalCount, 8> push_req_q;
   streams<TaskOnChip, kQueueCount, 512> push_req_qi;
   stream<uint_sid_t, 2> pop_req_q("pop_req");
   streams<bool, kQueueCount, 2> pop_req_qi("pop_req_i");
@@ -1131,13 +1131,13 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
 
   streams<QueueOp, kQueueCount, 2> spq_req_q("systolic_req");
   streams<QueueOpResp, kQueueCount, 2> spq_resp_q("systolic_resp");
-  streams<TaskOnChip, kQueueCount, 2> spq_overflow_q("systolic_overflow");
-  streams<bool, kQueueCount, 512> ofq_pop_req_q("overflow_pop_req");
+  streams<TaskOnChip, kQueueCount, 512> spq_overflow_q("systolic_overflow");
+  streams<bool, kQueueCount, 2> ofq_pop_req_q("overflow_pop_req");
   streams<QueueOpResp, kQueueCount, 2> ofq_resp_q("overflow_resp");
 
   streams<TaskOnChip, kPeCount, 2> task_req_q("task_req");
   streams<TaskOnChip, kPeCount, 2> task_req_qi("task_req_i");
-  streams<Vid, kPeCount, 2> task_resp_q("task_resp");
+  streams<Vid, kPeCount, 64> task_resp_q("task_resp");
 
   // For edges.
   tapa::streams<Vid, kPeCount, 2> edge_read_addr_q("edge_read_addr");
@@ -1148,7 +1148,7 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
 
   // For vertices.
   //   Connect PEs to the update request network.
-  streams<TaskOnChip, kPeCount, 2> update_req_q;
+  streams<TaskOnChip, kPeCount, 512> update_req_q;
   //   Compose the update request network.
   streams<TaskOnChip, kIntervalCount, 8> update_req_qi1;
   streams<TaskOnChip, kIntervalCount, 8> update_req_0_qi0;
@@ -1156,7 +1156,7 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   streams<TaskOnChip, kIntervalCount, 8> update_req_qi0;
   //   Connect the vertex readers and updaters.
   streams<TaskOnChip, kIntervalCount, 64> update_qi0;
-  streams<TaskOnChip, kIntervalCount, 256> update_new_qi;
+  streams<TaskOnChip, kIntervalCount, 512> update_new_qi;
   streams<bool, kIntervalCount, 2> update_noop_qi1;
   streams<bool, kIntervalCount, 2> update_noop_qi2;
   streams<Vid, kIntervalCount, 2> vertex_read_addr_q;
