@@ -67,7 +67,7 @@ spin:
       const auto vid = req.vid;
       const auto index = req.index;
       switch (req.op) {
-        case HeapIndexOp::GET: {
+        case GET: {
           auto& entry = heap_index_cache[vid / kQueueCount % kIndexCacheSize];
           if (entry.addr != vid) {
             if (entry.addr != kNullVid) {
@@ -82,7 +82,7 @@ spin:
           }
           resp_q.write(entry.payload);
         } break;
-        case HeapIndexOp::SET: {
+        case SET: {
           CHECK_NE(vid, kNullVid);
           auto& entry = heap_index_cache[vid / kQueueCount % kIndexCacheSize];
 #ifdef NOALLOC
@@ -105,13 +105,45 @@ spin:
           entry.payload = index;
 #endif  // NOALLOC
         } break;
-        case HeapIndexOp::CLEAR: {
+        case CLEAR: {
           auto& entry = heap_index_cache[vid / kQueueCount % kIndexCacheSize];
           ++write_miss;
           if (entry.addr == vid) {
             entry.addr = kNullVid;
           }
           heap_index[vid] = kNullVid;
+        } break;
+      }
+    }
+  }
+}
+
+void HeapArrayMem(Vid qid, istream<HeapArrayReq>& req_q,
+                  ostream<TaskOnChip>& resp_q, mmap<Task> heap_array) {
+  TaskOnChip heap_array_cache[kHeapOnChipSize];
+#pragma HLS resource variable = heap_array_cache core = RAM_2P_URAM latency = 2
+#pragma HLS data_pack variable = heap_array_cache
+
+spin:
+  for (;;) {  // Do not pipeline.
+    if (!req_q.empty()) {
+      const auto req = req_q.read(nullptr);
+      const bool on_chip = req.i < kHeapOnChipSize;
+      const auto i = (req.i - kHeapOnChipSize) * kQueueCount + qid;
+      switch (req.op) {
+        case GET: {
+          resp_q.write(on_chip ? heap_array_cache[req.i]
+                               : TaskOnChip(heap_array[i]));
+        } break;
+        case SET: {
+          if (on_chip) {
+            heap_array_cache[req.i] = req.task;
+          } else {
+            heap_array[i] = req.task;
+          }
+        } break;
+        case CLEAR: {
+          LOG(FATAL) << "invalid heap array request";
         } break;
       }
     }
@@ -130,109 +162,17 @@ void TaskQueue(
     Vid qid,
     // Queue requests.
     istream<TaskOnChip>& push_req_q, istream<bool>& pop_req_q,
-    tapa::ostream<QueueOpResp>& queue_resp_q, tapa::mmap<Task> heap_array,
+    tapa::ostream<QueueOpResp>& queue_resp_q,
+    // Heap array.
+    ostream<HeapArrayReq>& heap_array_req_q,
+    istream<TaskOnChip>& heap_array_resp_q,
     // Heap index.
     ostream<HeapIndexReq>& heap_index_req_q, istream<Vid>& heap_index_resp_q) {
 #pragma HLS inline recursive
   // Heap rule: child <= parent
   Vid heap_size = 0;
 
-  // #elements shared by the on-chip heap and the off-chip heap.
-  constexpr int kHeapSharedSize = 4096;
-  static_assert(is_power_of(kHeapSharedSize, kHeapOnChipWidth),
-                "invalid heap configuration");
-  static_assert(is_power_of(kHeapSharedSize, kHeapOffChipWidth),
-                "invalid heap configuration");
-  // #elements in the on-chip heap.
-  constexpr int kHeapOnChipSize =
-      (kHeapSharedSize * kHeapOnChipWidth - 1) / (kHeapOnChipWidth - 1);
-  // #elements whose children are on chip.
-  constexpr int kHeapOnChipBound = (kHeapOnChipSize - 1) / kHeapOnChipWidth;
-  // #elements skipped in the off-chip heap (because they are on-chip).
-  constexpr int kHeapOffChipSkipped =
-      (kHeapOffChipWidth * kHeapOnChipSize * (kHeapOnChipWidth - 1) +
-       kHeapOffChipWidth - kHeapOnChipWidth) /
-      (kHeapOffChipWidth - 1) / kHeapOnChipWidth;
-  // #elements difference between off-chip indices and mixed indices.
-  constexpr int kHeapDiff = kHeapOnChipSize - kHeapOffChipSkipped;
-  // #elements in the mixed heap whose parent is on chip.
-  constexpr int kHeapOffChipBound =
-      kHeapOnChipSize +
-      kHeapOffChipWidth *
-          (kHeapOnChipSize - (kHeapOnChipSize - 1) / kHeapOnChipWidth);
-
-  /*
-   *  parent of i:
-   *    if i < kHeapOnChipSize:                           {on-chip}
-   *      (i-1)/kHeapOnChipWidth                            {on-chip}
-   *    elif i < kHeapOffChipBound                        {off-chip}
-   *      (i-kHeapDiff-1)/kHeapOffChipWidth+kHeapDiff       {on-chip}
-   *        = (i+(kHeapDiff*(kHeapOffChipWidth-1)-1))/kHeapOffChipWidth
-   *    else:                                             {off-chip}
-   *      (i-kHeapDiff-1)/kHeapOffChipWidth+kHeapDiff       {off-chip}
-   *        = (i+(kHeapDiff*(kHeapOffChipWidth-1)-1))/kHeapOffChipWidth
-   *
-   *  first child of i:
-   *    if i < kHeapOnChipBound:                                    {on-chip}
-   *      i*kHeapOnChipWidth+1                                        {on-chip}
-   *    elif i < kHeapOnChipSize:                                   {on-chip}
-   *      (i-kHeapDiff)*kHeapOffChipWidth+kHeapDiff+1                 {off-chip}
-   *        = i*kHeapOffChipWidth-kHeapDiff*(kHeapOffChipWidth-1)+1
-   *    else:                                                       {off-chip}
-   *      (i-kHeapDiff)*kHeapOffChipWidth+kHeapDiff+1                 {off-chip}
-   *        = i*kHeapOffChipWidth-kHeapDiff*(kHeapOffChipWidth-1)+1
-   */
-
-  TaskOnChip heap_array_cache[kHeapOnChipSize];
-#pragma HLS resource variable = heap_array_cache core = RAM_2P_URAM latency = 2
-#pragma HLS data_pack variable = heap_array_cache
-
-  auto get_heap_array_index = [&](Vid i) {
-    return (i - kHeapOnChipSize) * kQueueCount + qid;
-  };
-  auto get_heap_elem_on_chip = [&](Vid i) {
-    CHECK_LT(i, kHeapOnChipSize);
-    return Task(heap_array_cache[i]);
-  };
-  auto get_heap_elem_off_chip = [&](Vid i) {
-    CHECK_GE(i, kHeapOnChipSize);
-    return heap_array[get_heap_array_index(i)];
-  };
-  auto get_heap_elem = [&](Vid i) {
-    return i < kHeapOnChipSize ? get_heap_elem_on_chip(i)
-                               : get_heap_elem_off_chip(i);
-  };
-  auto set_heap_elem_on_chip = [&](Vid i, Task task) {
-    CHECK_LT(i, kHeapOnChipSize);
-    heap_array_cache[i] = TaskOnChip(task);
-  };
-  auto set_heap_elem_off_chip = [&](Vid i, Task task) {
-    CHECK_GE(i, kHeapOnChipSize);
-    heap_array[get_heap_array_index(i)] = task;
-  };
-  auto set_heap_elem = [&](Vid i, Task task) {
-    i < kHeapOnChipSize ? set_heap_elem_on_chip(i, task)
-                        : set_heap_elem_off_chip(i, task);
-  };
-
-  // Performance counters.
-  int32_t heapify_up_count = 0;
-  int32_t heapify_up_on_chip = 0;
-  int32_t heapify_up_off_chip = 0;
-  int32_t heapify_down_count = 0;
-  int32_t heapify_down_on_chip = 0;
-  int32_t heapify_down_off_chip = 0;
-
   CLEAN_UP(clean_up, [&]() {
-    VLOG(3) << "average heapify up trip count (on-chip): "
-            << 1. * heapify_up_on_chip / heapify_up_count;
-    VLOG(3) << "average heapify up trip count (off-chip): "
-            << 1. * heapify_up_off_chip / heapify_up_count;
-    VLOG(3) << "average heapify down trip count (on-chip): "
-            << 1. * heapify_down_on_chip / heapify_down_count;
-    VLOG(3) << "average heapify down trip count (off-chip): "
-            << 1. * heapify_down_off_chip / heapify_down_count;
-
     // Check that heap_index is restored to the initial state.
     CHECK_EQ(heap_size, 0);
   });
@@ -270,7 +210,9 @@ spin:
         bool heapify = true;
         Vid heapify_index = task_index;
         if (task_index != kNullVid) {
-          const Task old_task = get_heap_elem(task_index);
+          heap_array_req_q.write({GET, task_index});
+          ap_wait();
+          const Task old_task = heap_array_resp_q.read();
           CHECK_EQ(old_task.vid, new_task.vid);
           if (new_task <= old_task) {
             heapify = false;
@@ -287,55 +229,25 @@ spin:
           Vid i = heapify_index;
           const Task task_i = new_task;
 
-          ++heapify_up_count;
-
-        heapify_up_off_chip:
-          for (; !(i < kHeapOffChipBound);) {
+        heapify_up:
+          for (; i != 0;) {
 #pragma HLS pipeline
-            ++heapify_up_off_chip;
-
             const auto parent =
-                (i + (kHeapDiff * (kHeapOffChipWidth - 1) - 1)) /
-                kHeapOffChipWidth;
-            const auto task_parent = get_heap_elem_off_chip(parent);
+                i < kHeapOnChipSize
+                    ? (i - 1) / kHeapOnChipWidth
+                    : (i + (kHeapDiff * (kHeapOffChipWidth - 1) - 1)) /
+                          kHeapOffChipWidth;
+            heap_array_req_q.write({GET, parent});
+            ap_wait();
+            const auto task_parent = heap_array_resp_q.read();
             if (task_i <= task_parent) break;
 
-            set_heap_elem_off_chip(i, task_parent);
-            heap_index_req_q.write({SET, task_parent.vid, i});
+            heap_array_req_q.write({SET, i, task_parent});
+            heap_index_req_q.write({SET, task_parent.vid(), i});
             i = parent;
           }
 
-          if (!(i < kHeapOnChipSize) && i < kHeapOffChipBound) {
-            const auto parent =
-                (i + (kHeapDiff * (kHeapOffChipWidth - 1) - 1)) /
-                kHeapOffChipWidth;
-            const auto task_parent = get_heap_elem_on_chip(parent);
-            if (!(task_i <= task_parent)) {
-              ++heapify_up_off_chip;
-
-              set_heap_elem_off_chip(i, task_parent);
-              heap_index_req_q.write({SET, task_parent.vid, i});
-              i = parent;
-            } else {
-              ++heapify_up_on_chip;
-            }
-          }
-
-        heapify_up_on_chip:
-          for (; i != 0 && i < kHeapOnChipSize;) {
-#pragma HLS pipeline
-            ++heapify_up_on_chip;
-
-            const auto parent = (i - 1) / kHeapOnChipWidth;
-            const auto task_parent = get_heap_elem_on_chip(parent);
-            if (task_i <= task_parent) break;
-
-            set_heap_elem_on_chip(i, task_parent);
-            heap_index_req_q.write({SET, task_parent.vid, i});
-            i = parent;
-          }
-
-          set_heap_elem(i, task_i);
+          heap_array_req_q.write({SET, i, task_i});
           heap_index_req_q.write({SET, task_i.vid, i});
         }
         break;
@@ -345,7 +257,9 @@ spin:
         CHECK_EQ(resp.task.vid() % kQueueCount, qid);
         const bool is_pushpop = req.op == QueueOp::PUSHPOP;
         if (heap_size != 0) {
-          const Task front(heap_array_cache[0]);
+          heap_array_req_q.write({GET, 0});
+          ap_wait();
+          const Task front(heap_array_resp_q.read());
           heap_index_req_q.write({CLEAR, front.vid});
 
           if (!is_pushpop) {
@@ -356,17 +270,16 @@ spin:
           resp.task = front;
 
           if (heap_size != 0) {
-            ++heapify_down_count;
-
             // Find proper index `i` for `task_i`.
             const Task task_i =
-                is_pushpop ? Task(req.task) : get_heap_elem(heap_size);
+                Task(is_pushpop ? req.task
+                                : (heap_array_req_q.write({GET, heap_size}),
+                                   ap_wait(), heap_array_resp_q.read()));
             Vid i = 0;
 
           heapify_down_on_chip:
             for (; i < kHeapOnChipBound;) {
 #pragma HLS pipeline
-              ++heapify_down_on_chip;
 
               Vid max = -1;
               Task task_max = task_i;
@@ -374,7 +287,9 @@ spin:
 #pragma HLS unroll
                 const Vid child = i * kHeapOnChipWidth + j;
                 if (child < heap_size) {
-                  const auto task_child = get_heap_elem_on_chip(child);
+                  heap_array_req_q.write({GET, child});
+                  ap_wait();
+                  const auto task_child = heap_array_resp_q.read();
                   if (!(task_child <= task_max)) {
                     max = child;
                     task_max = task_child;
@@ -383,7 +298,7 @@ spin:
               }
               if (max == -1) break;
 
-              set_heap_elem_on_chip(i, task_max);
+              heap_array_req_q.write({SET, i, task_max});
               heap_index_req_q.write({SET, task_max.vid, i});
               i = max;
             }
@@ -395,7 +310,9 @@ spin:
                   const Vid child = i * kHeapOffChipWidth -
                                     kHeapDiff * (kHeapOffChipWidth - 1) + j;
                   if (child < heap_size) {
-                    const auto task_child = get_heap_elem_off_chip(child);
+                    heap_array_req_q.write({GET, child});
+                    ap_wait();
+                    const auto task_child = heap_array_resp_q.read();
                     if (!(task_child <= task_max)) {
                       max = child;
                       task_max = task_child;
@@ -404,35 +321,19 @@ spin:
                 }
             };
 
-            if (!(i < kHeapOnChipBound) && i < kHeapOnChipSize) {
-              ++heapify_down_off_chip;
-
-              Vid max = -1;
-              Task task_max = task_i;
-              heapify_down_cmp(task_max, max);
-
-              if (max != -1) {
-                set_heap_elem_on_chip(i, task_max);
-                heap_index_req_q.write({SET, task_max.vid, i});
-                i = max;
-              }
-            }
-
           heapify_down_off_chip:
-            for (; !(i < kHeapOnChipSize);) {
-              ++heapify_down_off_chip;
-
+            for (; !(i < kHeapOnChipBound);) {
               Vid max = -1;
               Task task_max = task_i;
               heapify_down_cmp(task_max, max);
               if (max == -1) break;
 
-              set_heap_elem_off_chip(i, task_max);
+              heap_array_req_q.write({SET, i, task_max});
               heap_index_req_q.write({SET, task_max.vid, i});
               i = max;
             }
 
-            set_heap_elem(i, task_i);
+            heap_array_req_q.write({SET, i, task_i});
             heap_index_req_q.write({SET, task_i.vid, i});
           }
         } else if (is_pushpop) {
@@ -1156,6 +1057,9 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   streams<HeapIndexReq, kQueueCount, 64> heap_index_req_q;
   streams<Vid, kQueueCount, 2> heap_index_resp_q;
 
+  streams<HeapArrayReq, kQueueCount, 64> heap_array_req_q;
+  streams<TaskOnChip, kQueueCount, 2> heap_array_resp_q;
+
   streams<TaskOnChip, kPeCount, 2> task_req_q("task_req");
   streams<TaskOnChip, kPeCount, 2> task_req_qi("task_req_i");
   streams<Vid, kPeCount, 64> task_resp_q("task_resp");
@@ -1195,15 +1099,19 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
       .invoke<detach, kQueueCount>(SystolicQueue, seq(), spq_req_q, spq_resp_q,
                                    spq_overflow_q)
       .invoke<detach, kQueueCount>(TaskQueue, seq(), spq_overflow_q,
-                                   ofq_pop_req_q, ofq_resp_q, heap_array,
-                                   heap_index_req_q, heap_index_resp_q)
+                                   ofq_pop_req_q, ofq_resp_q, heap_array_req_q,
+                                   heap_array_resp_q, heap_index_req_q,
+                                   heap_index_resp_q)
 #else
       .invoke<detach, kQueueCount>(TaskQueue, seq(), push_req_qi, pop_req_qi,
-                                   queue_resp_qi, heap_array, heap_index_req_q,
+                                   queue_resp_qi, heap_array_req_q,
+                                   heap_array_resp_q, heap_index_req_q,
                                    heap_index_resp_q)
 #endif
       .invoke<detach, kQueueCount>(HeapIndexMem, heap_index_req_q,
                                    heap_index_resp_q, heap_index)
+      .invoke<detach, kQueueCount>(HeapArrayMem, seq(), heap_array_req_q,
+                                   heap_array_resp_q, heap_array)
       .invoke<detach>(PushReqArbiter, push_req_q, push_req_qi)
       .invoke<detach>(PopReqArbiter, pop_req_q, pop_req_qi)
       .invoke<-1>(QueueRespArbiter, queue_resp_qi, queue_resp_q)
