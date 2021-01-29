@@ -88,7 +88,9 @@ inline std::ostream& operator<<(std::ostream& os, const Index& obj) {
 struct Task {
   Vid vid;
   Vertex vertex;
-  uint32_t padding[3];
+  uint32_t _padding_0;
+  uint32_t _padding_1;
+  uint32_t _padding_2;
 
   // Compares priority.
   bool operator<=(const Task& other) const { return other.vertex <= vertex; }
