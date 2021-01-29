@@ -29,27 +29,8 @@ static_assert(kQueueCount % kShardCount == 0,
 //   v=8: O(#vertex)
 //   v=9: O(#edge)
 
-// The queue is initialized with the root vertex. Each request is either a push
-// or a pop.
-//
-// Each push request puts the task in the queue if there isn't a task for the
-// same vertex in the queue, or decreases the priority of the existing task
-// using the new value. Whether a new task is created is returned in the
-// response.
-//
-// Each pop removes a task if the queue is not empty, otherwise the response
-// indicates that the queue is empty.
-void TaskQueue(
-    // Scalar
-    Vid qid,
-    // Queue requests.
-    istream<TaskOnChip>& push_req_q, istream<bool>& pop_req_q,
-    tapa::ostream<QueueOpResp>& queue_resp_q, tapa::mmap<Task> heap_array,
-    tapa::mmap<Vid> heap_index) {
-#pragma HLS inline recursive
-  // Heap rule: child <= parent
-  Vid heap_size = 0;
-
+void HeapIndexMem(istream<HeapIndexReq>& req_q, ostream<Vid>& resp_q,
+                  mmap<Vid> heap_index) {
   constexpr int kIndexCacheSize = 4096 * 4;
   tapa::packet<Vid, Vid> heap_index_cache[kIndexCacheSize];
 #pragma HLS resource variable = heap_index_cache core = RAM_2P_URAM latency = 4
@@ -63,53 +44,98 @@ heap_index_cache_init:
 #pragma HLS pipeline II = 1
     heap_index_cache[i].addr = kNullVid;
   }
-  auto get_heap_index = [&](Vid vid) -> Vid {
-    auto& entry = heap_index_cache[vid / kQueueCount % kIndexCacheSize];
-    if (entry.addr != vid) {
-      if (entry.addr != kNullVid) {
-        ++write_miss;
-        heap_index[entry.addr] = entry.payload;
+
+  CLEAN_UP(clean_up, [&]() {
+    VLOG(3) << "read hit rate: " << read_hit * 100. / (read_hit + read_miss)
+            << "%";
+    VLOG(3) << "write hit rate: " << write_hit * 100. / (write_hit + write_miss)
+            << "%";
+
+    // Check that heap_index is restored to the initial state.
+    for (int i = 0; i < heap_index.size(); ++i) {
+      CHECK_EQ(heap_index.get()[i], kNullVid) << "i = " << i;
+    }
+    for (int i = 0; i < kIndexCacheSize; ++i) {
+      CHECK_EQ(heap_index_cache[i].addr, kNullVid) << "i = " << i;
+    }
+  });
+
+spin:
+  for (;;) {  // Do not pipeline.
+    if (!req_q.empty()) {
+      const auto req = req_q.read(nullptr);
+      const auto vid = req.vid;
+      const auto index = req.index;
+      switch (req.op) {
+        case HeapIndexOp::GET: {
+          auto& entry = heap_index_cache[vid / kQueueCount % kIndexCacheSize];
+          if (entry.addr != vid) {
+            if (entry.addr != kNullVid) {
+              ++write_miss;
+              heap_index[entry.addr] = entry.payload;
+            }
+            entry.addr = vid;
+            entry.payload = heap_index[vid];
+            ++read_miss;
+          } else {
+            ++read_hit;
+          }
+          resp_q.write(entry.payload);
+        } break;
+        case HeapIndexOp::SET: {
+          CHECK_NE(vid, kNullVid);
+          auto& entry = heap_index_cache[vid / kQueueCount % kIndexCacheSize];
+#ifdef NOALLOC
+          if (entry.addr == vid) {
+            ++write_hit;
+            entry.addr = vid;
+            entry.payload = index;
+          } else {
+            ++write_miss;
+            heap_index[vid] = index;
+          }
+#else   // NOALLOC
+          if (entry.addr != vid && entry.addr != kNullVid) {
+            heap_index[entry.addr] = entry.payload;
+            ++write_miss;
+          } else {
+            ++write_hit;
+          }
+          entry.addr = vid;
+          entry.payload = index;
+#endif  // NOALLOC
+        } break;
+        case HeapIndexOp::CLEAR: {
+          auto& entry = heap_index_cache[vid / kQueueCount % kIndexCacheSize];
+          ++write_miss;
+          if (entry.addr == vid) {
+            entry.addr = kNullVid;
+          }
+          heap_index[vid] = kNullVid;
+        } break;
       }
-      entry.addr = vid;
-      entry.payload = heap_index[vid];
-      ++read_miss;
-    } else {
-      ++read_hit;
     }
-    return entry.payload;
-  };
-  auto set_heap_index_noalloc = [&](Vid vid, Vid index) {
-    CHECK_NE(vid, kNullVid);
-    auto& entry = heap_index_cache[vid / kQueueCount % kIndexCacheSize];
-    if (entry.addr == vid) {
-      ++write_hit;
-      entry.addr = vid;
-      entry.payload = index;
-    } else {
-      ++write_miss;
-      heap_index[vid] = index;
-    }
-  };
-  auto set_heap_index = [&](Vid vid, Vid index) {
-    CHECK_NE(vid, kNullVid);
-    auto& entry = heap_index_cache[vid / kQueueCount % kIndexCacheSize];
-    if (entry.addr != vid && entry.addr != kNullVid) {
-      heap_index[entry.addr] = entry.payload;
-      ++write_miss;
-    } else {
-      ++write_hit;
-    }
-    entry.addr = vid;
-    entry.payload = index;
-  };
-  auto clear_heap_index = [&](Vid vid) {
-    auto& entry = heap_index_cache[vid / kQueueCount % kIndexCacheSize];
-    ++write_miss;
-    if (entry.addr == vid) {
-      entry.addr = kNullVid;
-    }
-    heap_index[vid] = kNullVid;
-  };
+  }
+}
+
+// Each push request puts the task in the queue if there isn't a task for the
+// same vertex in the queue, or decreases the priority of the existing task
+// using the new value. Whether a new task is created is returned in the
+// response.
+//
+// Each pop removes a task if the queue is not empty, otherwise the response
+// indicates that the queue is empty.
+void TaskQueue(
+    // Scalar
+    Vid qid,
+    // Queue requests.
+    istream<TaskOnChip>& push_req_q, istream<bool>& pop_req_q,
+    tapa::ostream<QueueOpResp>& queue_resp_q, tapa::mmap<Task> heap_array,
+    // Heap index.
+    ostream<HeapIndexReq>& heap_index_req_q, istream<Vid>& heap_index_resp_q) {
+#pragma HLS inline recursive
+  // Heap rule: child <= parent
+  Vid heap_size = 0;
 
   // #elements shared by the on-chip heap and the off-chip heap.
   constexpr int kHeapSharedSize = 4096;
@@ -206,19 +232,9 @@ heap_index_cache_init:
             << 1. * heapify_down_on_chip / heapify_down_count;
     VLOG(3) << "average heapify down trip count (off-chip): "
             << 1. * heapify_down_off_chip / heapify_down_count;
-    VLOG(3) << "read hit rate: " << read_hit * 100. / (read_hit + read_miss)
-            << "%";
-    VLOG(3) << "write hit rate: " << write_hit * 100. / (write_hit + write_miss)
-            << "%";
 
     // Check that heap_index is restored to the initial state.
     CHECK_EQ(heap_size, 0);
-    for (int i = 0; i < heap_index.size(); ++i) {
-      CHECK_EQ(heap_index.get()[i], kNullVid) << "i = " << i;
-    }
-    for (int i = 0; i < kIndexCacheSize; ++i) {
-      CHECK_EQ(heap_index_cache[i].addr, kNullVid) << "i = " << i;
-    }
   });
 
 spin:
@@ -248,7 +264,9 @@ spin:
       case QueueOp::PUSH: {
         const auto new_task = Task(req.task);
         CHECK_EQ(new_task.vid % kQueueCount, qid);
-        const Vid task_index = get_heap_index(new_task.vid);
+        heap_index_req_q.write({GET, new_task.vid});
+        ap_wait();
+        const Vid task_index = heap_index_resp_q.read();
         bool heapify = true;
         Vid heapify_index = task_index;
         if (task_index != kNullVid) {
@@ -256,7 +274,7 @@ spin:
           CHECK_EQ(old_task.vid, new_task.vid);
           if (new_task <= old_task) {
             heapify = false;
-            clear_heap_index(new_task.vid);
+            heap_index_req_q.write({CLEAR, new_task.vid});
           }
         } else {
           heapify_index = heap_size;
@@ -283,7 +301,7 @@ spin:
             if (task_i <= task_parent) break;
 
             set_heap_elem_off_chip(i, task_parent);
-            set_heap_index(task_parent.vid, i);
+            heap_index_req_q.write({SET, task_parent.vid, i});
             i = parent;
           }
 
@@ -296,7 +314,7 @@ spin:
               ++heapify_up_off_chip;
 
               set_heap_elem_off_chip(i, task_parent);
-              set_heap_index(task_parent.vid, i);
+              heap_index_req_q.write({SET, task_parent.vid, i});
               i = parent;
             } else {
               ++heapify_up_on_chip;
@@ -313,12 +331,12 @@ spin:
             if (task_i <= task_parent) break;
 
             set_heap_elem_on_chip(i, task_parent);
-            set_heap_index(task_parent.vid, i);
+            heap_index_req_q.write({SET, task_parent.vid, i});
             i = parent;
           }
 
           set_heap_elem(i, task_i);
-          set_heap_index(task_i.vid, i);
+          heap_index_req_q.write({SET, task_i.vid, i});
         }
         break;
       }
@@ -328,7 +346,7 @@ spin:
         const bool is_pushpop = req.op == QueueOp::PUSHPOP;
         if (heap_size != 0) {
           const Task front(heap_array_cache[0]);
-          clear_heap_index(front.vid);
+          heap_index_req_q.write({CLEAR, front.vid});
 
           if (!is_pushpop) {
             --heap_size;
@@ -366,7 +384,7 @@ spin:
               if (max == -1) break;
 
               set_heap_elem_on_chip(i, task_max);
-              set_heap_index(task_max.vid, i);
+              heap_index_req_q.write({SET, task_max.vid, i});
               i = max;
             }
 
@@ -395,7 +413,7 @@ spin:
 
               if (max != -1) {
                 set_heap_elem_on_chip(i, task_max);
-                set_heap_index(task_max.vid, i);
+                heap_index_req_q.write({SET, task_max.vid, i});
                 i = max;
               }
             }
@@ -410,12 +428,12 @@ spin:
               if (max == -1) break;
 
               set_heap_elem_off_chip(i, task_max);
-              set_heap_index(task_max.vid, i);
+              heap_index_req_q.write({SET, task_max.vid, i});
               i = max;
             }
 
             set_heap_elem(i, task_i);
-            set_heap_index(task_i.vid, i);
+            heap_index_req_q.write({SET, task_i.vid, i});
           }
         } else if (is_pushpop) {
           resp.task_op = TaskOp::NEW;
@@ -1135,6 +1153,9 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   streams<bool, kQueueCount, 2> ofq_pop_req_q("overflow_pop_req");
   streams<QueueOpResp, kQueueCount, 2> ofq_resp_q("overflow_resp");
 
+  streams<HeapIndexReq, kQueueCount, 64> heap_index_req_q;
+  streams<Vid, kQueueCount, 2> heap_index_resp_q;
+
   streams<TaskOnChip, kPeCount, 2> task_req_q("task_req");
   streams<TaskOnChip, kPeCount, 2> task_req_qi("task_req_i");
   streams<Vid, kPeCount, 64> task_resp_q("task_resp");
@@ -1175,11 +1196,14 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
                                    spq_overflow_q)
       .invoke<detach, kQueueCount>(TaskQueue, seq(), spq_overflow_q,
                                    ofq_pop_req_q, ofq_resp_q, heap_array,
-                                   heap_index)
+                                   heap_index_req_q, heap_index_resp_q)
 #else
       .invoke<detach, kQueueCount>(TaskQueue, seq(), push_req_qi, pop_req_qi,
-                                   queue_resp_qi, heap_array, heap_index)
+                                   queue_resp_qi, heap_array, heap_index_req_q,
+                                   heap_index_resp_q)
 #endif
+      .invoke<detach, kQueueCount>(HeapIndexMem, heap_index_req_q,
+                                   heap_index_resp_q, heap_index)
       .invoke<detach>(PushReqArbiter, push_req_q, push_req_qi)
       .invoke<detach>(PopReqArbiter, pop_req_q, pop_req_qi)
       .invoke<-1>(QueueRespArbiter, queue_resp_qi, queue_resp_q)

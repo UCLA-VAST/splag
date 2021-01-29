@@ -156,6 +156,14 @@ inline std::ostream& operator<<(std::ostream& os, const QueueOpResp& obj) {
   return os << "}";
 }
 
+enum HeapIndexOp { GET, SET, CLEAR };
+
+struct HeapIndexReq {
+  HeapIndexOp op;
+  Vid vid;
+  Vid index;
+};
+
 // Convenient functions and macros.
 
 #ifdef __SYNTHESIS__
