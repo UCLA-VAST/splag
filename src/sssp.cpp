@@ -30,6 +30,47 @@ static_assert(kQueueCount % kShardCount == 0,
 //   v=9: O(#edge)
 
 void HeapIndexMem(istream<HeapIndexReq>& req_q, ostream<Vid>& resp_q,
+                  tapa::async_mmap<Vid> mem) {
+  DECL_BUF(HeapIndexReq, req);
+  DECL_BUF(Vid, read_addr);
+  DECL_BUF(Vid, read_data);
+  DECL_BUF(Vid, write_addr);
+  DECL_BUF(Vid, write_data);
+
+spin:
+  for (uint8_t lock = 0;; lock = lock > 0 ? lock - 1 : 0) {
+#pragma HLS pipeline II = 1
+    if (!req_q.empty()) {
+      const auto req = req_q.peek(nullptr);
+      switch (req.op) {
+        case GET: {
+          if (!read_addr_valid && lock == 0) {
+            read_addr = req.vid;
+            read_addr_valid = true;
+            req_q.read(nullptr);
+          }
+        } break;
+        case SET:
+        case CLEAR: {
+          if (!write_addr_valid && !write_data_valid) {
+            write_addr = req.vid;
+            write_data = req.op == SET ? req.index : kNullVid;
+            write_addr_valid = write_data_valid = true;
+            req_q.read(nullptr);
+            lock = 30;
+          }
+        } break;
+      }
+    }
+    UNUSED RESET(read_addr_valid, mem.read_addr_try_write(read_addr));
+    UNUSED RESET(write_addr_valid, mem.write_addr_try_write(write_addr));
+    UNUSED RESET(write_data_valid, mem.write_data_try_write(write_data));
+    UNUSED UPDATE(read_data, mem.read_data_try_read(read_data),
+                  resp_q.try_write(read_data));
+  }
+}
+
+void HeapIndexMemCached(istream<HeapIndexReq>& req_q, ostream<Vid>& resp_q,
                   mmap<Vid> heap_index) {
   constexpr int kIndexCacheSize = 4096 * 4;
   tapa::packet<Vid, Vid> heap_index_cache[kIndexCacheSize];
