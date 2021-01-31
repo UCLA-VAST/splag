@@ -31,6 +31,13 @@ static_assert(kQueueCount % kShardCount == 0,
 
 void HeapIndexMem(istream<HeapIndexReq>& req_q, ostream<Vid>& resp_q,
                   tapa::async_mmap<Vid> mem) {
+  CLEAN_UP(clean_up, [&]() {
+    // Check that heap_index is restored to the initial state.
+    for (int i = 0; i < mem.size(); ++i) {
+      CHECK_EQ(mem.get()[i], kNullVid) << "i = " << i;
+    }
+  });
+
   DECL_BUF(HeapIndexReq, req);
   DECL_BUF(Vid, read_addr);
   DECL_BUF(Vid, read_data);
@@ -50,15 +57,17 @@ spin:
             req_q.read(nullptr);
           }
         } break;
-        case SET:
-        case CLEAR: {
+        case SET: {
           if (!write_addr_valid && !write_data_valid) {
             write_addr = req.vid;
-            write_data = req.op == SET ? req.index : kNullVid;
+            write_data = req.index;
             write_addr_valid = write_data_valid = true;
             req_q.read(nullptr);
             lock = 30;
           }
+        } break;
+        default: {
+          LOG(FATAL) << "invalid usage";
         } break;
       }
     }
@@ -70,8 +79,10 @@ spin:
   }
 }
 
-void HeapIndexMemCached(istream<HeapIndexReq>& req_q, ostream<Vid>& resp_q,
-                  mmap<Vid> heap_index) {
+void HeapIndexMemCached(istream<HeapIndexReq>& req_in_q,
+                        ostream<Vid>& resp_out_q,
+                        ostream<HeapIndexReq>& req_out_q,
+                        istream<Vid>& resp_in_q) {
   constexpr int kIndexCacheSize = 4096 * 4;
   tapa::packet<Vid, Vid> heap_index_cache[kIndexCacheSize];
 #pragma HLS resource variable = heap_index_cache core = RAM_2P_URAM latency = 4
@@ -92,68 +103,64 @@ heap_index_cache_init:
     VLOG(3) << "write hit rate: " << write_hit * 100. / (write_hit + write_miss)
             << "%";
 
-    // Check that heap_index is restored to the initial state.
-    for (int i = 0; i < heap_index.size(); ++i) {
-      CHECK_EQ(heap_index.get()[i], kNullVid) << "i = " << i;
-    }
     for (int i = 0; i < kIndexCacheSize; ++i) {
       CHECK_EQ(heap_index_cache[i].addr, kNullVid) << "i = " << i;
     }
   });
 
 spin:
-  for (;;) {  // Do not pipeline.
-    if (!req_q.empty()) {
-      const auto req = req_q.read(nullptr);
-      const auto vid = req.vid;
-      const auto index = req.index;
+  for (;;) {
+    if (!req_in_q.empty()) {
+      const auto req = req_in_q.read(nullptr);
+      const auto old_entry =
+          heap_index_cache[req.vid / kQueueCount % kIndexCacheSize];
+      auto new_entry = old_entry;
+      bool write_enable = false;
       switch (req.op) {
         case GET: {
-          auto& entry = heap_index_cache[vid / kQueueCount % kIndexCacheSize];
-          if (entry.addr != vid) {
-            if (entry.addr != kNullVid) {
+          if (old_entry.addr != req.vid) {
+            req_out_q.write({GET, req.vid});
+            if (old_entry.addr != kNullVid) {
               ++write_miss;
-              heap_index[entry.addr] = entry.payload;
+              req_out_q.write({SET, old_entry.addr, old_entry.payload});
             }
-            entry.addr = vid;
-            entry.payload = heap_index[vid];
+            write_enable = true, new_entry = {req.vid, resp_in_q.read()};
             ++read_miss;
           } else {
             ++read_hit;
           }
-          resp_q.write(entry.payload);
+          resp_out_q.write(new_entry.payload);
         } break;
         case SET: {
-          CHECK_NE(vid, kNullVid);
-          auto& entry = heap_index_cache[vid / kQueueCount % kIndexCacheSize];
+          CHECK_NE(req.vid, kNullVid);
 #ifdef NOALLOC
-          if (entry.addr == vid) {
+          if (old_entry.addr == req.vid) {
             ++write_hit;
-            entry.addr = vid;
-            entry.payload = index;
+            write_enable = true, new_entry = {req.vid, req.index};
           } else {
             ++write_miss;
-            heap_index[vid] = index;
+            req_out_q.write({SET, req.vid, req.index});
           }
 #else   // NOALLOC
-          if (entry.addr != vid && entry.addr != kNullVid) {
-            heap_index[entry.addr] = entry.payload;
+          if (old_entry.addr != req.vid && old_entry.addr != kNullVid) {
+            req_out_q.write({SET, old_entry.addr, old_entry.payload});
             ++write_miss;
           } else {
             ++write_hit;
           }
-          entry.addr = vid;
-          entry.payload = index;
+          write_enable = true, new_entry = {req.vid, req.index};
 #endif  // NOALLOC
         } break;
         case CLEAR: {
-          auto& entry = heap_index_cache[vid / kQueueCount % kIndexCacheSize];
           ++write_miss;
-          if (entry.addr == vid) {
-            entry.addr = kNullVid;
+          if (old_entry.addr == req.vid) {
+            write_enable = true, new_entry.addr = kNullVid;
           }
-          heap_index[vid] = kNullVid;
+          req_out_q.write({SET, req.vid, kNullVid});
         } break;
+      }
+      if (write_enable) {
+        heap_index_cache[req.vid / kQueueCount % kIndexCacheSize] = new_entry;
       }
     }
   }
@@ -1097,6 +1104,8 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
 
   streams<HeapIndexReq, kQueueCount, 64> heap_index_req_q;
   streams<Vid, kQueueCount, 2> heap_index_resp_q;
+  streams<HeapIndexReq, kQueueCount, 2> heap_index_req_qi;
+  streams<Vid, kQueueCount, 2> heap_index_resp_qi;
 
   streams<HeapArrayReq, kQueueCount, 64> heap_array_req_q;
   streams<TaskOnChip, kQueueCount, 2> heap_array_resp_q;
@@ -1133,7 +1142,7 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   tapa::task()
       .invoke<0>(Dispatcher, root, metadata, task_req_q, task_resp_q,
                  update_noop_q, pop_req_q, queue_resp_q)
-#if 1
+#if 0
       .invoke<detach, kQueueCount>(CascadedQueue, seq(), push_req_qi,
                                    pop_req_qi, queue_resp_qi, spq_req_q,
                                    spq_resp_q, ofq_pop_req_q, ofq_resp_q)
@@ -1149,8 +1158,11 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
                                    heap_array_resp_q, heap_index_req_q,
                                    heap_index_resp_q)
 #endif
-      .invoke<detach, kQueueCount>(HeapIndexMem, heap_index_req_q,
-                                   heap_index_resp_q, heap_index)
+      .invoke<detach, kQueueCount>(HeapIndexMem, heap_index_req_qi,
+                                   heap_index_resp_qi, heap_index)
+      .invoke<detach, kQueueCount>(HeapIndexMemCached, heap_index_req_q,
+                                   heap_index_resp_q, heap_index_req_qi,
+                                   heap_index_resp_qi)
       .invoke<detach, kQueueCount>(HeapArrayMem, seq(), heap_array_req_q,
                                    heap_array_resp_q, heap_array)
       .invoke<detach>(PushReqArbiter, push_req_q, push_req_qi)
