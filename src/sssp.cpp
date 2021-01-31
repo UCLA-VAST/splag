@@ -79,10 +79,8 @@ spin:
   }
 }
 
-void HeapIndexMemCached(istream<HeapIndexReq>& req_in_q,
-                        ostream<Vid>& resp_out_q,
-                        ostream<HeapIndexReq>& req_out_q,
-                        istream<Vid>& resp_in_q) {
+void HeapIndexCache(istream<HeapIndexReq>& req_in_q, ostream<Vid>& resp_out_q,
+                    ostream<HeapIndexReq>& req_out_q, istream<Vid>& resp_in_q) {
   constexpr int kIndexCacheSize = 4096 * 4;
   tapa::packet<Vid, Vid> heap_index_cache[kIndexCacheSize];
 #pragma HLS resource variable = heap_index_cache core = RAM_2P_URAM latency = 4
@@ -1160,7 +1158,7 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
 #endif
       .invoke<detach, kQueueCount>(HeapIndexMem, heap_index_req_qi,
                                    heap_index_resp_qi, heap_index)
-      .invoke<detach, kQueueCount>(HeapIndexMemCached, heap_index_req_q,
+      .invoke<detach, kQueueCount>(HeapIndexCache, heap_index_req_q,
                                    heap_index_resp_q, heap_index_req_qi,
                                    heap_index_resp_qi)
       .invoke<detach, kQueueCount>(HeapArrayMem, seq(), heap_array_req_q,
