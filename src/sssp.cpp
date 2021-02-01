@@ -292,6 +292,19 @@ spin:
         }
 
         if (heapify) {
+          // Prefetch heap array elements.
+          uint8_t pending_request_count = 0;
+        heapify_up_prefetch:
+          for (Vid i = heapify_index; !(i < kHeapOffChipBound);) {
+#pragma HLS pipeline II = 1
+            const auto parent =
+                (i + (kHeapDiff * (kHeapOffChipWidth - 1) - 1)) /
+                kHeapOffChipWidth;
+            heap_array_req_q.write({GET, parent});
+            ++pending_request_count;
+            i = parent;
+          }
+
           // Increase the priority of heap_array[i] if necessary.
           Vid i = heapify_index;
           const auto task_i = new_task;
@@ -305,9 +318,9 @@ spin:
                     : (i + (kHeapDiff * (kHeapOffChipWidth - 1) - 1)) /
                           kHeapOffChipWidth;
             const auto task_parent =
-                i < kHeapOffChipBound ? heap_array_cache[parent]
-                                      : (heap_array_req_q.write({GET, parent}),
-                                         ap_wait(), heap_array_resp_q.read());
+                i < kHeapOffChipBound
+                    ? heap_array_cache[parent]
+                    : (--pending_request_count, heap_array_resp_q.read());
             if (task_i <= task_parent) break;
 
             if (i < kHeapOnChipSize) {
@@ -325,6 +338,15 @@ spin:
             heap_array_req_q.write({SET, i, task_i});
           }
           heap_index_req_q.write({SET, task_i.vid(), i});
+
+        heapify_up_discard:
+          while (pending_request_count > 0) {
+#pragma HLS pipeline II = 1
+            if (!heap_array_resp_q.empty()) {
+              heap_array_resp_q.read(nullptr);
+              --pending_request_count;
+            }
+          }
         }
         break;
       }
