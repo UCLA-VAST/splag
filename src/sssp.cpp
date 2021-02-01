@@ -243,23 +243,23 @@ spin:
     };
     switch (req.op) {
       case QueueOp::PUSH: {
-        const auto new_task = Task(req.task);
-        CHECK_EQ(new_task.vid % kQueueCount, qid);
-        heap_index_req_q.write({GET, new_task.vid});
+        const auto new_task = req.task;
+        CHECK_EQ(new_task.vid() % kQueueCount, qid);
+        heap_index_req_q.write({GET, new_task.vid()});
         ap_wait();
         const Vid task_index = heap_index_resp_q.read();
         bool heapify = true;
         Vid heapify_index = task_index;
         if (task_index != kNullVid) {
-          const Task old_task =
+          const auto old_task =
               task_index < kHeapOnChipSize
                   ? heap_array_cache[task_index]
                   : (heap_array_req_q.write({GET, task_index}), ap_wait(),
                      heap_array_resp_q.read());
-          CHECK_EQ(old_task.vid, new_task.vid);
+          CHECK_EQ(old_task.vid(), new_task.vid());
           if (new_task <= old_task) {
             heapify = false;
-            heap_index_req_q.write({CLEAR, new_task.vid});
+            heap_index_req_q.write({CLEAR, new_task.vid()});
           }
         } else {
           heapify_index = heap_size;
@@ -270,7 +270,7 @@ spin:
         if (heapify) {
           // Increase the priority of heap_array[i] if necessary.
           Vid i = heapify_index;
-          const Task task_i = new_task;
+          const auto task_i = new_task;
 
         heapify_up:
           for (; i != 0;) {
@@ -300,7 +300,7 @@ spin:
           } else {
             heap_array_req_q.write({SET, i, task_i});
           }
-          heap_index_req_q.write({SET, task_i.vid, i});
+          heap_index_req_q.write({SET, task_i.vid(), i});
         }
         break;
       }
@@ -309,8 +309,8 @@ spin:
         CHECK_EQ(resp.task.vid() % kQueueCount, qid);
         const bool is_pushpop = req.op == QueueOp::PUSHPOP;
         if (heap_size != 0) {
-          const Task front = heap_array_cache[0];
-          heap_index_req_q.write({CLEAR, front.vid});
+          const auto front = heap_array_cache[0];
+          heap_index_req_q.write({CLEAR, front.vid()});
 
           if (!is_pushpop) {
             --heap_size;
@@ -321,12 +321,12 @@ spin:
 
           if (heap_size != 0) {
             // Find proper index `i` for `task_i`.
-            const Task task_i = Task(
+            const auto task_i =
                 is_pushpop ? req.task
                            : (heap_size < kHeapOnChipSize
                                   ? heap_array_cache[heap_size]
                                   : (heap_array_req_q.write({GET, heap_size}),
-                                     ap_wait(), heap_array_resp_q.read())));
+                                     ap_wait(), heap_array_resp_q.read()));
             Vid i = 0;
 
           heapify_down_on_chip:
@@ -334,7 +334,7 @@ spin:
 #pragma HLS pipeline
 
               Vid max = -1;
-              Task task_max = task_i;
+              auto task_max = task_i;
               for (int j = 1; j <= kHeapOnChipWidth; ++j) {
 #pragma HLS unroll
                 const Vid child = i * kHeapOnChipWidth + j;
@@ -349,11 +349,11 @@ spin:
               if (max == -1) break;
 
               heap_array_cache[i] = task_max;
-              heap_index_req_q.write({SET, task_max.vid, i});
+              heap_index_req_q.write({SET, task_max.vid(), i});
               i = max;
             }
 
-            auto heapify_down_cmp = [&](Task& task_max, Vid& max) {
+            auto heapify_down_cmp = [&](TaskOnChip& task_max, Vid& max) {
               heapify_down_cmp:
                 for (int j = 1; j <= kHeapOffChipWidth; ++j) {
 #pragma HLS pipeline
@@ -374,7 +374,7 @@ spin:
           heapify_down_off_chip:
             for (; !(i < kHeapOnChipBound);) {
               Vid max = -1;
-              Task task_max = task_i;
+              auto task_max = task_i;
               heapify_down_cmp(task_max, max);
               if (max == -1) break;
 
@@ -383,7 +383,7 @@ spin:
               } else {
                 heap_array_req_q.write({SET, i, task_max});
               }
-              heap_index_req_q.write({SET, task_max.vid, i});
+              heap_index_req_q.write({SET, task_max.vid(), i});
               i = max;
             }
 
@@ -392,7 +392,7 @@ spin:
             } else {
               heap_array_req_q.write({SET, i, task_i});
             }
-            heap_index_req_q.write({SET, task_i.vid, i});
+            heap_index_req_q.write({SET, task_i.vid(), i});
           }
         } else if (is_pushpop) {
           resp.task_op = TaskOp::NEW;
