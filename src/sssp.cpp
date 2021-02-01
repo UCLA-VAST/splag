@@ -377,29 +377,32 @@ spin:
               i = max;
             }
 
-            auto heapify_down_cmp = [&](TaskOnChip& task_max, Vid& max) {
-              heapify_down_cmp:
-                for (int j = 1; j <= kHeapOffChipWidth; ++j) {
-#pragma HLS pipeline
-                  const Vid child = i * kHeapOffChipWidth -
-                                    kHeapDiff * (kHeapOffChipWidth - 1) + j;
-                  if (child < heap_size) {
-                    heap_array_req_q.write({GET, child});
-                    ap_wait();
-                    const auto task_child = heap_array_resp_q.read();
-                    if (!(task_child <= task_max)) {
-                      max = child;
-                      task_max = task_child;
-                    }
-                  }
-                }
-            };
-
           heapify_down_off_chip:
             for (; !(i < kHeapOnChipBound);) {
               Vid max = -1;
               auto task_max = task_i;
-              heapify_down_cmp(task_max, max);
+              const auto child_begin = i * kHeapOffChipWidth -
+                                       kHeapDiff * (kHeapOffChipWidth - 1) + 1;
+              const auto child_end =
+                  std::min(heap_size, child_begin + kHeapOffChipWidth);
+            heapify_down_cmp:
+              for (Vid child_req = child_begin, child_resp = child_begin;
+                   child_resp < child_end;) {
+#pragma HLS pipeline II = 1
+                if (child_req < child_end &&
+                    heap_array_req_q.try_write({GET, child_req})) {
+                  ++child_req;
+                }
+
+                if (!heap_array_resp_q.empty()) {
+                  const auto task_child = heap_array_resp_q.read();
+                  if (!(task_child <= task_max)) {
+                    max = child_resp;
+                    task_max = task_child;
+                  }
+                  ++child_resp;
+                }
+              }
               if (max == -1) break;
 
               if (i < kHeapOnChipSize) {
