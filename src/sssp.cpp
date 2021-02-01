@@ -38,7 +38,6 @@ void HeapIndexMem(istream<HeapIndexReq>& req_q, ostream<Vid>& resp_q,
     }
   });
 
-  DECL_BUF(HeapIndexReq, req);
   DECL_BUF(Vid, read_addr);
   DECL_BUF(Vid, read_data);
   DECL_BUF(Vid, write_addr);
@@ -156,6 +155,9 @@ spin:
           }
           req_out_q.write({SET, req.vid, kNullVid});
         } break;
+        default: {
+          LOG(FATAL) << "invalid heap index request";
+        } break;
       }
       if (write_enable) {
         heap_index_cache[req.vid / kQueueCount % kIndexCacheSize] = new_entry;
@@ -165,25 +167,47 @@ spin:
 }
 
 void HeapArrayMem(Vid qid, istream<HeapArrayReq>& req_q,
-                  ostream<TaskOnChip>& resp_q, mmap<Task> heap_array) {
+                  ostream<TaskOnChip>& resp_q, tapa::async_mmap<Task> mem) {
+  DECL_BUF(Vid, read_addr);
+  DECL_BUF(Task, read_data);
+  DECL_BUF(Vid, write_addr);
+  DECL_BUF(Task, write_data);
+
 spin:
-  for (;;) {  // Do not pipeline.
+  for (uint8_t lock = 0;; lock = lock > 0 ? lock - 1 : 0) {
+#pragma HLS pipeline II = 1
     if (!req_q.empty()) {
-      const auto req = req_q.read(nullptr);
+      const auto req = req_q.peek(nullptr);
       CHECK_GE(req.i, kHeapOnChipSize);
       const auto i = (req.i - kHeapOnChipSize) * kQueueCount + qid;
       switch (req.op) {
-        case GET: {
-          resp_q.write(heap_array[i]);
+        case GET:
+        case SYNC: {
+          if (!read_addr_valid && (req.op == GET || lock == 0)) {
+            read_addr = i;
+            read_addr_valid = true;
+            req_q.read(nullptr);
+          }
         } break;
         case SET: {
-          heap_array[i] = req.task;
+          if (!write_addr_valid && !write_data_valid) {
+            write_addr = i;
+            write_data = req.task;
+            write_addr_valid = write_data_valid = true;
+            req_q.read(nullptr);
+            lock = 30;
+          }
         } break;
-        case CLEAR: {
+        default: {
           LOG(FATAL) << "invalid heap array request";
         } break;
       }
     }
+    UNUSED RESET(read_addr_valid, mem.read_addr_try_write(read_addr));
+    UNUSED RESET(write_addr_valid, mem.write_addr_try_write(write_addr));
+    UNUSED RESET(write_data_valid, mem.write_data_try_write(write_data));
+    UNUSED UPDATE(read_data, mem.read_data_try_read(read_data),
+                  resp_q.try_write(read_data));
   }
 }
 
@@ -254,7 +278,7 @@ spin:
           const auto old_task =
               task_index < kHeapOnChipSize
                   ? heap_array_cache[task_index]
-                  : (heap_array_req_q.write({GET, task_index}), ap_wait(),
+                  : (heap_array_req_q.write({SYNC, task_index}), ap_wait(),
                      heap_array_resp_q.read());
           CHECK_EQ(old_task.vid(), new_task.vid());
           if (new_task <= old_task) {
@@ -325,7 +349,7 @@ spin:
                 is_pushpop ? req.task
                            : (heap_size < kHeapOnChipSize
                                   ? heap_array_cache[heap_size]
-                                  : (heap_array_req_q.write({GET, heap_size}),
+                                  : (heap_array_req_q.write({SYNC, heap_size}),
                                      ap_wait(), heap_array_resp_q.read()));
             Vid i = 0;
 

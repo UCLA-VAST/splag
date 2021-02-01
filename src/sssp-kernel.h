@@ -202,7 +202,7 @@ constexpr int kHeapOffChipBound =
  *        = i*kHeapOffChipWidth-kHeapDiff*(kHeapOffChipWidth-1)+1
  */
 
-enum HeapOp { GET, SET, CLEAR };
+enum HeapOp { GET, SET, CLEAR, SYNC };
 
 struct HeapIndexReq {
   HeapOp op;
