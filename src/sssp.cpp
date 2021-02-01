@@ -166,27 +166,18 @@ spin:
 
 void HeapArrayMem(Vid qid, istream<HeapArrayReq>& req_q,
                   ostream<TaskOnChip>& resp_q, mmap<Task> heap_array) {
-  TaskOnChip heap_array_cache[kHeapOnChipSize];
-#pragma HLS resource variable = heap_array_cache core = RAM_2P_URAM latency = 2
-#pragma HLS data_pack variable = heap_array_cache
-
 spin:
   for (;;) {  // Do not pipeline.
     if (!req_q.empty()) {
       const auto req = req_q.read(nullptr);
-      const bool on_chip = req.i < kHeapOnChipSize;
+      CHECK_GE(req.i, kHeapOnChipSize);
       const auto i = (req.i - kHeapOnChipSize) * kQueueCount + qid;
       switch (req.op) {
         case GET: {
-          resp_q.write(on_chip ? heap_array_cache[req.i]
-                               : TaskOnChip(heap_array[i]));
+          resp_q.write(heap_array[i]);
         } break;
         case SET: {
-          if (on_chip) {
-            heap_array_cache[req.i] = req.task;
-          } else {
-            heap_array[i] = req.task;
-          }
+          heap_array[i] = req.task;
         } break;
         case CLEAR: {
           LOG(FATAL) << "invalid heap array request";
@@ -217,6 +208,10 @@ void TaskQueue(
 #pragma HLS inline recursive
   // Heap rule: child <= parent
   Vid heap_size = 0;
+
+  TaskOnChip heap_array_cache[kHeapOnChipSize];
+#pragma HLS resource variable = heap_array_cache core = RAM_2P_URAM latency = 2
+#pragma HLS data_pack variable = heap_array_cache
 
   CLEAN_UP(clean_up, [&]() {
     // Check that heap_index is restored to the initial state.
@@ -256,9 +251,11 @@ spin:
         bool heapify = true;
         Vid heapify_index = task_index;
         if (task_index != kNullVid) {
-          heap_array_req_q.write({GET, task_index});
-          ap_wait();
-          const Task old_task = heap_array_resp_q.read();
+          const Task old_task =
+              task_index < kHeapOnChipSize
+                  ? heap_array_cache[task_index]
+                  : (heap_array_req_q.write({GET, task_index}), ap_wait(),
+                     heap_array_resp_q.read());
           CHECK_EQ(old_task.vid, new_task.vid);
           if (new_task <= old_task) {
             heapify = false;
@@ -283,17 +280,26 @@ spin:
                     ? (i - 1) / kHeapOnChipWidth
                     : (i + (kHeapDiff * (kHeapOffChipWidth - 1) - 1)) /
                           kHeapOffChipWidth;
-            heap_array_req_q.write({GET, parent});
-            ap_wait();
-            const auto task_parent = heap_array_resp_q.read();
+            const auto task_parent =
+                i < kHeapOffChipBound ? heap_array_cache[parent]
+                                      : (heap_array_req_q.write({GET, parent}),
+                                         ap_wait(), heap_array_resp_q.read());
             if (task_i <= task_parent) break;
 
-            heap_array_req_q.write({SET, i, task_parent});
+            if (i < kHeapOnChipSize) {
+              heap_array_cache[i] = task_parent;
+            } else {
+              heap_array_req_q.write({SET, i, task_parent});
+            }
             heap_index_req_q.write({SET, task_parent.vid(), i});
             i = parent;
           }
 
-          heap_array_req_q.write({SET, i, task_i});
+          if (i < kHeapOnChipSize) {
+            heap_array_cache[i] = task_i;
+          } else {
+            heap_array_req_q.write({SET, i, task_i});
+          }
           heap_index_req_q.write({SET, task_i.vid, i});
         }
         break;
@@ -303,9 +309,7 @@ spin:
         CHECK_EQ(resp.task.vid() % kQueueCount, qid);
         const bool is_pushpop = req.op == QueueOp::PUSHPOP;
         if (heap_size != 0) {
-          heap_array_req_q.write({GET, 0});
-          ap_wait();
-          const Task front(heap_array_resp_q.read());
+          const Task front = heap_array_cache[0];
           heap_index_req_q.write({CLEAR, front.vid});
 
           if (!is_pushpop) {
@@ -317,10 +321,12 @@ spin:
 
           if (heap_size != 0) {
             // Find proper index `i` for `task_i`.
-            const Task task_i =
-                Task(is_pushpop ? req.task
-                                : (heap_array_req_q.write({GET, heap_size}),
-                                   ap_wait(), heap_array_resp_q.read()));
+            const Task task_i = Task(
+                is_pushpop ? req.task
+                           : (heap_size < kHeapOnChipSize
+                                  ? heap_array_cache[heap_size]
+                                  : (heap_array_req_q.write({GET, heap_size}),
+                                     ap_wait(), heap_array_resp_q.read())));
             Vid i = 0;
 
           heapify_down_on_chip:
@@ -333,9 +339,7 @@ spin:
 #pragma HLS unroll
                 const Vid child = i * kHeapOnChipWidth + j;
                 if (child < heap_size) {
-                  heap_array_req_q.write({GET, child});
-                  ap_wait();
-                  const auto task_child = heap_array_resp_q.read();
+                  const auto task_child = heap_array_cache[child];
                   if (!(task_child <= task_max)) {
                     max = child;
                     task_max = task_child;
@@ -344,7 +348,7 @@ spin:
               }
               if (max == -1) break;
 
-              heap_array_req_q.write({SET, i, task_max});
+              heap_array_cache[i] = task_max;
               heap_index_req_q.write({SET, task_max.vid, i});
               i = max;
             }
@@ -374,12 +378,20 @@ spin:
               heapify_down_cmp(task_max, max);
               if (max == -1) break;
 
-              heap_array_req_q.write({SET, i, task_max});
+              if (i < kHeapOnChipSize) {
+                heap_array_cache[i] = task_max;
+              } else {
+                heap_array_req_q.write({SET, i, task_max});
+              }
               heap_index_req_q.write({SET, task_max.vid, i});
               i = max;
             }
 
-            heap_array_req_q.write({SET, i, task_i});
+            if (i < kHeapOnChipSize) {
+              heap_array_cache[i] = task_i;
+            } else {
+              heap_array_req_q.write({SET, i, task_i});
+            }
             heap_index_req_q.write({SET, task_i.vid, i});
           }
         } else if (is_pushpop) {
