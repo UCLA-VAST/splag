@@ -926,7 +926,35 @@ spin:
   }
 }
 
-using uint_pe_t = ap_uint<bit_length(kPeCount)>;
+using uint_pe_t = ap_uint<bit_length(kPeCount - 1)>;
+
+using TaskReq = packet<uint_pe_t, TaskOnChip>;
+
+void TaskReqArbiter(istream<TaskReq>& req_in_q,
+                    tapa::ostreams<TaskOnChip, kPeCount>& req_out_q) {
+  DECL_BUF(TaskReq, req);
+spin:
+  for (;;) {
+#pragma HLS pipeline II = 1
+    UPDATE(req, req_in_q.try_read(req),
+           req_out_q[req.addr].try_write(req.payload));
+  }
+}
+
+using TaskResp = packet<uint_pe_t, Vid>;
+
+void TaskRespArbiter(tapa::istreams<Vid, kPeCount>& resp_in_q,
+                     ostream<TaskResp>& resp_out_q) {
+  DECL_BUF(Vid, vid);
+spin:
+  for (uint_pe_t pe = 0;; ++pe) {
+#pragma HLS pipeline II = 1
+    static_assert(is_power_of(kPeCount, 2),
+                  "pe needs rounding if kPeCount is not a power of 2");
+    UPDATE(vid, resp_in_q[pe].try_read(vid), resp_out_q.try_write({pe, vid}));
+  }
+}
+
 using uint_pe_per_shart_t = ap_uint<bit_length(kPeCount / kShardCount)>;
 
 void Dispatcher(
@@ -935,8 +963,7 @@ void Dispatcher(
     // Metadata.
     tapa::mmap<int64_t> metadata,
     // Task and queue requests.
-    tapa::ostreams<TaskOnChip, kPeCount>& task_req_q,
-    tapa::istreams<Vid, kPeCount>& task_resp_q,
+    ostream<TaskReq>& task_req_q, istream<TaskResp>& task_resp_q,
     istream<uint_noop_t>& update_noop_q, ostream<uint_sid_t>& queue_req_q,
     tapa::istream<QueueOpResp>& queue_resp_q) {
   // Process finished tasks.
@@ -960,7 +987,7 @@ void Dispatcher(
   ap_uint<kQueueCount> queue_empty = -1;
   ap_uint<kPeCount> pe_active = 0;
 
-  task_req_q[root.vid % kShardCount].write(root);
+  task_req_q.write({root.vid % kShardCount, root});
   ++task_count_per_shard[root.vid % kShardCount];
   pe_active.set(root.vid % kShardCount);
 
@@ -1054,7 +1081,7 @@ spin:
       const auto sid = queue_buf.task.vid() % kShardCount;
       const auto pe = (pe_base_per_shard[sid] * kShardCount + sid) % kPeCount;
       if (queue_buf_valid) {
-        if (!pe_active.bit(pe) && task_req_q[pe].try_write(queue_buf.task)) {
+        if (!pe_active.bit(pe) && task_req_q.try_write({pe, queue_buf.task})) {
           active_task_count += queue_buf.task.vertex().degree;
           --pending_task_count;
           queue_buf_valid = false;
@@ -1078,13 +1105,10 @@ spin:
       }
     }
 
-    {
-      Vid vid;
-      const auto pe = cycle_count % kPeCount;
-      if (task_resp_q[pe].try_read(vid)) {
-        --task_count_per_shard[vid % kShardCount];
-        pe_active.clear(pe);
-      }
+    if (!task_resp_q.empty()) {
+      const auto resp = task_resp_q.read(nullptr);
+      --task_count_per_shard[resp.payload % kShardCount];
+      pe_active.clear(resp.addr);
     }
   }
 
@@ -1137,9 +1161,12 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   streams<HeapArrayReq, kQueueCount, 64> heap_array_req_q;
   streams<TaskOnChip, kQueueCount, 2> heap_array_resp_q;
 
-  streams<TaskOnChip, kPeCount, 2> task_req_q("task_req");
-  streams<TaskOnChip, kPeCount, 2> task_req_qi("task_req_i");
-  streams<Vid, kPeCount, 64> task_resp_q("task_resp");
+  streams<TaskOnChip, kPeCount, 2> task_req_qi0("task_req_i0");
+  streams<TaskOnChip, kPeCount, 2> task_req_qi1("task_req_i1");
+  streams<Vid, kPeCount, 2> task_resp_qi("task_resp_i");
+
+  stream<TaskReq, 2> task_req_q("task_req");
+  stream<TaskResp, 64> task_resp_q("task_resp");
 
   // For edges.
   tapa::streams<Vid, kPeCount, 2> edge_read_addr_q("edge_read_addr");
@@ -1169,6 +1196,8 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   tapa::task()
       .invoke<0>(Dispatcher, root, metadata, task_req_q, task_resp_q,
                  update_noop_q, pop_req_q, queue_resp_q)
+      .invoke<detach>(TaskReqArbiter, task_req_q, task_req_qi0)
+      .invoke<detach>(TaskRespArbiter, task_resp_qi, task_resp_q)
 #if 0
       .invoke<detach, kQueueCount>(CascadedQueue, seq(), push_req_qi,
                                    pop_req_qi, queue_resp_qi, spq_req_q,
@@ -1226,8 +1255,8 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
                       update_noop_q)
 
       // PEs.
-      .invoke<detach, kPeCount>(ProcElemS0, task_req_q, task_req_qi,
-                                task_resp_q, edge_read_addr_q)
-      .invoke<detach, kPeCount>(ProcElemS1, task_req_qi, edge_read_data_q,
+      .invoke<detach, kPeCount>(ProcElemS0, task_req_qi0, task_req_qi1,
+                                task_resp_qi, edge_read_addr_q)
+      .invoke<detach, kPeCount>(ProcElemS1, task_req_qi1, edge_read_data_q,
                                 update_req_q);
 }
