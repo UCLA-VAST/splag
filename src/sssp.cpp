@@ -954,17 +954,15 @@ void Dispatcher(
 
   // Number of POP requests sent but not acknowledged.
   DECL_ARRAY(uint_pe_per_shart_t, pop_count, kShardCount, 0);
-
-  DECL_ARRAY(bool, queue_empty, kQueueCount, true);
-
   DECL_ARRAY(uint_pe_per_shart_t, task_count_per_shard, kShardCount, 0);
-  DECL_ARRAY(ap_uint<1>, task_count_per_pe, kPeCount, 0);
-
   DECL_ARRAY(uint_pe_per_shart_t, pe_base_per_shard, kShardCount, 0);
+
+  ap_uint<kQueueCount> queue_empty = -1;
+  ap_uint<kPeCount> pe_active = 0;
 
   task_req_q[root.vid % kShardCount].write(root);
   ++task_count_per_shard[root.vid % kShardCount];
-  ++task_count_per_pe[root.vid % kShardCount];
+  pe_active.set(root.vid % kShardCount);
 
   // Statistics.
   int32_t visited_vertex_count = 1;
@@ -988,19 +986,19 @@ void Dispatcher(
   auto shard_is_done = [&](int sid) {
     bool result = true;
     RANGE(i, kQueueCount / kShardCount,
-          result &= queue_empty[i * kShardCount + sid]);
+          result &= queue_empty.bit(i * kShardCount + sid));
     return result;
   };
 
 spin:
-  for (; active_task_count || !all_of(queue_empty) ||
+  for (; active_task_count || queue_empty.nand_reduce() ||
          any_of(task_count_per_shard);
        ++cycle_count) {
 #pragma HLS pipeline II = 1
-    RANGE(pe, kPeCount, task_count_per_pe[pe] && ++pe_active_count[pe]);
+    RANGE(pe, kPeCount, pe_active.bit(pe) && ++pe_active_count[pe]);
     // Process response messages from the queue.
     if (SET(queue_buf_valid, queue_resp_q.try_read(queue_buf))) {
-      queue_empty[queue_buf.task.vid() % kQueueCount] = false;
+      queue_empty.clear(queue_buf.task.vid() % kQueueCount);
       switch (queue_buf.queue_op) {
         case QueueOp::PUSH:
           // PUSH requests do not need further processing.
@@ -1028,7 +1026,7 @@ spin:
           } else {
             // The queue is empty.
             queue_buf_valid = false;
-            queue_empty[queue_buf.task.vid() % kQueueCount] = true;
+            queue_empty.set(queue_buf.task.vid() % kQueueCount);
             STATS(recv, "QUEUE: NOOP");
           }
           break;
@@ -1056,13 +1054,12 @@ spin:
       const auto sid = queue_buf.task.vid() % kShardCount;
       const auto pe = (pe_base_per_shard[sid] * kShardCount + sid) % kPeCount;
       if (queue_buf_valid) {
-        if (task_count_per_pe[pe] == 0 &&
-            task_req_q[pe].try_write(queue_buf.task)) {
+        if (!pe_active.bit(pe) && task_req_q[pe].try_write(queue_buf.task)) {
           active_task_count += queue_buf.task.vertex().degree;
           --pending_task_count;
           queue_buf_valid = false;
           ++task_count_per_shard[sid];
-          ++task_count_per_pe[pe];
+          pe_active.set(pe);
 
           // Statistics.
           ++visited_vertex_count;
@@ -1086,7 +1083,7 @@ spin:
       const auto pe = cycle_count % kPeCount;
       if (task_resp_q[pe].try_read(vid)) {
         --task_count_per_shard[vid % kShardCount];
-        --task_count_per_pe[pe];
+        pe_active.clear(pe);
       }
     }
   }
@@ -1096,7 +1093,7 @@ spin:
     CHECK_EQ(pop_count[sid], 0);
     CHECK_EQ(task_count_per_shard[sid], 0);
   });
-  RANGE(pe, kPeCount, CHECK_EQ(task_count_per_pe[pe], 0));
+  RANGE(pe, kPeCount, CHECK(!pe_active.bit(pe)));
   CHECK_EQ(active_task_count, 0);
 #endif  // __SYNTHESIS__
 
