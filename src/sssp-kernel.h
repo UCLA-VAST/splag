@@ -77,6 +77,13 @@ class TaskOnChip {
   static constexpr int degree_msb = degree_lsb + kVidWidth - 1;
 };
 
+struct SourceVertex {
+  Vid parent;
+  float distance;
+};
+
+using EdgeReq = tapa::packet<Eid, SourceVertex>;
+
 // Used in:
 //
 // ProcElemS1 -> (net)
