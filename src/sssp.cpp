@@ -1120,7 +1120,7 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
           tapa::async_mmaps<Vertex, kIntervalCount> vertices,
           // For queues.
           tapa::mmap<Task> heap_array, tapa::mmap<Vid> heap_index) {
-  streams<TaskOnChip, kIntervalCount, 8> push_req_q;
+  streams<TaskOnChip, kIntervalCount, 2> push_req_q;
   streams<TaskOnChip, kQueueCount, 512> push_req_qi;
   stream<uint_qid_t, 2> pop_req_q("pop_req");
   streams<bool, kQueueCount, 2> pop_req_qi("pop_req_i");
@@ -1145,17 +1145,17 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   streams<Vid, kPeCount, 2> task_resp_qi("task_resp_i");
 
   stream<TaskReq, 2> task_req_q("task_req");
-  stream<TaskResp, 64> task_resp_q("task_resp");
+  stream<TaskResp, kPeCount> task_resp_q("task_resp");
 
   // For edges.
   streams<Vid, kShardCount, 2> edge_read_addr_q("edge_read_addr");
   streams<Edge, kShardCount, 2> edge_read_data_q("edge_read_data");
-  streams<EdgeReq, kPeCount, 512> edge_req_q("edge_req");
-  streams<SourceVertex, kShardCount, 512> src_q("source_vertices");
+  streams<EdgeReq, kPeCount, kPeCount / kShardCount * 8> edge_req_q("edge_req");
+  streams<SourceVertex, kShardCount, 64> src_q("source_vertices");
 
   // For vertices.
   //   Connect PEs to the update request network.
-  streams<TaskOnChip, kShardCount, 512> update_req_q;
+  streams<TaskOnChip, kShardCount, 2> update_req_q;
   //   Compose the update request network.
   streams<TaskOnChip, kIntervalCount, 8> update_req_qi1;
   streams<TaskOnChip, kIntervalCount, 8> update_req_0_qi0;
