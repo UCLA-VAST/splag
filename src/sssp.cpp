@@ -354,8 +354,8 @@ spin:
       case QueueOp::POP: {
         CHECK_EQ(resp.task.vid() % kQueueCount, qid);
         const bool is_pushpop = req.op == QueueOp::PUSHPOP;
-        if (heap_size != 0) {
-          const auto front = heap_array_cache[0];
+        const auto front = heap_array_cache[0];
+        if (heap_size != 0 && !(is_pushpop && front <= req.task)) {
           heap_index_req_q.write({CLEAR, front.vid()});
 
           if (!is_pushpop) {
