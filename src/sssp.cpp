@@ -43,14 +43,16 @@ void HeapIndexMem(istream<HeapIndexReq>& req_q, ostream<Vid>& resp_q,
   DECL_BUF(Vid, write_addr);
   DECL_BUF(Vid, write_data);
 
+  DECL_ARRAY(ap_uint<5>, lock, kQueueCount, 0);
+
 spin:
-  for (uint8_t lock = 0;; lock = lock > 0 ? lock - 1 : 0) {
+  for (;;) {
 #pragma HLS pipeline II = 1
     if (!req_q.empty()) {
       const auto req = req_q.peek(nullptr);
       switch (req.op) {
         case GET: {
-          if (!read_addr_valid && lock == 0) {
+          if (!read_addr_valid && lock[req.vid % kQueueCount] == 0) {
             read_addr = req.vid;
             read_addr_valid = true;
             req_q.read(nullptr);
@@ -62,7 +64,7 @@ spin:
             write_data = req.index;
             write_addr_valid = write_data_valid = true;
             req_q.read(nullptr);
-            lock = 30;
+            lock[req.vid % kQueueCount] = 30;
           }
         } break;
         default: {
@@ -75,6 +77,7 @@ spin:
     UNUSED RESET(write_data_valid, mem.write_data_try_write(write_data));
     UNUSED UPDATE(read_data, mem.read_data_try_read(read_data),
                   resp_q.try_write(read_data));
+    RANGE(qid, kQueueCount, lock[qid] > 0 && --lock[qid]);
   }
 }
 
