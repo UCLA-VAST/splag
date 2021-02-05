@@ -689,25 +689,20 @@ void EdgeReqArbiter(tapa::istreams<EdgeReq, kPeCount>& req_q,
                     tapa::ostreams<SourceVertex, kShardCount>& src_q,
                     tapa::ostreams<Vid, kShardCount>& addr_q) {
   DECL_ARRAY(EdgeReq, req, kShardCount, EdgeReq());
-  DECL_ARRAY(bool, req_valid, kShardCount, false);
-  DECL_ARRAY(SourceVertex, src, kShardCount, SourceVertex());
   DECL_ARRAY(bool, src_valid, kShardCount, false);
+  DECL_ARRAY(bool, addr_valid, kShardCount, false);
 
 spin:
   for (ap_uint<bit_length(kPeCount / kShardCount) + 2> pe_sid = 0;; ++pe_sid) {
 #pragma HLS pipeline II = 1
     RANGE(sid, kShardCount, {
       const auto pe = pe_sid / 8 * kShardCount + sid;
-      if (!src_valid[sid] &&
-          SET(req_valid[sid], req_q[pe].try_read(req[sid]))) {
-        src[sid] = req[sid].payload;
-        src_valid[sid] = true;
+      if (!src_valid[sid] && !addr_valid[sid] && req_q[pe].try_read(req[sid])) {
+        src_valid[sid] = addr_valid[sid] = true;
       }
-    });
 
-    RANGE(sid, kShardCount, {
-      UNUSED RESET(src_valid[sid], src_q[sid].try_write(src[sid]));
-      UNUSED RESET(req_valid[sid], addr_q[sid].try_write(req[sid].addr));
+      UNUSED RESET(addr_valid[sid], addr_q[sid].try_write(req[sid].addr));
+      UNUSED RESET(src_valid[sid], src_q[sid].try_write(req[sid].payload));
     });
   }
 }
