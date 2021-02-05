@@ -966,9 +966,11 @@ void Dispatcher(
   pe_active.set(root.vid % kShardCount);
 
   // Statistics.
-  int32_t visited_vertex_count = 1;
   int32_t visited_edge_count = 0;
-  int32_t queue_count = 0;
+  int32_t push_count = 0;
+  int32_t pushpop_count = 0;
+  int32_t pop_valid_count = 0;
+  int32_t pop_noop_count = 0;
   int64_t cycle_count = 0;
   int64_t queue_full_cycle_count = 0;
   int64_t pe_fullcycle_count = 0;
@@ -1008,8 +1010,8 @@ spin:
           --active_task_count;
           ++pending_task_count;
 
-          // TaskOp statistics.
-          ++queue_count;
+          // Statistics.
+          ++push_count;
           break;
         case QueueOp::PUSHPOP:
           CHECK_EQ(queue_buf.task_op, TaskOp::NEW);
@@ -1017,19 +1019,25 @@ spin:
           --active_task_count;
           ++pending_task_count;
 
-          // TaskOp statistics.
-          ++queue_count;
+          // Statistics.
+          ++pushpop_count;
           break;
         case QueueOp::POP:
           queue_active.clear(qid);
           if (queue_buf.task_op == TaskOp::NEW) {
             // POP request returned a new task.
             STATS(recv, "QUEUE: NEW ");
+
+            // Statistics.
+            ++pop_valid_count;
           } else {
             // The queue is empty.
             queue_buf_valid = false;
             queue_empty.set(qid);
             STATS(recv, "QUEUE: NOOP");
+
+            // Statistics.
+            ++pop_noop_count;
           }
           break;
       }
@@ -1061,9 +1069,6 @@ spin:
           queue_buf_valid = false;
           ++task_count_per_queue[queue_buf.task.vid() % kQueueCount];
           pe_active.set(pe);
-
-          // Statistics.
-          ++visited_vertex_count;
         } else {
           ++pe_fullcycle_count;
         }
@@ -1095,8 +1100,10 @@ spin:
 #endif  // __SYNTHESIS__
 
   metadata[0] = visited_edge_count;
-  metadata[2] = queue_count;
-  metadata[4] = visited_vertex_count;
+  metadata[1] = push_count;
+  metadata[2] = pushpop_count;
+  metadata[3] = pop_valid_count;
+  metadata[4] = pop_noop_count;
   metadata[6] = cycle_count;
   metadata[7] = queue_full_cycle_count;
   metadata[8] = pe_fullcycle_count;

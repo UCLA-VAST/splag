@@ -467,11 +467,10 @@ int main(int argc, char* argv[]) {
     }
     teps.push_back(connected_edge_count / (elapsed_time + refine_time));
     auto visited_edge_count = metadata[0];
-    auto total_queue_size = metadata[1];
-    auto queue_count = metadata[2];
-    auto max_queue_size = metadata[3];
-    auto visited_vertex_count = metadata[4];
-    auto total_task_count = metadata[5];
+    auto push_count = metadata[1];
+    auto pushpop_count = metadata[2];
+    auto pop_valid_count = metadata[3];
+    auto pop_noop_count = metadata[4];
     auto cycle_count = metadata[6];
     int64_t coarsened_edge_count = 0;
     for (auto& shard : edges) coarsened_edge_count += shard.size();
@@ -483,21 +482,10 @@ int main(int argc, char* argv[]) {
             << std::fixed << std::setprecision(1) << std::showpos
             << 100. * visited_edge_count / coarsened_edge_count - 100
             << "% over " << std::noshowpos << coarsened_edge_count << ") ";
-    VLOG(3) << "  #vertices visited:     " << visited_vertex_count << " ("
-            << std::fixed << std::setprecision(1) << std::showpos
-            << 100. * visited_vertex_count / vertex_count - 100 << "% over "
-            << std::noshowpos << vertex_count << ")";
-    VLOG(3) << "  average size of queue: " << std::fixed << std::setprecision(1)
-            << 1. * total_queue_size / queue_count << " ("
-            << 100. * total_queue_size / queue_count / vertex_count << "% of "
-            << vertex_count << ")";
-    VLOG(3) << "  max size of queue:     " << max_queue_size << " ("
-            << std::fixed << std::setprecision(1)
-            << 100. * max_queue_size / vertex_count << "% of " << vertex_count
-            << ")";
-    VLOG(3) << "  queue operations:      " << queue_count;
-    VLOG(3) << "  average task count:    " << std::fixed << std::setprecision(1)
-            << 1. * total_task_count / cycle_count;
+    VLOG(3) << "  #PUSH:                 " << push_count;
+    VLOG(3) << "  #PUSHPOP:              " << pushpop_count;
+    VLOG(3) << "  #POP (valid):          " << pop_valid_count;
+    VLOG(3) << "  #POP (noop):           " << pop_noop_count;
     VLOG(3) << "  cycle count:           " << cycle_count;
     VLOG(3) << "    queue full:          " << metadata[7] << " (" << std::fixed
             << std::setprecision(1) << 100. * metadata[7] / cycle_count << "%)";
