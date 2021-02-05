@@ -859,25 +859,15 @@ spin:
   }
 }
 
-using uint_sid_t = ap_uint<bit_length(kShardCount - 1)>;
+using uint_qid_t = ap_uint<bit_length(kQueueCount - 1)>;
 
-void PopReqArbiter(istream<uint_sid_t>& req_in_q,
+void PopReqArbiter(istream<uint_qid_t>& req_in_q,
                    tapa::ostreams<bool, kQueueCount>& req_out_q) {
-  static_assert(is_power_of(kQueueCount, 2), "invalid queue count");
-  DECL_BUF(uint_sid_t, sid);
-  DECL_ARRAY(ap_uint<bit_length(kQueueCount / kShardCount)>, sid_base,
-             kShardCount, 0);
+  DECL_BUF(uint_qid_t, qid);
 spin:
   for (;;) {
 #pragma HLS pipeline II = 1
-    UNUSED SET(sid_valid, req_in_q.try_read(sid));
-    if (sid_valid) {
-      const auto qid = (sid_base[sid] * kShardCount + sid) % kQueueCount;
-      if (req_out_q[qid].try_write(false)) {
-        sid_valid = false;
-        ++sid_base[sid];
-      }
-    }
+    UPDATE(qid, req_in_q.try_read(qid), req_out_q[qid].try_write(false));
   }
 }
 
@@ -921,8 +911,6 @@ spin:
   }
 }
 
-using uint_pe_per_shart_t = ap_uint<bit_length(kPeCount / kShardCount)>;
-
 void Dispatcher(
     // Scalar.
     const Task root,
@@ -930,11 +918,9 @@ void Dispatcher(
     tapa::mmap<int64_t> metadata,
     // Task and queue requests.
     ostream<TaskReq>& task_req_q, istream<TaskResp>& task_resp_q,
-    istream<uint_noop_t>& update_noop_q, ostream<uint_sid_t>& queue_req_q,
+    istream<uint_noop_t>& update_noop_q, ostream<uint_qid_t>& queue_req_q,
     tapa::istream<QueueOpResp>& queue_resp_q) {
   // Process finished tasks.
-  bool task_buf_valid = false;
-  TaskOp task_buf;
   bool queue_buf_valid = false;
   QueueOpResp queue_buf;
 
@@ -946,15 +932,17 @@ void Dispatcher(
   int32_t pending_task_count = 0;
 
   // Number of POP requests sent but not acknowledged.
-  DECL_ARRAY(uint_pe_per_shart_t, pop_count, kShardCount, 0);
-  DECL_ARRAY(uint_pe_per_shart_t, task_count_per_shard, kShardCount, 0);
-  DECL_ARRAY(uint_pe_per_shart_t, pe_base_per_shard, kShardCount, 0);
+  DECL_ARRAY(ap_uint<bit_length(kPeCount / kQueueCount)>, task_count_per_queue,
+             kQueueCount, 0);
+  DECL_ARRAY(ap_uint<bit_length(kPeCount / kShardCount - 1)>, pe_base_per_shard,
+             kShardCount, 0);
 
   ap_uint<kQueueCount> queue_empty = -1;
+  ap_uint<kQueueCount> queue_active = 0;
   ap_uint<kPeCount> pe_active = 0;
 
   task_req_q.write({root.vid % kShardCount, root});
-  ++task_count_per_shard[root.vid % kShardCount];
+  ++task_count_per_queue[root.vid % kQueueCount];
   pe_active.set(root.vid % kShardCount);
 
   // Statistics.
@@ -985,13 +973,14 @@ void Dispatcher(
 
 spin:
   for (; active_task_count || queue_empty.nand_reduce() ||
-         any_of(task_count_per_shard);
+         any_of(task_count_per_queue);
        ++cycle_count) {
 #pragma HLS pipeline II = 1
     RANGE(pe, kPeCount, pe_active.bit(pe) && ++pe_active_count[pe]);
     // Process response messages from the queue.
     if (SET(queue_buf_valid, queue_resp_q.try_read(queue_buf))) {
-      queue_empty.clear(queue_buf.task.vid() % kQueueCount);
+      const auto qid = queue_buf.task.vid() % kQueueCount;
+      queue_empty.clear(qid);
       switch (queue_buf.queue_op) {
         case QueueOp::PUSH:
           // PUSH requests do not need further processing.
@@ -1004,7 +993,7 @@ spin:
           break;
         case QueueOp::PUSHPOP:
           CHECK_EQ(queue_buf.task_op, TaskOp::NEW);
-          --pop_count[queue_buf.task.vid() % kShardCount];
+          queue_active.clear(qid);
           --active_task_count;
           ++pending_task_count;
 
@@ -1012,46 +1001,45 @@ spin:
           ++queue_count;
           break;
         case QueueOp::POP:
-          --pop_count[queue_buf.task.vid() % kShardCount];
+          queue_active.clear(qid);
           if (queue_buf.task_op == TaskOp::NEW) {
             // POP request returned a new task.
             STATS(recv, "QUEUE: NEW ");
           } else {
             // The queue is empty.
             queue_buf_valid = false;
-            queue_empty.set(queue_buf.task.vid() % kQueueCount);
+            queue_empty.set(qid);
             STATS(recv, "QUEUE: NOOP");
           }
           break;
       }
     }
 
-    const Vid sid =
-        (task_buf_valid ? task_buf.task.vid() : cycle_count) % kShardCount;
-    const bool should_pop =
-        task_count_per_shard[sid] + pop_count[sid] + queue_buf_valid <
-            kPeCount / kShardCount &&
-        !shard_is_done(sid);
-    if (should_pop) {
-      // Dequeue tasks from the queue.
-      if (queue_req_q.try_write(sid)) {
-        ++pop_count[sid];
-        STATS(send, "QUEUE: POP ");
-      } else {
-        ++queue_full_cycle_count;
+    {
+      const auto qid = cycle_count % kQueueCount;
+      if (task_count_per_queue[qid] < kPeCount / kQueueCount &&
+          !(queue_buf_valid && queue_buf.task.vid() % kQueueCount == qid) &&
+          !queue_active.bit(qid) && !queue_empty.bit(qid)) {
+        // Dequeue tasks from the queue.
+        if (queue_req_q.try_write(qid)) {
+          queue_active.set(qid);
+          STATS(send, "QUEUE: POP ");
+        } else {
+          ++queue_full_cycle_count;
+        }
       }
     }
 
     // Assign tasks to PEs.
     {
       const auto sid = queue_buf.task.vid() % kShardCount;
-      const auto pe = (pe_base_per_shard[sid] * kShardCount + sid) % kPeCount;
+      const auto pe = pe_base_per_shard[sid] * kShardCount + sid;
       if (queue_buf_valid) {
         if (!pe_active.bit(pe) && task_req_q.try_write({pe, queue_buf.task})) {
           active_task_count += queue_buf.task.vertex().degree;
           --pending_task_count;
           queue_buf_valid = false;
-          ++task_count_per_shard[sid];
+          ++task_count_per_queue[queue_buf.task.vid() % kQueueCount];
           pe_active.set(pe);
 
           // Statistics.
@@ -1073,17 +1061,16 @@ spin:
 
     if (!task_resp_q.empty()) {
       const auto resp = task_resp_q.read(nullptr);
-      --task_count_per_shard[resp.payload % kShardCount];
+      --task_count_per_queue[resp.payload % kQueueCount];
       pe_active.clear(resp.addr);
     }
   }
 
 #ifndef __SYNTHESIS__
-  RANGE(sid, kShardCount, {
-    CHECK_EQ(pop_count[sid], 0);
-    CHECK_EQ(task_count_per_shard[sid], 0);
-  });
-  RANGE(pe, kPeCount, CHECK(!pe_active.bit(pe)));
+  RANGE(qid, kQueueCount, CHECK_EQ(task_count_per_queue[qid], 0));
+  CHECK_EQ(queue_empty, decltype(queue_empty)(-1));
+  CHECK_EQ(queue_active, 0);
+  CHECK_EQ(pe_active, 0);
   CHECK_EQ(active_task_count, 0);
 #endif  // __SYNTHESIS__
 
@@ -1108,7 +1095,7 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
           tapa::mmap<Task> heap_array, tapa::mmap<Vid> heap_index) {
   streams<TaskOnChip, kIntervalCount, 8> push_req_q;
   streams<TaskOnChip, kQueueCount, 512> push_req_qi;
-  stream<uint_sid_t, 2> pop_req_q("pop_req");
+  stream<uint_qid_t, 2> pop_req_q("pop_req");
   streams<bool, kQueueCount, 2> pop_req_qi("pop_req_i");
   tapa::stream<QueueOpResp, 2> queue_resp_q("queue_resp");
   tapa::streams<QueueOpResp, kQueueCount, 2> queue_resp_qi("queue_resp_i");
