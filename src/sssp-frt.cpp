@@ -18,7 +18,7 @@
 void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
           tapa::async_mmaps<Edge, kShardCount> edges,
           tapa::async_mmaps<Vertex, kIntervalCount> vertices,
-          tapa::mmap<Task> heap_array, tapa::mmap<Vid> heap_index) {
+          tapa::mmap<Task> heap_array, tapa::mmap<HeapIndexEntry> heap_index) {
   auto kernel_time_ns_raw =
       mmap(nullptr, sizeof(int64_t), PROT_READ | PROT_WRITE,
            MAP_SHARED | MAP_ANONYMOUS, /*fd=*/-1, /*offset=*/0);
@@ -56,8 +56,7 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
     }
     auto heap_array_arg =
         fpga::Placeholder(heap_array.get(), heap_array.size());
-    auto heap_index_arg =
-        fpga::Placeholder(heap_index.get(), heap_index.size());
+    auto heap_index_arg = fpga::WriteOnly(heap_index.get(), heap_index.size());
 
     int arg_idx = 0;
     instance.SetArg(arg_idx++, vertex_count);

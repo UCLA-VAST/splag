@@ -6,6 +6,8 @@
 
 #include <tapa.h>
 
+#include <ap_int.h>
+
 // Kernel-friendly bit_cast.
 template <typename To, typename From>
 inline To bit_cast(const From& from) {
@@ -98,6 +100,64 @@ struct Task {
 
 inline std::ostream& operator<<(std::ostream& os, const Task& obj) {
   return os << "{vid: " << obj.vid << ", vertex: " << obj.vertex << "}";
+}
+
+constexpr int kQueueCount = 4;
+
+class HeapIndexEntry {
+ public:
+  int qid() const { return data(kQidMsb, kQidLsb); }
+  void set_qid(int qid) { data(kQidMsb, kQidLsb) = qid; }
+
+  bool valid() const { return data.bit(kValidBit); }
+  void invalidate() { return data.clear(kValidBit); }
+
+  int index(int i) const {
+    CHECK(valid());
+    CHECK_GE(i, 0);
+    CHECK_LT(i, kIndexCount);
+    const auto lsb = kIndexLsb + kIndexWidth * i;
+    const auto msb = lsb + kIndexWidth - 1;
+    CHECK_GE(lsb, kIndexLsb);
+    CHECK_LT(msb, kValidBit);
+    return data(msb, lsb);
+  }
+  void set_index(int i, int index) {
+    CHECK_GE(i, 0);
+    CHECK_LT(i, kIndexCount);
+    const auto lsb = kIndexLsb + kIndexWidth * i;
+    const auto msb = lsb + kIndexWidth - 1;
+    CHECK_GE(lsb, kIndexLsb);
+    CHECK_LT(msb, kValidBit);
+    data.set(kValidBit);
+    data(msb, lsb) = index;
+  }
+
+  static constexpr int kWidth = 32;
+  static constexpr int kIndexCount = 1;
+
+ private:
+  ap_uint<kWidth> data;
+  static constexpr int kQidWidth = log(kQueueCount, 2);
+  static constexpr int kIndexWidth = 29;
+
+  static constexpr int kQidLsb = 0;
+  static constexpr int kQidMsb = kQidLsb + kQidWidth - 1;
+  static constexpr int kIndexLsb = kQidMsb + 1;
+  static constexpr int kValidBit = kIndexLsb + kIndexWidth * kIndexCount;
+
+  static_assert(is_power_of(kWidth, 2), "AXI requires power-of-2 width");
+  static_assert(kValidBit < kWidth, "invalid configuration");
+};
+
+inline std::ostream& operator<<(std::ostream& os, const HeapIndexEntry& obj) {
+  os << "{qid: " << obj.qid();
+  if (obj.valid()) {
+    for (int i = 0; i < obj.kIndexCount; ++i) {
+      os << ", index[" << i << "]: " << obj.index(i);
+    }
+  }
+  return os << "}";
 }
 
 // Platform-specific constants and types.

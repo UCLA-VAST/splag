@@ -10,38 +10,61 @@
 
 using tapa::detach;
 using tapa::istream;
+using tapa::istreams;
 using tapa::mmap;
 using tapa::ostream;
+using tapa::ostreams;
 using tapa::packet;
 using tapa::seq;
 using tapa::stream;
 using tapa::streams;
 using tapa::task;
 
-constexpr int kQueueCount = 4;
-
 static_assert(kQueueCount % kShardCount == 0,
               "current implementation requires that queue count is a multiple "
               "of shard count");
+
+constexpr int kQueueMemCount = 2;
 
 // Verbosity definitions:
 //   v=5: O(1)
 //   v=8: O(#vertex)
 //   v=9: O(#edge)
 
-void HeapIndexMem(istream<HeapIndexReq>& req_q, ostream<Vid>& resp_q,
-                  tapa::async_mmap<Vid> mem) {
+void HeapIndexReqArbiter(istreams<HeapIndexReq, kQueueCount>& req_in_q,
+                         ostreams<HeapIndexReq, kQueueMemCount>& req_out_q) {
+  static_assert(kQueueCount % kQueueMemCount == 0,
+                "this implementation requires that queue count is a multiple "
+                "of queue memory count per channel");
+  DECL_ARRAY(HeapIndexReq, req, kQueueMemCount, HeapIndexReq());
+  DECL_ARRAY(bool, req_valid, kQueueMemCount, false);
+
+spin:
+  for (ap_uint<bit_length(kQueueCount / kQueueMemCount - 1)> base = 0;;
+       ++base) {
+#pragma HLS pipeline II = 1
+    RANGE(mid, kQueueMemCount, {
+      const auto qid = base * kQueueMemCount + mid;
+      UNUSED SET(req_valid[mid], req_in_q[qid].try_read(req[mid]));
+      UNUSED RESET(req_valid[mid], req_out_q[mid].try_write(req[mid]));
+    });
+  }
+}
+
+void HeapIndexMem(istream<HeapIndexReq>& req_q, ostream<HeapIndexEntry>& resp_q,
+                  tapa::async_mmap<HeapIndexEntry> mem) {
   CLEAN_UP(clean_up, [&]() {
     // Check that heap_index is restored to the initial state.
     for (int i = 0; i < mem.size(); ++i) {
-      CHECK_EQ(mem.get()[i], kNullVid) << "i = " << i;
+      CHECK(!mem.get()[i].valid()) << "i = " << i;
+      CHECK_EQ(mem.get()[i].qid(), i % kQueueCount) << "i = " << i;
     }
   });
 
   DECL_BUF(Vid, read_addr);
-  DECL_BUF(Vid, read_data);
+  DECL_BUF(HeapIndexEntry, read_data);
   DECL_BUF(Vid, write_addr);
-  DECL_BUF(Vid, write_data);
+  DECL_BUF(HeapIndexEntry, write_data);
 
   DECL_ARRAY(ap_uint<5>, lock, kQueueCount, 0);
 
@@ -61,7 +84,12 @@ spin:
         case SET: {
           if (!write_addr_valid && !write_data_valid) {
             write_addr = req.vid;
-            write_data = req.index;
+            write_data.set_qid(req.vid % kQueueCount);
+            if (req.index == kNullVid) {
+              write_data.invalidate();
+            } else {
+              write_data.set_index(0, req.index);
+            }
             write_addr_valid = write_data_valid = true;
             req_q.read(nullptr);
             lock[req.vid % kQueueCount] = 30;
@@ -81,8 +109,31 @@ spin:
   }
 }
 
+void HeapIndexRespArbiter(istreams<HeapIndexEntry, kQueueMemCount>& resp_in_q,
+                          ostreams<HeapIndexEntry, kQueueCount>& resp_out_q) {
+  static_assert(kQueueCount % kQueueMemCount == 0,
+                "this implementation requires that queue count is a multiple "
+                "of queue memory count per channel");
+
+spin:
+  for (;;) {
+#pragma HLS pipeline II = 1
+    RANGE(mid, kQueueMemCount, {
+      if (!resp_in_q[mid].empty()) {
+        const auto resp = resp_in_q[mid].peek(nullptr);
+        CHECK_EQ(resp.qid() % kQueueMemCount, mid);
+        const auto qid = resp.qid() / kQueueMemCount * kQueueMemCount + mid;
+        if (resp_out_q[qid].try_write(resp)) {
+          resp_in_q[mid].read(nullptr);
+        }
+      }
+    });
+  }
+}
+
 void HeapIndexCache(istream<HeapIndexReq>& req_in_q, ostream<Vid>& resp_out_q,
-                    ostream<HeapIndexReq>& req_out_q, istream<Vid>& resp_in_q) {
+                    ostream<HeapIndexReq>& req_out_q,
+                    istream<HeapIndexEntry>& resp_in_q) {
   constexpr int kIndexCacheSize = 4096 * 4;
   tapa::packet<Vid, Vid> heap_index_cache[kIndexCacheSize];
 #pragma HLS resource variable = heap_index_cache core = RAM_2P_URAM latency = 4
@@ -124,7 +175,9 @@ spin:
               ++write_miss;
               req_out_q.write({SET, old_entry.addr, old_entry.payload});
             }
-            write_enable = true, new_entry = {req.vid, resp_in_q.read()};
+            const auto resp = resp_in_q.read();
+            write_enable = true,
+            new_entry = {req.vid, resp.valid() ? resp.index(0) : kNullVid};
             ++read_miss;
           } else {
             ++read_hit;
@@ -169,6 +222,30 @@ spin:
   }
 }
 
+void HeapArrayReqArbiter(istreams<HeapArrayReq, kQueueCount>& in_q,
+                         ostreams<HeapArrayReq, kQueueMemCount>& out_q) {
+  static_assert(kQueueCount % kQueueMemCount == 0,
+                "this implementation requires that queue count is a multiple "
+                "of queue memory count per channel");
+
+spin:
+  for (ap_uint<bit_length(kQueueCount / kQueueMemCount - 1)> base = 0;;
+       ++base) {
+#pragma HLS pipeline II = 1
+    RANGE(mid, kQueueMemCount, {
+      const auto qid = base * kQueueMemCount + mid;
+      if (!in_q[qid].empty()) {
+        auto req = in_q[qid].peek(nullptr);
+        CHECK_GE(req.i, kHeapOnChipSize);
+        req.i = (req.i - kHeapOnChipSize) * kQueueCount + qid;
+        if (out_q[mid].try_write(req)) {
+          in_q[qid].read(nullptr);
+        }
+      }
+    });
+  }
+}
+
 void HeapArrayMem(Vid qid, istream<HeapArrayReq>& req_q,
                   ostream<TaskOnChip>& resp_q, tapa::async_mmap<Task> mem) {
   DECL_BUF(Vid, read_addr);
@@ -181,20 +258,18 @@ spin:
 #pragma HLS pipeline II = 1
     if (!req_q.empty()) {
       const auto req = req_q.peek(nullptr);
-      CHECK_GE(req.i, kHeapOnChipSize);
-      const auto i = (req.i - kHeapOnChipSize) * kQueueCount + qid;
       switch (req.op) {
         case GET:
         case SYNC: {
           if (!read_addr_valid && (req.op == GET || lock == 0)) {
-            read_addr = i;
+            read_addr = req.i;
             read_addr_valid = true;
             req_q.read(nullptr);
           }
         } break;
         case SET: {
           if (!write_addr_valid && !write_data_valid) {
-            write_addr = i;
+            write_addr = req.i;
             write_data = req.task;
             write_addr_valid = write_data_valid = true;
             req_q.read(nullptr);
@@ -211,6 +286,29 @@ spin:
     UNUSED RESET(write_data_valid, mem.write_data_try_write(write_data));
     UNUSED UPDATE(read_data, mem.read_data_try_read(read_data),
                   resp_q.try_write(read_data));
+  }
+}
+
+void HeapArrayRespArbiter(istreams<TaskOnChip, kQueueMemCount>& in_q,
+                          ostreams<TaskOnChip, kQueueCount>& out_q) {
+  static_assert(kQueueCount % kQueueMemCount == 0,
+                "this implementation requires that queue count is a multiple "
+                "of queue memory count per channel");
+
+spin:
+  for (;;) {
+#pragma HLS pipeline II = 1
+    RANGE(mid, kQueueMemCount, {
+      if (!in_q[mid].empty()) {
+        const auto resp = in_q[mid].peek(nullptr);
+        CHECK_EQ(resp.vid() % kQueueMemCount, mid);
+        const auto qid =
+            resp.vid() % kQueueCount / kQueueMemCount * kQueueMemCount + mid;
+        if (out_q[qid].try_write(resp)) {
+          in_q[mid].read(nullptr);
+        }
+      }
+    });
   }
 }
 
@@ -1119,7 +1217,7 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
           tapa::async_mmaps<Edge, kShardCount> edges,
           tapa::async_mmaps<Vertex, kIntervalCount> vertices,
           // For queues.
-          tapa::mmap<Task> heap_array, tapa::mmap<Vid> heap_index) {
+          tapa::mmap<Task> heap_array, tapa::mmap<HeapIndexEntry> heap_index) {
   streams<TaskOnChip, kIntervalCount, 2> push_req_q;
   streams<TaskOnChip, kQueueCount, 512> push_req_qi;
   stream<uint_qid_t, 2> pop_req_q("pop_req");
@@ -1135,10 +1233,16 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
 
   streams<HeapIndexReq, kQueueCount, 64> heap_index_req_q;
   streams<Vid, kQueueCount, 2> heap_index_resp_q;
-  streams<HeapIndexReq, kQueueCount, 2> heap_index_req_qi;
-  streams<Vid, kQueueCount, 2> heap_index_resp_qi;
+  streams<HeapIndexReq, kQueueCount, kQueueCount / kQueueMemCount>
+      heap_index_req_qi;
+  streams<HeapIndexEntry, kQueueCount, kQueueCount / kQueueMemCount>
+      heap_index_resp_qi;
+  streams<HeapIndexReq, kQueueMemCount, 2> heap_index_req_qii;
+  streams<HeapIndexEntry, kQueueMemCount, 2> heap_index_resp_qii;
 
   streams<HeapArrayReq, kQueueCount, 64> heap_array_req_q;
+  streams<HeapArrayReq, kQueueMemCount, 2> heap_array_req_qi;
+  streams<TaskOnChip, kQueueMemCount, 2> heap_array_resp_qi;
   streams<TaskOnChip, kQueueCount, 2> heap_array_resp_q;
 
   streams<TaskOnChip, kPeCount, 2> task_req_qi("task_req_i");
@@ -1192,13 +1296,20 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
                                    heap_array_resp_q, heap_index_req_q,
                                    heap_index_resp_q)
 #endif
-      .invoke<detach, kQueueCount>(HeapIndexMem, heap_index_req_qi,
-                                   heap_index_resp_qi, heap_index)
       .invoke<detach, kQueueCount>(HeapIndexCache, heap_index_req_q,
                                    heap_index_resp_q, heap_index_req_qi,
                                    heap_index_resp_qi)
-      .invoke<detach, kQueueCount>(HeapArrayMem, seq(), heap_array_req_q,
-                                   heap_array_resp_q, heap_array)
+      .invoke<detach>(HeapIndexReqArbiter, heap_index_req_qi,
+                      heap_index_req_qii)
+      .invoke<detach, kQueueMemCount>(HeapIndexMem, heap_index_req_qii,
+                                      heap_index_resp_qii, heap_index)
+      .invoke<detach>(HeapIndexRespArbiter, heap_index_resp_qii,
+                      heap_index_resp_qi)
+      .invoke<detach>(HeapArrayReqArbiter, heap_array_req_q, heap_array_req_qi)
+      .invoke<detach, kQueueMemCount>(HeapArrayMem, seq(), heap_array_req_qi,
+                                      heap_array_resp_qi, heap_array)
+      .invoke<detach>(HeapArrayRespArbiter, heap_array_resp_qi,
+                      heap_array_resp_q)
       .invoke<detach>(PushReqArbiter, push_req_q, push_req_qi)
       .invoke<detach>(PopReqArbiter, pop_req_q, pop_req_qi)
       .invoke<-1>(QueueRespArbiter, queue_resp_qi, queue_resp_q)

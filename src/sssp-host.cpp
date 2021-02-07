@@ -299,7 +299,7 @@ void Refine(
 void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
           tapa::async_mmaps<Edge, kShardCount> edges,
           tapa::async_mmaps<Vertex, kIntervalCount> vertices,
-          tapa::mmap<Task> heap_array, tapa::mmap<Vid> heap_index);
+          tapa::mmap<Task> heap_array, tapa::mmap<HeapIndexEntry> heap_index);
 
 int main(int argc, char* argv[]) {
   FLAGS_logtostderr = true;
@@ -406,7 +406,7 @@ int main(int argc, char* argv[]) {
     interval.resize(tapa::round_up_div<kIntervalCount>(vertex_count));
   }
   aligned_vector<Task> heap_array(vertex_count);
-  aligned_vector<Vid> heap_index(vertex_count);
+  aligned_vector<HeapIndexEntry> heap_index(vertex_count);
 
   // Statistics.
   vector<double> teps;
@@ -420,7 +420,10 @@ int main(int argc, char* argv[]) {
       std::fill(interval.begin(), interval.end(),
                 Vertex{.parent = kNullVid, .distance = kInfDistance});
     }
-    std::fill(heap_index.begin(), heap_index.end(), kNullVid);
+    for (size_t i = 0; i < heap_index.size(); ++i) {
+      heap_index[i].invalidate();
+      heap_index[i].set_qid(i % kQueueCount);
+    }
     vertices[root % kIntervalCount][root / kIntervalCount] = {
         .parent = Vid(root), .distance = 0.f};
     for (int64_t vid = 0; vid < vertex_count; ++vid) {
