@@ -119,11 +119,10 @@ vector<int64_t> SampleVertices(const vector<int64_t>& degree_no_self_loop) {
 // `edges` accordingly. `degrees` will be updated to reflect the
 // degrees of the coarsened graph for sampling vertices.
 deque<std::pair<Vid, unordered_map<Vid, float>>> Coarsen(
-    vector<unordered_map<Vid, float>> indexed_weights, vector<int64_t>& degrees,
-    array<aligned_vector<Edge>, kShardCount>& edges) {
+    vector<unordered_map<Vid, float>> indexed_weights, const int64_t edge_count,
+    vector<int64_t>& degrees, array<aligned_vector<Edge>, kShardCount>& edges) {
   const int64_t vertex_count = degrees.size();
   CHECK_EQ(vertex_count, indexed_weights.size());
-  const int64_t edge_count = vertex_count * 16;
   unordered_map<int64_t, unordered_set<Vid>> degree_map;
   vector<unordered_map<Vid, float>> rindexed_weights(vertex_count);
   for (int64_t v0 = 0; v0 < vertex_count; ++v0) {
@@ -321,21 +320,24 @@ int main(int argc, char* argv[]) {
   CHECK_EQ(edges_view.size(), weights_view.size()) << "inconsistent dataset";
   const int64_t edge_count = edges_view.size();
 
-  // Determine vertex intervals.
-  const int64_t vertex_count = edge_count / 16;
-
   // Validate inputs and collect degree.
-  vector<int64_t> degree(vertex_count);               // For TEPS calculation.
-  vector<int64_t> degree_no_self_loop(vertex_count);  // For root sampling.
+  vector<int64_t> degree;               // For TEPS calculation.
+  vector<int64_t> degree_no_self_loop;  // For root sampling.
 
   Eid edge_count_no_self_loop = 0;
 
   // Dedup edges.
-  vector<unordered_map<Vid, float>> indexed_weights(vertex_count);
+  vector<unordered_map<Vid, float>> indexed_weights;
   for (Eid eid = 0; eid < edge_count; ++eid) {
     const auto& edge = edges_view[eid];
     auto v0 = edge.v0();
     auto v1 = edge.v1();
+    if (const auto required_size = std::max(v0, v1) + 1;
+        required_size > degree.size()) {
+      degree.resize(required_size);
+      degree_no_self_loop.resize(required_size);
+      indexed_weights.resize(required_size);
+    }
     ++degree[v0];
     ++degree[v1];
     if (v0 != v1) {
@@ -353,6 +355,11 @@ int main(int argc, char* argv[]) {
       indexed_weights[v0][v1] = weights_view[eid];
     }
   }
+
+  // Determine vertex intervals.
+  const int64_t vertex_count = degree.size();
+  CHECK_EQ(degree_no_self_loop.size(), vertex_count);
+  CHECK_EQ(indexed_weights.size(), vertex_count);
 
   if (VLOG_IS_ON(3)) {
     vector<int64_t> bins(7);
@@ -380,7 +387,8 @@ int main(int argc, char* argv[]) {
 
   // Allocate and fill edges for the kernel.
   array<aligned_vector<Edge>, kShardCount> edges;
-  auto coarsen_records = Coarsen(indexed_weights, degree_no_self_loop, edges);
+  const auto coarsen_records =
+      Coarsen(indexed_weights, edge_count, degree_no_self_loop, edges);
 
   if (FLAGS_sort || FLAGS_shuffle) {
     for (auto& shard : edges) {
