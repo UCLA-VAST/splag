@@ -223,6 +223,27 @@ struct HeapArrayReq {
   TaskOnChip task;
 };
 
+struct HeapElem {
+  bool valid;
+  ap_uint<18> cap_left;
+  ap_uint<18> cap_right;
+  TaskOnChip task;
+};
+
+using HeapReq = tapa::packet<int, QueueOp>;
+
+enum HeapRespOp {
+  EMPTY,     // No element returned.
+  LEFT,      // New element is from the left child.
+  RIGHT,     // New element is from the right child.
+  NOCHANGE,  // New element returned but children capacity not changed.
+};
+
+struct HeapResp {
+  HeapRespOp op;
+  TaskOnChip task;
+};
+
 // Convenient functions and macros.
 
 #ifdef __SYNTHESIS__

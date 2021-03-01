@@ -312,35 +312,100 @@ spin:
   }
 }
 
-// Each push request puts the task in the queue if there isn't a task for the
-// same vertex in the queue, or decreases the priority of the existing task
-// using the new value. Whether a new task is created is returned in the
-// response.
-//
-// Each pop removes a task if the queue is not empty, otherwise the response
-// indicates that the queue is empty.
-void TaskQueue(
+constexpr int kLevelCount = 13;
+
+void PheapPush(QueueOp req, int idx, HeapElem& elem,
+               ostream<HeapReq>& req_out_q) {
+  if (elem.valid) {
+    CHECK(elem.cap_left > 0 || elem.cap_right > 0);
+
+    if (!(req.task <= elem.task)) {
+      std::swap(elem.task, req.task);
+    }
+
+    if (elem.cap_right < elem.cap_left) {
+      --elem.cap_left;
+      idx = idx * 2;
+    } else {
+      --elem.cap_right;
+      idx = idx * 2 + 1;
+    }
+    req_out_q.write({.addr = idx, .payload = req});
+  } else {
+    elem.task = req.task;
+    elem.valid = true;
+  }
+}
+
+void PheapPop(QueueOp req, int idx, HeapElem& elem,
+              istream<HeapResp>& resp_in_q, ostream<HeapReq>& req_out_q) {
+  CHECK(elem.valid);
+  req_out_q.write({.addr = idx, .payload = req});
+  ap_wait();
+  const auto resp = resp_in_q.read();
+  elem.task = resp.task;
+  switch (resp.op) {
+    case EMPTY: {
+      elem.valid = false;
+    } break;
+    case LEFT: {
+      ++elem.cap_left;
+    } break;
+    case RIGHT: {
+      ++elem.cap_right;
+    } break;
+    case NOCHANGE: {
+    } break;
+  }
+}
+
+HeapRespOp PheapCmp(HeapElem left, HeapElem right) {
+  const bool left_le_right = left.task <= right.task;
+  const bool left_is_ok = !left.valid || (right.valid && left_le_right);
+  const bool right_is_ok = !right.valid || (left.valid && !left_le_right);
+  if (left_is_ok && right_is_ok) {
+    return EMPTY;
+  }
+  CHECK_NE(left_is_ok, right_is_ok);
+  if (!left_is_ok) {
+    return LEFT;
+  }
+  CHECK(!right_is_ok);
+  return RIGHT;
+}
+
+HeapRespOp PheapCmp(HeapElem left, HeapElem right, QueueOp elem) {
+  const bool left_le_elem = left.task <= elem.task;
+  const bool right_le_elem = right.task <= elem.task;
+  const bool left_le_right = left.task <= right.task;
+  const bool left_is_ok = !left.valid || left_le_elem;
+  const bool right_is_ok = !right.valid || right_le_elem;
+  if (left_is_ok && right_is_ok) {
+    return EMPTY;
+  }
+  if (!left_is_ok && (right_is_ok || !left_le_right)) {
+    return LEFT;
+  }
+  CHECK(!right_is_ok && (left_is_ok || left_le_right));
+  return RIGHT;
+}
+
+void PheapHead(
     // Scalar
     Vid qid,
     // Queue requests.
     istream<TaskOnChip>& push_req_q, istream<bool>& pop_req_q,
-    tapa::ostream<QueueOpResp>& queue_resp_q,
-    // Heap array.
-    ostream<HeapArrayReq>& heap_array_req_q,
-    istream<TaskOnChip>& heap_array_resp_q,
-    // Heap index.
-    ostream<HeapIndexReq>& heap_index_req_q, istream<Vid>& heap_index_resp_q) {
+    ostream<QueueOpResp>& queue_resp_q,
+    // Internal
+    ostream<HeapReq>& req_out_q, istream<HeapResp>& resp_in_q) {
 #pragma HLS inline recursive
-  // Heap rule: child <= parent
-  Vid heap_size = 0;
+  const auto cap = (1 << (kLevelCount - 1)) - 1;
+  HeapElem root{.valid = false, .cap_left = cap, .cap_right = cap};
 
-  TaskOnChip heap_array_cache[kHeapOnChipSize];
-#pragma HLS resource variable = heap_array_cache core = RAM_2P_URAM latency = 2
-#pragma HLS data_pack variable = heap_array_cache
-
-  CLEAN_UP(clean_up, [&]() {
-    // Check that heap_index is restored to the initial state.
-    CHECK_EQ(heap_size, 0);
+  CLEAN_UP(clean_up, [&] {
+    CHECK_EQ(root.valid, false);
+    CHECK_EQ(root.cap_left, cap);
+    CHECK_EQ(root.cap_right, cap);
   });
 
 spin:
@@ -363,398 +428,271 @@ spin:
 
     QueueOpResp resp{
         .queue_op = req.op,
-        .task_op = TaskOp::NOOP,
+        .task_op = TaskOp::NEW,
         .task = req.task,
     };
+
     switch (req.op) {
       case QueueOp::PUSH: {
-        const auto new_task = req.task;
-        CHECK_EQ(new_task.vid() % kQueueCount, qid);
-        heap_index_req_q.write({GET, new_task.vid()});
-        ap_wait();
-        const Vid task_index = heap_index_resp_q.read();
-        bool heapify = true;
-        Vid heapify_index = task_index;
-        if (task_index != kNullVid) {
-          const auto old_task =
-              task_index < kHeapOnChipSize
-                  ? heap_array_cache[task_index]
-                  : (heap_array_req_q.write({SYNC, task_index}), ap_wait(),
-                     heap_array_resp_q.read());
-          CHECK_EQ(old_task.vid(), new_task.vid());
-          if (new_task <= old_task) {
-            heapify = false;
-            heap_index_req_q.write({CLEAR, new_task.vid()});
-          }
-        } else {
-          heapify_index = heap_size;
-          ++heap_size;
-          resp.task_op = TaskOp::NEW;
-        }
+        VLOG(5) << "PUSH q[" << qid << "] <-  " << req.task;
 
-        if (heapify) {
-          // Prefetch heap array elements.
-          uint8_t pending_request_count = 0;
-        heapify_up_prefetch:
-          for (Vid i = heapify_index; !(i < kHeapOffChipBound);) {
-#pragma HLS pipeline II = 1
-            const auto parent =
-                (i + (kHeapDiff * (kHeapOffChipWidth - 1) - 1)) /
-                kHeapOffChipWidth;
-            heap_array_req_q.write({GET, parent});
-            ++pending_request_count;
-            i = parent;
-          }
+        queue_resp_q.write(resp);
 
-          // Increase the priority of heap_array[i] if necessary.
-          Vid i = heapify_index;
-          const auto task_i = new_task;
+        PheapPush(req, 0, root, req_out_q);
+      } break;
 
-        heapify_up:
-          for (; i != 0;) {
-#pragma HLS pipeline
-            const auto parent =
-                i < kHeapOnChipSize
-                    ? (i - 1) / kHeapOnChipWidth
-                    : (i + (kHeapDiff * (kHeapOffChipWidth - 1) - 1)) /
-                          kHeapOffChipWidth;
-            const auto task_parent =
-                i < kHeapOffChipBound
-                    ? heap_array_cache[parent]
-                    : (--pending_request_count, heap_array_resp_q.read());
-            if (task_i <= task_parent) break;
-
-            if (i < kHeapOnChipSize) {
-              heap_array_cache[i] = task_parent;
-            } else {
-              heap_array_req_q.write({SET, i, task_parent});
-            }
-            heap_index_req_q.write({SET, task_parent.vid(), i});
-            i = parent;
-          }
-
-          if (i < kHeapOnChipSize) {
-            heap_array_cache[i] = task_i;
-          } else {
-            heap_array_req_q.write({SET, i, task_i});
-          }
-          heap_index_req_q.write({SET, task_i.vid(), i});
-
-        heapify_up_discard:
-          while (pending_request_count > 0) {
-#pragma HLS pipeline II = 1
-            if (!heap_array_resp_q.empty()) {
-              heap_array_resp_q.read(nullptr);
-              --pending_request_count;
-            }
-          }
-        }
-        break;
-      }
-      case QueueOp::PUSHPOP:
       case QueueOp::POP: {
-        CHECK_EQ(resp.task.vid() % kQueueCount, qid);
-        const bool is_pushpop = req.op == QueueOp::PUSHPOP;
-        const auto front = heap_array_cache[0];
-        if (heap_size != 0 && !(is_pushpop && front <= req.task)) {
-          heap_index_req_q.write({CLEAR, front.vid()});
+        if (root.valid) {
+          VLOG(5) << "POP  q[" << qid << "]  -> " << root.task;
 
-          if (!is_pushpop) {
-            --heap_size;
-          }
+          resp.task = root.task;
+          CHECK_EQ(resp.task.vid() % kQueueCount, qid);
+          queue_resp_q.write(resp);
 
-          resp.task_op = TaskOp::NEW;
-          resp.task = front;
-
-          if (heap_size != 0) {
-            // Find proper index `i` for `task_i`.
-            const auto task_i =
-                is_pushpop ? req.task
-                           : (heap_size < kHeapOnChipSize
-                                  ? heap_array_cache[heap_size]
-                                  : (heap_array_req_q.write({SYNC, heap_size}),
-                                     ap_wait(), heap_array_resp_q.read()));
-            Vid i = 0;
-
-          heapify_down_on_chip:
-            for (; i < kHeapOnChipBound;) {
-#pragma HLS pipeline
-
-              Vid max = -1;
-              auto task_max = task_i;
-              for (int j = 1; j <= kHeapOnChipWidth; ++j) {
-#pragma HLS unroll
-                const Vid child = i * kHeapOnChipWidth + j;
-                if (child < heap_size) {
-                  const auto task_child = heap_array_cache[child];
-                  if (!(task_child <= task_max)) {
-                    max = child;
-                    task_max = task_child;
-                  }
-                }
-              }
-              if (max == -1) break;
-
-              heap_array_cache[i] = task_max;
-              heap_index_req_q.write({SET, task_max.vid(), i});
-              i = max;
-            }
-
-          heapify_down_off_chip:
-            for (; !(i < kHeapOnChipBound);) {
-              Vid max = -1;
-              auto task_max = task_i;
-              const auto child_begin = i * kHeapOffChipWidth -
-                                       kHeapDiff * (kHeapOffChipWidth - 1) + 1;
-              const auto child_end =
-                  std::min(heap_size, child_begin + kHeapOffChipWidth);
-            heapify_down_cmp:
-              for (Vid child_req = child_begin, child_resp = child_begin;
-                   child_resp < child_end;) {
-#pragma HLS pipeline II = 1
-                if (child_req < child_end &&
-                    heap_array_req_q.try_write({GET, child_req})) {
-                  ++child_req;
-                }
-
-                if (!heap_array_resp_q.empty()) {
-                  const auto task_child = heap_array_resp_q.read();
-                  if (!(task_child <= task_max)) {
-                    max = child_resp;
-                    task_max = task_child;
-                  }
-                  ++child_resp;
-                }
-              }
-              if (max == -1) break;
-
-              if (i < kHeapOnChipSize) {
-                heap_array_cache[i] = task_max;
-              } else {
-                heap_array_req_q.write({SET, i, task_max});
-              }
-              heap_index_req_q.write({SET, task_max.vid(), i});
-              i = max;
-            }
-
-            if (i < kHeapOnChipSize) {
-              heap_array_cache[i] = task_i;
-            } else {
-              heap_array_req_q.write({SET, i, task_i});
-            }
-            heap_index_req_q.write({SET, task_i.vid(), i});
-          }
-        } else if (is_pushpop) {
-          resp.task_op = TaskOp::NEW;
-        }
-        break;
-      }
-    }
-    queue_resp_q.write(resp);
-  }
-}
-
-using SpqElem = TaskOnChip;
-
-const SpqElem kSpqElemMin(Task{.vertex = {.distance = kInfDistance}});
-const SpqElem kSpqElemMax(Task{.vertex = {.distance = 0}});
-
-constexpr int kSpqSize = 7;
-
-SpqElem SpqUpdate(SpqElem& a, SpqElem& b, SpqElem& c) {
-  // Make c <= b <= a by updating a and b, invalidating the old c, and returning
-  // the new c.
-
-  const bool x = b <= a;
-  const bool y = c <= a;
-  const bool z = c <= b;
-  // a <= b <= c : !x && !y && !z
-  // a <= c <= b : !x && !y &&  z
-  // b <= a <= c :  x && !y && !z
-  // c <= a <= b : !x &&  y &&  z
-  // b <= c <= a :  x &&  y && !z
-  // c <= b <= a :  x &&  y &&  z
-  const auto new_a = x && y ? a : z ? b : c;
-  const auto new_b = x == y ? y == z ? b : c : a;
-  const auto new_c = y && z ? c : x ? b : a;
-
-  a = new_a;
-  b = new_b;
-  c = kSpqElemMin;
-  return new_c;
-}
-
-void SystolicQueue(
-    // Queue ID.
-    int id,
-    // Request-response interfaces.
-    istream<QueueOp>& req_q, ostream<QueueOpResp>& resp_q,
-    // Connection to overflow queue.
-    ostream<SpqElem>& overflow_q) {
-  DECL_ARRAY(SpqElem, a, kSpqSize + 1, kSpqElemMin);
-  DECL_ARRAY(SpqElem, b, kSpqSize + 1, kSpqElemMin);
-  const auto& front = a[0];
-  auto& overflow = b[kSpqSize];
-
-spin:
-  for (;;) {
-    // Do not pipeline to avoid Vivado HLS bug.
-    if (!req_q.empty()) {
-      const auto spq_op = req_q.read();
-      switch (spq_op.op) {
-        case QueueOp::PUSH:
-          a[0] = spq_op.task;
-          b[0] = kSpqElemMax;
-          break;
-        case QueueOp::PUSHPOP:
-          a[0] = spq_op.task;
-          b[0] = kSpqElemMin;
-          break;
-        case QueueOp::POP:
-          a[0] = b[0] = kSpqElemMin;
-          break;
-      }
-
-      for (int i = 1; i <= kSpqSize; i += 2) {
-#pragma HLS unroll
-        b[i] = SpqUpdate(a[i - 1], a[i], b[i - 1]);
-      }
-
-      for (int i = 2; i <= kSpqSize; i += 2) {
-#pragma HLS unroll
-        b[i] = SpqUpdate(a[i - 1], a[i], b[i - 1]);
-      }
-
-      QueueOpResp resp{
-          .queue_op = spq_op.op,
-          .task_op = front.vertex().is_inf() ? TaskOp::NOOP : TaskOp::NEW,
-          .task = spq_op.is_push() ? spq_op.task : front,
-      };
-      if (resp.is_pop_noop()) {
-        resp.task.set_vid(id);
-      }
-      CHECK_GT(resp.task.vertex().distance, 0);
-      CHECK_EQ(resp.task.vid() % kQueueCount, id);
-      resp_q.write(resp);
-
-      if (!overflow.vertex().is_inf()) {
-        overflow_q.write(overflow);
-      }
-    }
-  }
-}
-
-void CascadedQueue(
-    // Queue ID.
-    int id,
-    // Request-response interfaces.
-    istream<TaskOnChip>& push_req_q, istream<bool>& pop_req_q,
-    ostream<QueueOpResp>& resp_q,
-    // Connection to systolic queue.
-    ostream<QueueOp>& spq_req_q, istream<QueueOpResp>& spq_resp_q,
-    // Connection to overflow queue.
-    ostream<bool>& ofq_pop_req_q, istream<QueueOpResp>& ofq_resp_q) {
-  DECL_BUF(QueueOpResp, spq_resp);
-  DECL_BUF(QueueOpResp, ofq_resp);
-  bool both_pending = false;
-  bool ofq_pending = false;
-  bool pushpop_pending = false;
-  bool spq_was_empty = false;
-
-spin:
-  for (;;) {
-#pragma HLS pipeline II = 1
-    UPDATE(spq_resp, spq_resp_q.try_read(spq_resp), spq_resp.is_push());
-    UPDATE(ofq_resp, ofq_resp_q.try_read(ofq_resp), ofq_resp.is_push());
-
-    // Buffers for output streams.
-    DECL_BUF(QueueOpResp, resp);
-    DECL_BUF(QueueOp, spq_req);
-    DECL_BUF(bool, ofq_pop_req);
-
-    // Send POP response, step 1.
-    if (both_pending && spq_resp_valid) {
-      spq_was_empty = spq_resp.is_pop_noop();
-      if (!spq_was_empty) {
-        resp = spq_resp, resp_valid = true;  // resp_q.write(spq_resp);
-      }
-
-      both_pending = spq_resp_valid = false;
-      ofq_pending = true;
-    } else if (pushpop_pending && spq_resp_valid) {
-      // Or, send PUSHPOP response.
-      CHECK_EQ(spq_resp.queue_op, QueueOp::PUSHPOP);
-      CHECK_EQ(spq_resp.task_op, TaskOp::NEW);
-
-      resp = spq_resp, resp_valid = true;  // resp_q.write(spq_resp);
-
-      pushpop_pending = spq_resp_valid = false;
-    }
-
-    // Send POP response, step 2.
-    if (ofq_pending &&     // Systolic queue response has been processed.
-        ofq_resp_valid &&  // Overflow queue response is valid.
-        !(spq_was_empty && resp_valid)  // Response can be sent.
-    ) {
-      if (spq_was_empty) {
-        resp = ofq_resp, resp_valid = true;  // resp_q.write(ofq_resp);
-      } else if (ofq_resp.is_pop_new()) {
-        spq_req.op = QueueOp::PUSH;    // spq_req_q.write(...);
-        spq_req.task = ofq_resp.task;  // spq_req_q.write(...);
-        spq_req_valid = true;          // spq_req_q.write(...);
-      }
-
-      ofq_pending = ofq_resp_valid = false;
-    }
-
-    // Handle new requests.
-    if (!resp_valid &&                    // Response can be sent.
-        !spq_req_valid &&                 // Systolic queue request can be sent.
-        !ofq_pop_req_valid &&             // Overflow queue request can be sent.
-        !both_pending && !ofq_pending &&  // Not waiting for POP response.
-        !pushpop_pending &&               // Not waiting for PUSHPOP response.
-        (!push_req_q.empty() || !pop_req_q.empty())  // Request is valid.
-    ) {
-      spq_req_valid = true;  // spq_req_q.write(req);
-
-      bool do_push = false;
-      bool do_pop = false;
-      const auto push_req = push_req_q.read(do_push);
-      pop_req_q.read(do_pop);
-      if (do_push) {
-        spq_req.task = push_req;
-        if (do_pop) {
-          spq_req.op = QueueOp::PUSHPOP;
-          pushpop_pending = true;
+          PheapPop(req, 0, root, resp_in_q, req_out_q);
         } else {
-          spq_req.op = QueueOp::PUSH;
-          resp = {
-              .queue_op = QueueOp::PUSH,  // resp_q.write(req);
-              .task_op = {},              // resp_q.write(req);
-              .task = push_req,           // resp_q.write(req);
-          };                              // resp_q.write(req);
-          resp_valid = true;              // resp_q.write(req);
-        }
-      } else if (do_pop) {
-        spq_req.task.set_vid(id);
-        spq_req.op = QueueOp::POP;
-        ofq_pop_req_valid = true;  // ofq_req_q.write(req);
-        both_pending = true;
-      }
-    }
+          VLOG(5) << "POP  q[" << qid << "] -> {}";
 
-    if (resp_valid) {
-      resp_q.write(resp);
-      CHECK_EQ(resp.task.vid() % kQueueCount, id);
-    }
-    if (spq_req_valid) {
-      spq_req_q.write(spq_req);
-      CHECK_EQ(spq_req.task.vid() % kQueueCount, id);
-    }
-    if (ofq_pop_req_valid) {
-      ofq_pop_req_q.write(ofq_pop_req);
+          resp.task_op = TaskOp::NOOP;
+          queue_resp_q.write(resp);
+        }
+      } break;
+
+      case QueueOp::PUSHPOP: {
+        VLOG(5) << "PUSH q[" << qid << "] <-  " << req.task;
+        VLOG(5) << "POP  q[" << qid << "]  -> " << root.task;
+
+        if (!root.valid || root.task <= req.task) {
+          queue_resp_q.write(resp);
+        } else {
+          resp.task = root.task;
+          CHECK_EQ(resp.task.vid() % kQueueCount, qid);
+          queue_resp_q.write(resp);
+
+          PheapPop(req, 0, root, resp_in_q, req_out_q);
+        }
+      } break;
     }
   }
+}
+
+template <int level>
+void PheapBody(
+    // Heap array
+    HeapElem (&heap_array)[1 << level],
+    // Parent level
+    istream<HeapReq>& req_in_q, ostream<HeapResp>& resp_out_q,
+    // Child level
+    ostream<HeapReq>& req_out_q, istream<HeapResp>& resp_in_q) {
+  const auto cap = (1 << (kLevelCount - level - 1)) - 1;
+
+init:
+  for (int i = 0; i < 1 << level; ++i) {
+#pragma HLS pipeline II = 1
+    heap_array[i].valid = false;
+    heap_array[i].cap_left = heap_array[i].cap_right = cap;
+  }
+
+  CLEAN_UP(clean_up, [&] {
+    for (int i = 0; i < 1 << level; ++i) {
+      CHECK_EQ(heap_array[i].valid, false);
+      CHECK_EQ(heap_array[i].cap_left, cap);
+      CHECK_EQ(heap_array[i].cap_right, cap);
+    }
+  });
+
+spin:
+  for (;;) {
+    const auto req = req_in_q.read();
+    auto idx = req.addr;
+    CHECK_GE(idx, 0);
+    CHECK_LT(idx, 1 << level);
+    const auto elem = req.payload;
+
+    switch (elem.op) {
+      case QueueOp::PUSH: {
+        PheapPush(elem, idx, heap_array[idx], req_out_q);
+      } break;
+
+      case QueueOp::POP: {
+        CHECK_EQ(idx % 2, 0);
+        switch (auto op = PheapCmp(heap_array[idx], heap_array[idx + 1])) {
+          case EMPTY:
+            resp_out_q.write({.op = op});
+            break;
+          case RIGHT:
+            ++idx;
+          case LEFT:
+            resp_out_q.write({.op = op, .task = heap_array[idx].task});
+            PheapPop(elem, idx * 2, heap_array[idx], resp_in_q, req_out_q);
+            break;
+          default:
+            CHECK(false);
+        }
+      } break;
+
+      case QueueOp::PUSHPOP: {
+        CHECK_EQ(idx % 2, 0);
+        switch (PheapCmp(heap_array[idx], heap_array[idx + 1], elem)) {
+          case EMPTY:
+            resp_out_q.write({.op = NOCHANGE, .task = elem.task});
+            break;
+          case RIGHT:
+            ++idx;
+          case LEFT:
+            resp_out_q.write({.op = NOCHANGE, .task = heap_array[idx].task});
+            PheapPop(elem, idx * 2, heap_array[idx], resp_in_q, req_out_q);
+            break;
+          default:
+            CHECK(false);
+        }
+      } break;
+    }
+  }
+}
+
+void PheapTail(
+    // Scalar
+    Vid qid,
+    // Parent level
+    istream<HeapReq>& req_in_q, ostream<HeapResp>& resp_out_q) {
+#pragma HLS inline recursive
+  HeapElem heap_array[1 << (kLevelCount - 1)];
+#pragma HLS data_pack variable = heap_array
+#pragma HLS resource variable = heap_array core = RAM_2P_URAM
+
+init:
+  for (int i = 0; i < 1 << (kLevelCount - 1); ++i) {
+#pragma HLS pipeline II = 1
+    heap_array[i].valid = false;
+    heap_array[i].cap_left = heap_array[i].cap_right = 0;
+  }
+
+  bool used = false;
+  CLEAN_UP(clean_up, [&] {
+    for (int i = 0; i < 1 << (kLevelCount - 1); ++i) {
+      CHECK_EQ(heap_array[i].valid, false);
+      CHECK_EQ(heap_array[i].cap_left, 0);
+      CHECK_EQ(heap_array[i].cap_right, 0);
+    }
+    LOG_IF(INFO, !used) << "tail of queue[" << qid << "] was never used";
+  });
+
+spin:
+  for (;; used = true) {
+    const auto req = req_in_q.read();
+    auto idx = req.addr;
+    CHECK_GE(idx, 0);
+    CHECK_LT(idx, 1 << (kLevelCount - 1));
+    const auto elem = req.payload;
+
+    switch (elem.op) {
+      case QueueOp::PUSH: {
+        CHECK(!heap_array[idx].valid) << "insufficient heap capacity";
+        heap_array[idx].valid = true;
+        heap_array[idx].task = elem.task;
+      } break;
+
+      case QueueOp::POP: {
+        CHECK_EQ(idx % 2, 0);
+        switch (auto op = PheapCmp(heap_array[idx], heap_array[idx + 1])) {
+          case EMPTY:
+            resp_out_q.write({.op = op});
+            break;
+          case RIGHT:
+            ++idx;
+          case LEFT:
+            resp_out_q.write({.op = op, .task = heap_array[idx].task});
+            heap_array[idx].valid = false;
+            break;
+          default:
+            CHECK(false);
+        }
+      } break;
+
+      case QueueOp::PUSHPOP: {
+        CHECK_EQ(idx % 2, 0);
+        switch (PheapCmp(heap_array[idx], heap_array[idx + 1], elem)) {
+          case EMPTY:
+            resp_out_q.write({.op = NOCHANGE, .task = elem.task});
+            break;
+          case RIGHT:
+            ++idx;
+          case LEFT:
+            resp_out_q.write({.op = NOCHANGE, .task = heap_array[idx].task});
+            CHECK(heap_array[idx].valid);
+            heap_array[idx].task = elem.task;
+            break;
+          default:
+            CHECK(false);
+        }
+      } break;
+    }
+  }
+}
+
+#define HEAP_PORTS                                         \
+  istream<HeapReq>&req_in_q, ostream<HeapResp>&resp_out_q, \
+      ostream<HeapReq>&req_out_q, istream<HeapResp>&resp_in_q
+#define HEAP_BODY(level, mem)                               \
+  _Pragma("HLS inline recursive");                          \
+  HeapElem heap_array[1 << level];                          \
+  _Pragma("HLS data_pack variable = heap_array");           \
+  DO_PRAGMA(HLS resource variable = heap_array core = mem); \
+  PheapBody<level>(heap_array, req_in_q, resp_out_q, req_out_q, resp_in_q)
+
+void PheapBodyL1(HEAP_PORTS) { HEAP_BODY(1, RAM_S2P_LUTRAM); }
+void PheapBodyL2(HEAP_PORTS) { HEAP_BODY(2, RAM_S2P_LUTRAM); }
+void PheapBodyL3(HEAP_PORTS) { HEAP_BODY(3, RAM_S2P_LUTRAM); }
+void PheapBodyL4(HEAP_PORTS) { HEAP_BODY(4, RAM_S2P_LUTRAM); }
+void PheapBodyL5(HEAP_PORTS) { HEAP_BODY(5, RAM_S2P_LUTRAM); }
+void PheapBodyL6(HEAP_PORTS) { HEAP_BODY(6, RAM_S2P_LUTRAM); }
+void PheapBodyL7(HEAP_PORTS) { HEAP_BODY(7, RAM_S2P_LUTRAM); }
+void PheapBodyL8(HEAP_PORTS) { HEAP_BODY(8, RAM_S2P_LUTRAM); }
+void PheapBodyL9(HEAP_PORTS) { HEAP_BODY(9, RAM_S2P_BRAM); }
+void PheapBodyL10(HEAP_PORTS) { HEAP_BODY(10, RAM_S2P_BRAM); }
+void PheapBodyL11(HEAP_PORTS) { HEAP_BODY(11, RAM_2P_URAM); }
+#undef HEAP_BODY
+#undef HEAP_PORTS
+
+// Each push request puts the task in the queue if there isn't a task for the
+// same vertex in the queue, or decreases the priority of the existing task
+// using the new value. Whether a new task is created is returned in the
+// response.
+//
+// Each pop removes a task if the queue is not empty, otherwise the response
+// indicates that the queue is empty.
+void TaskQueue(
+    // Scalar
+    Vid qid,
+    // Queue requests.
+    istream<TaskOnChip>& push_req_q, istream<bool>& pop_req_q,
+    tapa::ostream<QueueOpResp>& queue_resp_q,
+    // Heap array.
+    ostream<HeapArrayReq>& heap_array_req_q,
+    istream<TaskOnChip>& heap_array_resp_q,
+    // Heap index.
+    ostream<HeapIndexReq>& heap_index_req_q, istream<Vid>& heap_index_resp_q) {
+  // Heap rule: child <= parent
+  streams<HeapReq, kLevelCount - 1, 2> req_q;
+  streams<HeapResp, kLevelCount - 1, 2> resp_q;
+  task()
+      // clang-format off
+      .invoke<detach>(PheapHead, qid, push_req_q, pop_req_q, queue_resp_q, req_q[0], resp_q[0])
+      .invoke<detach>(PheapBodyL1,  req_q[ 0], resp_q[ 0], req_q[ 1], resp_q[ 1])
+      .invoke<detach>(PheapBodyL2,  req_q[ 1], resp_q[ 1], req_q[ 2], resp_q[ 2])
+      .invoke<detach>(PheapBodyL3,  req_q[ 2], resp_q[ 2], req_q[ 3], resp_q[ 3])
+      .invoke<detach>(PheapBodyL4,  req_q[ 3], resp_q[ 3], req_q[ 4], resp_q[ 4])
+      .invoke<detach>(PheapBodyL5,  req_q[ 4], resp_q[ 4], req_q[ 5], resp_q[ 5])
+      .invoke<detach>(PheapBodyL6,  req_q[ 5], resp_q[ 5], req_q[ 6], resp_q[ 6])
+      .invoke<detach>(PheapBodyL7,  req_q[ 6], resp_q[ 6], req_q[ 7], resp_q[ 7])
+      .invoke<detach>(PheapBodyL8,  req_q[ 7], resp_q[ 7], req_q[ 8], resp_q[ 8])
+      .invoke<detach>(PheapBodyL9,  req_q[ 8], resp_q[ 8], req_q[ 9], resp_q[ 9])
+      .invoke<detach>(PheapBodyL10, req_q[ 9], resp_q[ 9], req_q[10], resp_q[10])
+      .invoke<detach>(PheapBodyL11, req_q[10], resp_q[10], req_q[11], resp_q[11])
+      .invoke<detach>(PheapTail, qid, req_q[11], resp_q[11])
+      // clang-format on
+      ;
 }
 
 // A VidMux merges two input streams into one.
@@ -1225,12 +1163,6 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   tapa::stream<QueueOpResp, 2> queue_resp_q("queue_resp");
   tapa::streams<QueueOpResp, kQueueCount, 2> queue_resp_qi("queue_resp_i");
 
-  streams<QueueOp, kQueueCount, 2> spq_req_q("systolic_req");
-  streams<QueueOpResp, kQueueCount, 2> spq_resp_q("systolic_resp");
-  streams<TaskOnChip, kQueueCount, 512> spq_overflow_q("systolic_overflow");
-  streams<bool, kQueueCount, 2> ofq_pop_req_q("overflow_pop_req");
-  streams<QueueOpResp, kQueueCount, 2> ofq_resp_q("overflow_resp");
-
   streams<HeapIndexReq, kQueueCount, 64> heap_index_req_q;
   streams<Vid, kQueueCount, 2> heap_index_resp_q;
   streams<HeapIndexReq, kQueueCount, kQueueCount / kQueueMemCount>
@@ -1280,22 +1212,10 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
                  update_noop_q, pop_req_q, queue_resp_q)
       .invoke<detach>(TaskReqArbiter, task_req_q, task_req_qi)
       .invoke<detach>(TaskRespArbiter, task_resp_qi, task_resp_q)
-#if 0
-      .invoke<detach, kQueueCount>(CascadedQueue, seq(), push_req_qi,
-                                   pop_req_qi, queue_resp_qi, spq_req_q,
-                                   spq_resp_q, ofq_pop_req_q, ofq_resp_q)
-      .invoke<detach, kQueueCount>(SystolicQueue, seq(), spq_req_q, spq_resp_q,
-                                   spq_overflow_q)
-      .invoke<detach, kQueueCount>(TaskQueue, seq(), spq_overflow_q,
-                                   ofq_pop_req_q, ofq_resp_q, heap_array_req_q,
-                                   heap_array_resp_q, heap_index_req_q,
-                                   heap_index_resp_q)
-#else
       .invoke<detach, kQueueCount>(TaskQueue, seq(), push_req_qi, pop_req_qi,
                                    queue_resp_qi, heap_array_req_q,
                                    heap_array_resp_q, heap_index_req_q,
                                    heap_index_resp_q)
-#endif
       .invoke<detach, kQueueCount>(HeapIndexCache, heap_index_req_q,
                                    heap_index_resp_q, heap_index_req_qi,
                                    heap_index_resp_qi)
