@@ -136,7 +136,7 @@ void HeapIndexCache(istream<HeapIndexReq>& req_in_q, ostream<Vid>& resp_out_q,
                     istream<HeapIndexEntry>& resp_in_q) {
   constexpr int kIndexCacheSize = 4096 * 4;
   tapa::packet<Vid, Vid> heap_index_cache[kIndexCacheSize];
-#pragma HLS resource variable = heap_index_cache core = RAM_2P_URAM latency = 4
+#pragma HLS resource variable = heap_index_cache core = RAM_2P_URAM latency = 3
 #pragma HLS data_pack variable = heap_index_cache
   int32_t read_hit = 0;
   int32_t read_miss = 0;
@@ -360,6 +360,7 @@ void PheapPop(QueueOp req, int idx, HeapElem& elem,
 }
 
 HeapRespOp PheapCmp(HeapElem left, HeapElem right) {
+#pragma HLS inline
   const bool left_le_right = left.task <= right.task;
   const bool left_is_ok = !left.valid || (right.valid && left_le_right);
   const bool right_is_ok = !right.valid || (left.valid && !left_le_right);
@@ -503,6 +504,7 @@ init:
 
 spin:
   for (;;) {
+#pragma HLS pipeline off
     const auto req = req_in_q.read();
     auto idx = req.addr;
     CHECK_GE(idx, 0);
@@ -1152,8 +1154,8 @@ meta:
 }
 
 void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
-          tapa::async_mmaps<Edge, kShardCount> edges,
-          tapa::async_mmaps<Vertex, kIntervalCount> vertices,
+          tapa::mmaps<Edge, kShardCount> edges,
+          tapa::mmaps<Vertex, kIntervalCount> vertices,
           // For queues.
           tapa::mmap<Task> heap_array, tapa::mmap<HeapIndexEntry> heap_index) {
   streams<TaskOnChip, kIntervalCount, 2> push_req_q;

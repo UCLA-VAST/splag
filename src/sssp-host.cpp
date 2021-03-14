@@ -37,6 +37,7 @@ DEFINE_bool(
     shuffle, false,
     "randomly shuffle edges for each vertex; may be overridden by --sort");
 DEFINE_int64(coarsen, 0, "remove vertices whose degree <= this value");
+DEFINE_string(bitstream, "", "path to bitstream file, run csim if empty");
 
 template <typename T>
 bool IsValid(int64_t root, PackedEdgesView edges, WeightsView weights,
@@ -296,8 +297,8 @@ void Refine(
 }
 
 void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
-          tapa::async_mmaps<Edge, kShardCount> edges,
-          tapa::async_mmaps<Vertex, kIntervalCount> vertices,
+          tapa::mmaps<Edge, kShardCount> edges,
+          tapa::mmaps<Vertex, kIntervalCount> vertices,
           tapa::mmap<Task> heap_array, tapa::mmap<HeapIndexEntry> heap_index);
 
 int main(int argc, char* argv[]) {
@@ -442,22 +443,23 @@ int main(int argc, char* argv[]) {
       vertex.degree = index.count;
     }
 
-    unsetenv("KERNEL_TIME_NS");
-    auto tic = steady_clock::now();
-    SSSP(vertex_count,
-         {
-             .vid = Vid(root),
-             .vertex = vertices[root % kIntervalCount][root / kIntervalCount],
-         },
-         metadata, edges, vertices, heap_array, heap_index);
-    double elapsed_time =
-        1e-9 * duration_cast<nanoseconds>(steady_clock::now() - tic).count();
-    if (auto env = getenv("KERNEL_TIME_NS")) {
-      elapsed_time = 1e-9 * atoll(env);
-      VLOG(3) << "using time reported by the kernel: " << elapsed_time << " s";
-    }
+    const double elapsed_time =
+        1e-9 *
+        tapa::invoke_in_new_process(
+            SSSP, FLAGS_bitstream, Vid(vertex_count),
+            Task{
+                .vid = Vid(root),
+                .vertex =
+                    vertices[root % kIntervalCount][root / kIntervalCount],
+            },
+            tapa::write_only_mmap<int64_t>(metadata),
+            tapa::read_only_mmaps<Edge, kShardCount>(edges),
+            tapa::read_write_mmaps<Vertex, kIntervalCount>(vertices),
+            tapa::placeholder_mmap<Task>(heap_array),
+            tapa::read_only_mmap<HeapIndexEntry>(heap_index));
+    VLOG(3) << "kernel time: " << elapsed_time << " s";
 
-    tic = steady_clock::now();
+    const auto tic = steady_clock::now();
     Refine(coarsen_records, vertices);
     const double refine_time =
         1e-9 * duration_cast<nanoseconds>(steady_clock::now() - tic).count();

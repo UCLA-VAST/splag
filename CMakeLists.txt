@@ -5,7 +5,6 @@ project(sssp)
 
 find_package(gflags REQUIRED)
 find_package(TAPA REQUIRED)
-find_package(FRT REQUIRED)
 find_package(OpenMP)
 
 add_library(sssp_kernel)
@@ -22,6 +21,7 @@ if(OpenMP_CXX_FOUND)
   target_link_libraries(sssp_kernel PRIVATE OpenMP::OpenMP_CXX)
 endif()
 
+find_package(SDx REQUIRED)
 add_tapa_target(
   sssp-hw-xo
   INPUT src/sssp.cpp
@@ -48,15 +48,9 @@ add_xocc_hw_link_targets(
   HW_EMU_XCLBIN hw_emu_xclbin_target
   HW_XCLBIN hw_xclbin_target)
 
-add_executable(sssp-frt)
-target_compile_features(sssp-frt PRIVATE cxx_std_17)
-target_sources(sssp-frt PRIVATE src/sssp-frt.cpp src/sssp-host.cpp)
-target_link_libraries(sssp-frt PRIVATE frt::frt tapa::tapa gflags)
-
 add_custom_target(
   sssp-cosim
-  COMMAND
-    BITSTREAM=$<TARGET_PROPERTY:${hw_emu_xclbin_target},FILE_NAME>
-    $<TARGET_FILE:sssp-frt> ${CMAKE_CURRENT_SOURCE_DIR}/data/graph500-scale-5
-  DEPENDS sssp-frt ${hw_emu_xclbin_target}
+  COMMAND $<TARGET_FILE:sssp> ${CMAKE_CURRENT_SOURCE_DIR}/data/graph500-scale-5
+          --bitstream=$<TARGET_PROPERTY:${hw_emu_xclbin_target},FILE_NAME>
+  DEPENDS sssp ${hw_emu_xclbin_target}
   WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
