@@ -316,6 +316,7 @@ constexpr int kLevelCount = 13;
 
 void PheapPush(QueueOp req, int idx, HeapElem& elem,
                ostream<HeapReq>& req_out_q) {
+#pragma HLS inline
   if (elem.valid) {
     CHECK(elem.cap_left > 0 || elem.cap_right > 0);
 
@@ -339,6 +340,7 @@ void PheapPush(QueueOp req, int idx, HeapElem& elem,
 
 void PheapPop(QueueOp req, int idx, HeapElem& elem,
               istream<HeapResp>& resp_in_q, ostream<HeapReq>& req_out_q) {
+#pragma HLS inline
   CHECK(elem.valid);
   req_out_q.write({.addr = idx, .payload = req});
   ap_wait();
@@ -359,7 +361,7 @@ void PheapPop(QueueOp req, int idx, HeapElem& elem,
   }
 }
 
-HeapRespOp PheapCmp(HeapElem left, HeapElem right) {
+HeapRespOp PheapCmp(const HeapElem& left, const HeapElem& right) {
 #pragma HLS inline
   const bool left_le_right = left.task <= right.task;
   const bool left_is_ok = !left.valid || (right.valid && left_le_right);
@@ -375,7 +377,9 @@ HeapRespOp PheapCmp(HeapElem left, HeapElem right) {
   return RIGHT;
 }
 
-HeapRespOp PheapCmp(HeapElem left, HeapElem right, QueueOp elem) {
+HeapRespOp PheapCmp(const HeapElem& left, const HeapElem& right,
+                    const QueueOp& elem) {
+#pragma HLS inline
   const bool left_le_elem = left.task <= elem.task;
   const bool right_le_elem = right.task <= elem.task;
   const bool left_le_right = left.task <= right.task;
@@ -404,9 +408,9 @@ void PheapHead(
   HeapElem root{.valid = false, .cap_left = cap, .cap_right = cap};
 
   CLEAN_UP(clean_up, [&] {
-    CHECK_EQ(root.valid, false);
-    CHECK_EQ(root.cap_left, cap);
-    CHECK_EQ(root.cap_right, cap);
+    CHECK_EQ(root.valid, false) << "q[" << qid << "]";
+    CHECK_EQ(root.cap_left, cap) << "q[" << qid << "]";
+    CHECK_EQ(root.cap_right, cap) << "q[" << qid << "]";
   });
 
 spin:
@@ -509,24 +513,31 @@ spin:
     auto idx = req.addr;
     CHECK_GE(idx, 0);
     CHECK_LT(idx, 1 << level);
-    const auto elem = req.payload;
 
-    switch (elem.op) {
+    const auto elem_0 = heap_array[idx / 2 * 2];
+    const auto elem_1 = heap_array[idx / 2 * 2 + 1];
+    auto elem = idx % 2 == 0 ? elem_0 : elem_1;
+    bool write_enable = false;
+
+    switch (req.payload.op) {
       case QueueOp::PUSH: {
-        PheapPush(elem, idx, heap_array[idx], req_out_q);
+        PheapPush(req.payload, idx, elem, req_out_q);
+        write_enable = true;
       } break;
 
       case QueueOp::POP: {
         CHECK_EQ(idx % 2, 0);
-        switch (auto op = PheapCmp(heap_array[idx], heap_array[idx + 1])) {
+        switch (auto op = PheapCmp(elem_0, elem_1)) {
           case EMPTY:
             resp_out_q.write({.op = op});
             break;
           case RIGHT:
             ++idx;
+            elem = elem_1;
           case LEFT:
-            resp_out_q.write({.op = op, .task = heap_array[idx].task});
-            PheapPop(elem, idx * 2, heap_array[idx], resp_in_q, req_out_q);
+            resp_out_q.write({.op = op, .task = elem.task});
+            PheapPop(req.payload, idx * 2, elem, resp_in_q, req_out_q);
+            write_enable = true;
             break;
           default:
             CHECK(false);
@@ -535,20 +546,26 @@ spin:
 
       case QueueOp::PUSHPOP: {
         CHECK_EQ(idx % 2, 0);
-        switch (PheapCmp(heap_array[idx], heap_array[idx + 1], elem)) {
+        switch (PheapCmp(elem_0, elem_1, req.payload)) {
           case EMPTY:
-            resp_out_q.write({.op = NOCHANGE, .task = elem.task});
+            resp_out_q.write({.op = NOCHANGE, .task = req.payload.task});
             break;
           case RIGHT:
             ++idx;
+            elem = elem_1;
           case LEFT:
-            resp_out_q.write({.op = NOCHANGE, .task = heap_array[idx].task});
-            PheapPop(elem, idx * 2, heap_array[idx], resp_in_q, req_out_q);
+            resp_out_q.write({.op = NOCHANGE, .task = elem.task});
+            PheapPop(req.payload, idx * 2, elem, resp_in_q, req_out_q);
+            write_enable = true;
             break;
           default:
             CHECK(false);
         }
       } break;
+    }
+
+    if (write_enable) {
+      heap_array[idx] = elem;
     }
   }
 }
@@ -558,7 +575,6 @@ void PheapTail(
     Vid qid,
     // Parent level
     istream<HeapReq>& req_in_q, ostream<HeapResp>& resp_out_q) {
-#pragma HLS inline recursive
   HeapElem heap_array[1 << (kLevelCount - 1)];
 #pragma HLS data_pack variable = heap_array
 #pragma HLS resource variable = heap_array core = RAM_2P_URAM
@@ -586,26 +602,33 @@ spin:
     auto idx = req.addr;
     CHECK_GE(idx, 0);
     CHECK_LT(idx, 1 << (kLevelCount - 1));
-    const auto elem = req.payload;
 
-    switch (elem.op) {
+    const auto elem_0 = heap_array[idx / 2 * 2];
+    const auto elem_1 = heap_array[idx / 2 * 2 + 1];
+    auto elem = idx % 2 == 0 ? elem_0 : elem_1;
+    bool write_enable = false;
+
+    switch (req.payload.op) {
       case QueueOp::PUSH: {
-        CHECK(!heap_array[idx].valid) << "insufficient heap capacity";
-        heap_array[idx].valid = true;
-        heap_array[idx].task = elem.task;
+        CHECK(!elem.valid) << "insufficient heap capacity";
+        elem.valid = true;
+        elem.task = req.payload.task;
+        write_enable = true;
       } break;
 
       case QueueOp::POP: {
         CHECK_EQ(idx % 2, 0);
-        switch (auto op = PheapCmp(heap_array[idx], heap_array[idx + 1])) {
+        switch (auto op = PheapCmp(elem_0, elem_1)) {
           case EMPTY:
             resp_out_q.write({.op = op});
             break;
           case RIGHT:
             ++idx;
+            elem = elem_1;
           case LEFT:
-            resp_out_q.write({.op = op, .task = heap_array[idx].task});
-            heap_array[idx].valid = false;
+            resp_out_q.write({.op = op, .task = elem.task});
+            elem.valid = false;
+            write_enable = true;
             break;
           default:
             CHECK(false);
@@ -614,21 +637,27 @@ spin:
 
       case QueueOp::PUSHPOP: {
         CHECK_EQ(idx % 2, 0);
-        switch (PheapCmp(heap_array[idx], heap_array[idx + 1], elem)) {
+        switch (PheapCmp(elem_0, elem_1, req.payload)) {
           case EMPTY:
-            resp_out_q.write({.op = NOCHANGE, .task = elem.task});
+            resp_out_q.write({.op = NOCHANGE, .task = req.payload.task});
             break;
           case RIGHT:
             ++idx;
+            elem = elem_1;
           case LEFT:
-            resp_out_q.write({.op = NOCHANGE, .task = heap_array[idx].task});
-            CHECK(heap_array[idx].valid);
-            heap_array[idx].task = elem.task;
+            resp_out_q.write({.op = NOCHANGE, .task = elem.task});
+            CHECK(elem.valid);
+            elem.task = req.payload.task;
+            write_enable = true;
             break;
           default:
             CHECK(false);
         }
       } break;
+    }
+
+    if (write_enable) {
+      heap_array[idx] = elem;
     }
   }
 }
