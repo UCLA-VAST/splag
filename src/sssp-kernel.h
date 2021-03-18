@@ -111,6 +111,7 @@ struct QueueOp {
 
   bool is_push() const { return op == QueueOp::PUSH; }
   bool is_pop() const { return op == QueueOp::POP; }
+  bool is_pushpop() const { return op == QueueOp::PUSHPOP; }
 };
 
 // Used in:

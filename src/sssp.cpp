@@ -439,45 +439,36 @@ spin:
 
     switch (req.op) {
       case QueueOp::PUSH: {
-        VLOG(5) << "PUSH q[" << qid << "] <-  " << req.task;
-
-        queue_resp_q.write(resp);
-
         PheapPush(req, 0, root, req_out_q);
       } break;
 
+      case QueueOp::PUSHPOP:
       case QueueOp::POP: {
-        if (root.valid) {
-          VLOG(5) << "POP  q[" << qid << "]  -> " << root.task;
-
+        if (root.valid && !(req.is_pushpop() && root.task <= req.task)) {
           resp.task = root.task;
           CHECK_EQ(resp.task.vid() % kQueueCount, qid);
-          queue_resp_q.write(resp);
 
           PheapPop(req, 0, root, resp_in_q, req_out_q);
-        } else {
-          VLOG(5) << "POP  q[" << qid << "] -> {}";
-
+        } else if (req.is_pop()) {
           resp.task_op = TaskOp::NOOP;
-          queue_resp_q.write(resp);
-        }
-      } break;
-
-      case QueueOp::PUSHPOP: {
-        VLOG(5) << "PUSH q[" << qid << "] <-  " << req.task;
-        VLOG(5) << "POP  q[" << qid << "]  -> " << root.task;
-
-        if (!root.valid || root.task <= req.task) {
-          queue_resp_q.write(resp);
-        } else {
-          resp.task = root.task;
-          CHECK_EQ(resp.task.vid() % kQueueCount, qid);
-          queue_resp_q.write(resp);
-
-          PheapPop(req, 0, root, resp_in_q, req_out_q);
         }
       } break;
     }
+
+    switch (req.op) {
+      case QueueOp::PUSH: {
+        VLOG(5) << "PUSH q[" << qid << "] <-  " << req.task;
+      } break;
+      case QueueOp::POP: {
+        VLOG(5) << "POP  q[" << qid << "]  -> " << resp.task;
+      } break;
+      case QueueOp::PUSHPOP: {
+        VLOG(5) << "PUSH q[" << qid << "] <-  " << req.task;
+        VLOG(5) << "POP  q[" << qid << "]  -> " << resp.task;
+      } break;
+    }
+
+    queue_resp_q.write(resp);
   }
 }
 
@@ -517,46 +508,36 @@ spin:
     const auto elem_0 = heap_array[idx / 2 * 2];
     const auto elem_1 = heap_array[idx / 2 * 2 + 1];
     auto elem = idx % 2 == 0 ? elem_0 : elem_1;
-    bool write_enable = false;
+    bool elem_write_enable = false;
 
     switch (req.payload.op) {
       case QueueOp::PUSH: {
         PheapPush(req.payload, idx, elem, req_out_q);
-        write_enable = true;
+        elem_write_enable = true;
       } break;
 
+      case QueueOp::PUSHPOP:
       case QueueOp::POP: {
         CHECK_EQ(idx % 2, 0);
-        switch (auto op = PheapCmp(elem_0, elem_1)) {
+        const bool is_pushpop = req.payload.is_pushpop();
+        switch (auto op = is_pushpop ? PheapCmp(elem_0, elem_1, req.payload)
+                                     : PheapCmp(elem_0, elem_1)) {
           case EMPTY:
-            resp_out_q.write({.op = op});
+            resp_out_q.write({
+                .op = is_pushpop ? NOCHANGE : op,
+                .task = req.payload.task,
+            });
             break;
           case RIGHT:
             ++idx;
             elem = elem_1;
           case LEFT:
-            resp_out_q.write({.op = op, .task = elem.task});
+            resp_out_q.write({
+                .op = is_pushpop ? NOCHANGE : op,
+                .task = elem.task,
+            });
             PheapPop(req.payload, idx * 2, elem, resp_in_q, req_out_q);
-            write_enable = true;
-            break;
-          default:
-            CHECK(false);
-        }
-      } break;
-
-      case QueueOp::PUSHPOP: {
-        CHECK_EQ(idx % 2, 0);
-        switch (PheapCmp(elem_0, elem_1, req.payload)) {
-          case EMPTY:
-            resp_out_q.write({.op = NOCHANGE, .task = req.payload.task});
-            break;
-          case RIGHT:
-            ++idx;
-            elem = elem_1;
-          case LEFT:
-            resp_out_q.write({.op = NOCHANGE, .task = elem.task});
-            PheapPop(req.payload, idx * 2, elem, resp_in_q, req_out_q);
-            write_enable = true;
+            elem_write_enable = true;
             break;
           default:
             CHECK(false);
@@ -564,7 +545,7 @@ spin:
       } break;
     }
 
-    if (write_enable) {
+    if (elem_write_enable) {
       heap_array[idx] = elem;
     }
   }
@@ -606,49 +587,40 @@ spin:
     const auto elem_0 = heap_array[idx / 2 * 2];
     const auto elem_1 = heap_array[idx / 2 * 2 + 1];
     auto elem = idx % 2 == 0 ? elem_0 : elem_1;
-    bool write_enable = false;
+    bool elem_write_enable = false;
 
     switch (req.payload.op) {
       case QueueOp::PUSH: {
         CHECK(!elem.valid) << "insufficient heap capacity";
         elem.valid = true;
         elem.task = req.payload.task;
-        write_enable = true;
+        elem_write_enable = true;
       } break;
 
+      case QueueOp::PUSHPOP:
       case QueueOp::POP: {
         CHECK_EQ(idx % 2, 0);
-        switch (auto op = PheapCmp(elem_0, elem_1)) {
+        const bool is_pushpop = req.payload.is_pushpop();
+        switch (auto op = is_pushpop ? PheapCmp(elem_0, elem_1, req.payload)
+                                     : PheapCmp(elem_0, elem_1)) {
           case EMPTY:
-            resp_out_q.write({.op = op});
+            resp_out_q.write({
+                .op = is_pushpop ? NOCHANGE : op,
+                .task = req.payload.task,
+            });
             break;
           case RIGHT:
             ++idx;
             elem = elem_1;
           case LEFT:
-            resp_out_q.write({.op = op, .task = elem.task});
-            elem.valid = false;
-            write_enable = true;
-            break;
-          default:
-            CHECK(false);
-        }
-      } break;
-
-      case QueueOp::PUSHPOP: {
-        CHECK_EQ(idx % 2, 0);
-        switch (PheapCmp(elem_0, elem_1, req.payload)) {
-          case EMPTY:
-            resp_out_q.write({.op = NOCHANGE, .task = req.payload.task});
-            break;
-          case RIGHT:
-            ++idx;
-            elem = elem_1;
-          case LEFT:
-            resp_out_q.write({.op = NOCHANGE, .task = elem.task});
+            resp_out_q.write({
+                .op = is_pushpop ? NOCHANGE : op,
+                .task = elem.task,
+            });
             CHECK(elem.valid);
             elem.task = req.payload.task;
-            write_enable = true;
+            elem.valid = !is_pushpop;
+            elem_write_enable = true;
             break;
           default:
             CHECK(false);
@@ -656,7 +628,7 @@ spin:
       } break;
     }
 
-    if (write_enable) {
+    if (elem_write_enable) {
       heap_array[idx] = elem;
     }
   }
