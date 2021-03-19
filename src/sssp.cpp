@@ -436,7 +436,11 @@ spin:
         VLOG(5) << "PUSH q[" << qid << "] <-  " << req.task;
       } break;
       case QueueOp::POP: {
-        VLOG(5) << "POP  q[" << qid << "]  -> " << root.task;
+        if (root.valid) {
+          VLOG(5) << "POP  q[" << qid << "]  -> " << root.task;
+        } else {
+          VLOG(5) << "POP  q[" << qid << "]  -> {}";
+        }
       } break;
       case QueueOp::PUSHPOP: {
         VLOG(5) << "PUSH q[" << qid << "] <-  " << req.task;
