@@ -431,6 +431,20 @@ spin:
       continue;
     }
 
+    switch (req.op) {
+      case QueueOp::PUSH: {
+        VLOG(5) << "PUSH q[" << qid << "] <-  " << req.task;
+      } break;
+      case QueueOp::POP: {
+        VLOG(5) << "POP  q[" << qid << "]  -> " << root.task;
+      } break;
+      case QueueOp::PUSHPOP: {
+        VLOG(5) << "PUSH q[" << qid << "] <-  " << req.task;
+        VLOG(5) << "POP  q[" << qid << "]  -> "
+                << (root.task <= req.task ? req.task : root.task);
+      } break;
+    }
+
     QueueOpResp resp{
         .queue_op = req.op,
         .task_op = TaskOp::NEW,
@@ -452,19 +466,6 @@ spin:
         } else if (req.is_pop()) {
           resp.task_op = TaskOp::NOOP;
         }
-      } break;
-    }
-
-    switch (req.op) {
-      case QueueOp::PUSH: {
-        VLOG(5) << "PUSH q[" << qid << "] <-  " << req.task;
-      } break;
-      case QueueOp::POP: {
-        VLOG(5) << "POP  q[" << qid << "]  -> " << resp.task;
-      } break;
-      case QueueOp::PUSHPOP: {
-        VLOG(5) << "PUSH q[" << qid << "] <-  " << req.task;
-        VLOG(5) << "POP  q[" << qid << "]  -> " << resp.task;
       } break;
     }
 
