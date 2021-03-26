@@ -431,7 +431,6 @@ int main(int argc, char* argv[]) {
     }
     for (size_t i = 0; i < heap_index.size(); ++i) {
       heap_index[i].invalidate();
-      heap_index[i].set_qid(i % kQueueCount);
     }
     vertices[root % kIntervalCount][root / kIntervalCount] = {
         .parent = Vid(root), .distance = 0.f};

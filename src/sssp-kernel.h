@@ -31,7 +31,7 @@ class TaskOnChip {
   Vid vid() const { return data.range(vid_msb, vid_lsb); };
   Vertex vertex() const {
     ap_uint<32> distance = 0;
-    distance.range(kFloatMsb, kFloatMsb - kFloatWidth + 1) =
+    distance.range(kFloatMsb, kFloatLsb) =
         data.range(distance_msb, distance_lsb);
     return {
         .parent = Vid(data.range(parent_msb, parent_lsb)),
@@ -45,26 +45,12 @@ class TaskOnChip {
   void set_parent(Vid parent) { data.range(parent_msb, parent_lsb) = parent; }
   void set_distance(float distance) {
     data.range(distance_msb, distance_lsb) =
-        ap_uint<32>(bit_cast<uint32_t>(distance))
-            .range(kFloatMsb, kFloatMsb - kFloatWidth + 1);
+        ap_uint<32>(bit_cast<uint32_t>(distance)).range(kFloatMsb, kFloatLsb);
   }
   void set_offset(Eid offset) { data.range(offset_msb, offset_lsb) = offset; }
   void set_degree(Vid degree) { data.range(degree_msb, degree_lsb) = degree; }
 
  private:
-  ap_uint<143> data;
-  static constexpr int kVidWidth = 27;
-  static constexpr int kFloatWidth = 30;
-  static constexpr int kEidWidth = 32;
-  static_assert(kVidWidth * 3 + kFloatWidth + kEidWidth ==
-                    decltype(data)::width,
-                "invalid TaskOnChip configuration");
-
-  // kFloatWidth bits from kFloatMsb is used.
-  static constexpr int kFloatMsb = 30;
-  static_assert(kFloatMsb + 1 >= kFloatWidth,
-                "invalid TaskOnChip configuration");
-
   static constexpr int vid_lsb = 0;
   static constexpr int vid_msb = vid_lsb + kVidWidth - 1;
   static constexpr int parent_lsb = vid_msb + 1;
@@ -75,6 +61,7 @@ class TaskOnChip {
   static constexpr int offset_msb = offset_lsb + kEidWidth - 1;
   static constexpr int degree_lsb = offset_msb + 1;
   static constexpr int degree_msb = degree_lsb + kVidWidth - 1;
+  ap_uint<degree_msb + 1> data;
 };
 
 struct SourceVertex {
@@ -210,12 +197,37 @@ constexpr int kHeapOffChipBound =
  *        = i*kHeapOffChipWidth-kHeapDiff*(kHeapOffChipWidth-1)+1
  */
 
-enum HeapOp { GET, SET, CLEAR, SYNC };
+struct HeapStaleIndexEntry : public HeapIndexEntry {
+  Vid vid;
+  bool matches(Vid vid) const { return valid() && this->vid == vid; }
+  using HeapIndexEntry::operator=;
+  void set(Vid vid, const HeapIndexEntry& entry) {
+    HeapIndexEntry::operator=(entry);
+    this->vid = vid;
+  }
+};
+
+enum HeapOp {
+  GET_STALE,
+  CLEAR_STALE,
+  ACQUIRE_INDEX,
+  UPDATE_INDEX,
+  CLEAR_FRESH,
+  GET = GET_STALE,
+  SET = UPDATE_INDEX,
+  CLEAR = CLEAR_STALE,
+};
 
 struct HeapIndexReq {
   HeapOp op;
   Vid vid;
-  Vid index;
+  HeapIndexEntry entry;
+};
+
+struct HeapIndexResp {
+  HeapIndexEntry entry;
+  bool yield;   // If true, requester should try again.
+  bool enable;  // If true, enable PUSH.
 };
 
 struct HeapArrayReq {
@@ -224,14 +236,23 @@ struct HeapArrayReq {
   TaskOnChip task;
 };
 
+template <int level>
 struct HeapElem {
+  using Capacity = ap_uint<kLevelCount - level>;
+
   bool valid;
-  ap_uint<18> cap_left;
-  ap_uint<18> cap_right;
+  Capacity cap_left;
+  Capacity cap_right;
   TaskOnChip task;
 };
 
-using HeapReq = tapa::packet<int, QueueOp>;
+struct HeapReq {
+  LevelIndex index;
+  QueueOp::Op op;
+  TaskOnChip task;
+  bool replace;
+  Vid vid;
+};
 
 enum HeapRespOp {
   EMPTY,     // No element returned.

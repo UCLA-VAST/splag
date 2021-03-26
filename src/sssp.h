@@ -30,6 +30,17 @@ inline constexpr int64_t bit_length(int64_t n) { return 1 + log(n, 2); }
 using Vid = int32_t;  // Large enough to index all vertices.
 using Eid = int32_t;  // Large enough to index all edges.
 
+// since all distances are positive and normalized, we can store fewer bits.
+// kFloatWidth bits from kFloatMsb is used.
+constexpr int kFloatMsb = 30;
+constexpr int kFloatWidth = 30;
+constexpr int kFloatLsb = kFloatMsb - kFloatWidth + 1;
+static_assert(kFloatLsb >= 0, "invalid configuration");
+static_assert(kFloatMsb <= 32, "invalid configuration");
+
+static constexpr int kVidWidth = 20;
+static constexpr int kEidWidth = 25;
+
 constexpr Vid kNullVid = -1;
 constexpr float kInfDistance = std::numeric_limits<float>::infinity();
 
@@ -98,61 +109,84 @@ inline std::ostream& operator<<(std::ostream& os, const Task& obj) {
 }
 
 constexpr int kQueueCount = 4;
+constexpr int kLevelCount = 15;
+using LevelId = ap_uint<bit_length(kLevelCount - 1)>;
+using LevelIndex = ap_uint<kLevelCount - 1>;
 
 class HeapIndexEntry {
  public:
-  int qid() const { return data(kQidMsb, kQidLsb); }
-  void set_qid(int qid) { data(kQidMsb, kQidLsb) = qid; }
+  HeapIndexEntry() {}
+  HeapIndexEntry(std::nullptr_t) { invalidate(); }
+  HeapIndexEntry(LevelId level, LevelIndex index, float distance) {
+    this->set(level, index, distance);
+  }
 
-  bool valid() const { return data.bit(kValidBit); }
-  void invalidate() { return data.clear(kValidBit); }
+  bool valid() const { return data_.bit(kValidBit); }
+  void invalidate() { data_.clear(kValidBit); }
 
-  int index(int i) const {
+  LevelId level() const {
     CHECK(valid());
-    CHECK_GE(i, 0);
-    CHECK_LT(i, kIndexCount);
-    const auto lsb = kIndexLsb + kIndexWidth * i;
-    const auto msb = lsb + kIndexWidth - 1;
-    CHECK_GE(lsb, kIndexLsb);
-    CHECK_LT(msb, kValidBit);
-    return data(msb, lsb);
+    return data_.range(kLevelMsb, kLevelLsb);
   }
-  void set_index(int i, int index) {
-    CHECK_GE(i, 0);
-    CHECK_LT(i, kIndexCount);
-    const auto lsb = kIndexLsb + kIndexWidth * i;
-    const auto msb = lsb + kIndexWidth - 1;
-    CHECK_GE(lsb, kIndexLsb);
-    CHECK_LT(msb, kValidBit);
-    data.set(kValidBit);
-    data(msb, lsb) = index;
+  LevelIndex index() const {
+    CHECK(valid());
+    return data_.range(kIndexMsb, kIndexLsb);
+  }
+  float distance() const {
+    CHECK(valid());
+    return bit_cast<float>(
+        uint32_t(data_.range(kDistanceMsb, kDistanceLsb) << kFloatLsb));
+  }
+  void set(LevelId level, LevelIndex index, float distance) {
+    CHECK_GE(level, 0);
+    CHECK_LT(level, kLevelCount);
+    CHECK_GE(index, 0);
+    CHECK_LT(index, (1 << level));
+    data_.set(kValidBit);
+    data_.range(kLevelMsb, kLevelLsb) = level;
+    data_.range(kIndexMsb, kIndexLsb) = index;
+    data_.range(kDistanceMsb, kDistanceLsb) =
+        bit_cast<ap_uint<32>>(distance).range(kFloatMsb, kFloatLsb);
   }
 
-  static constexpr int kWidth = 32;
-  static constexpr int kIndexCount = 1;
+  bool is_descendant_of(LevelId level, LevelIndex index) const {
+    CHECK(valid());
+    CHECK_GE(this->level(), level);
+    return this->index() / (1 << (this->level() - level)) == index;
+  };
+
+  bool distance_eq(const HeapIndexEntry& other) const {
+    return valid() && data_.range(kDistanceMsb, kDistanceLsb) ==
+                          other.data_.range(kDistanceMsb, kDistanceLsb);
+  }
+  bool distance_le(const HeapIndexEntry& other) const {
+    return valid() && other.valid() &&
+           data_.range(kDistanceMsb, kDistanceLsb) <=
+               other.data_.range(kDistanceMsb, kDistanceLsb);
+  }
 
  private:
-  ap_uint<kWidth> data;
-  static constexpr int kQidWidth = log(kQueueCount, 2);
-  static constexpr int kIndexWidth = 29;
-
-  static constexpr int kQidLsb = 0;
-  static constexpr int kQidMsb = kQidLsb + kQidWidth - 1;
-  static constexpr int kIndexLsb = kQidMsb + 1;
-  static constexpr int kValidBit = kIndexLsb + kIndexWidth * kIndexCount;
-
-  static_assert(is_power_of(kWidth, 2), "AXI requires power-of-2 width");
-  static_assert(kValidBit < kWidth, "invalid configuration");
+  ap_uint<64> data_;
+  // bool valid;
+  // LevelId level;
+  // LevelIndex index;
+  // ap_uint<kFloatWidth> distance;
+  static constexpr int kValidBit = 0;
+  static constexpr int kLevelLsb = kValidBit + 1;
+  static constexpr int kLevelMsb = kLevelLsb + LevelId::width - 1;
+  static constexpr int kIndexLsb = kLevelMsb + 1;
+  static constexpr int kIndexMsb = kIndexLsb + LevelIndex::width - 1;
+  static constexpr int kDistanceLsb = kIndexMsb + 1;
+  static constexpr int kDistanceMsb = kDistanceLsb + kFloatWidth - 1;
+  static_assert(kDistanceMsb < decltype(data_)::width, "invalid configuration");
 };
 
 inline std::ostream& operator<<(std::ostream& os, const HeapIndexEntry& obj) {
-  os << "{qid: " << obj.qid();
   if (obj.valid()) {
-    for (int i = 0; i < obj.kIndexCount; ++i) {
-      os << ", index[" << i << "]: " << obj.index(i);
-    }
+    return os << obj.level() << "`" << obj.index() << " (" << obj.distance()
+              << ")";
   }
-  return os << "}";
+  return os << "invalid";
 }
 
 // Platform-specific constants and types.
