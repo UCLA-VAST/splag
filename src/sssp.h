@@ -12,12 +12,7 @@
 template <typename To, typename From>
 inline To bit_cast(const From& from) {
   static_assert(sizeof(To) == sizeof(From), "unsupported bitcast");
-  union {
-    To to;
-    From from;
-  } u;
-  u.from = from;
-  return u.to;
+  return reinterpret_cast<const To&>(from);
 }
 
 // Test power-of-k.
