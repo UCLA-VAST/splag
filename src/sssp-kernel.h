@@ -151,52 +151,6 @@ inline std::ostream& operator<<(std::ostream& os, const QueueOpResp& obj) {
   return os << "}";
 }
 
-// #elements shared by the on-chip heap and the off-chip heap.
-constexpr int kHeapSharedSize = 4096;
-static_assert(is_power_of(kHeapSharedSize, kHeapOnChipWidth),
-              "invalid heap configuration");
-static_assert(is_power_of(kHeapSharedSize, kHeapOffChipWidth),
-              "invalid heap configuration");
-// #elements in the on-chip heap.
-constexpr int kHeapOnChipSize =
-    (kHeapSharedSize * kHeapOnChipWidth - 1) / (kHeapOnChipWidth - 1);
-// #elements whose children are on chip.
-constexpr int kHeapOnChipBound = (kHeapOnChipSize - 1) / kHeapOnChipWidth;
-// #elements skipped in the off-chip heap (because they are on-chip).
-constexpr int kHeapOffChipSkipped =
-    (kHeapOffChipWidth * kHeapOnChipSize * (kHeapOnChipWidth - 1) +
-     kHeapOffChipWidth - kHeapOnChipWidth) /
-    (kHeapOffChipWidth - 1) / kHeapOnChipWidth;
-// #elements difference between off-chip indices and mixed indices.
-constexpr int kHeapDiff = kHeapOnChipSize - kHeapOffChipSkipped;
-// #elements in the mixed heap whose parent is on chip.
-constexpr int kHeapOffChipBound =
-    kHeapOnChipSize +
-    kHeapOffChipWidth *
-        (kHeapOnChipSize - (kHeapOnChipSize - 1) / kHeapOnChipWidth);
-
-/*
- *  parent of i:
- *    if i < kHeapOnChipSize:                           {on-chip}
- *      (i-1)/kHeapOnChipWidth                            {on-chip}
- *    elif i < kHeapOffChipBound                        {off-chip}
- *      (i-kHeapDiff-1)/kHeapOffChipWidth+kHeapDiff       {on-chip}
- *        = (i+(kHeapDiff*(kHeapOffChipWidth-1)-1))/kHeapOffChipWidth
- *    else:                                             {off-chip}
- *      (i-kHeapDiff-1)/kHeapOffChipWidth+kHeapDiff       {off-chip}
- *        = (i+(kHeapDiff*(kHeapOffChipWidth-1)-1))/kHeapOffChipWidth
- *
- *  first child of i:
- *    if i < kHeapOnChipBound:                                    {on-chip}
- *      i*kHeapOnChipWidth+1                                        {on-chip}
- *    elif i < kHeapOnChipSize:                                   {on-chip}
- *      (i-kHeapDiff)*kHeapOffChipWidth+kHeapDiff+1                 {off-chip}
- *        = i*kHeapOffChipWidth-kHeapDiff*(kHeapOffChipWidth-1)+1
- *    else:                                                       {off-chip}
- *      (i-kHeapDiff)*kHeapOffChipWidth+kHeapDiff+1                 {off-chip}
- *        = i*kHeapOffChipWidth-kHeapDiff*(kHeapOffChipWidth-1)+1
- */
-
 struct HeapStaleIndexEntry : public HeapIndexEntry {
   Vid vid;
   bool matches(Vid vid) const { return valid() && this->vid == vid; }
