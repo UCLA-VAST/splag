@@ -16,10 +16,7 @@ class TaskOnChip {
 
   TaskOnChip(const Task& task) {
     set_vid(task.vid);
-    set_parent(task.vertex.parent);
-    set_distance(task.vertex.distance);
-    set_offset(task.vertex.offset);
-    set_degree(task.vertex.degree);
+    set_vertex(task.vertex);
   }
 
   operator Task() const { return {.vid = vid(), .vertex = vertex()}; }
@@ -42,6 +39,18 @@ class TaskOnChip {
   }
 
   void set_vid(Vid vid) { data.range(vid_msb, vid_lsb) = vid; }
+  void set_value(const Vertex& vertex) {
+    set_parent(vertex.parent);
+    set_distance(vertex.distance);
+  }
+  void set_metadata(const Vertex& vertex) {
+    set_offset(vertex.offset);
+    set_degree(vertex.degree);
+  }
+  void set_vertex(const Vertex& vertex) {
+    set_value(vertex);
+    set_metadata(vertex);
+  }
   void set_parent(Vid parent) { data.range(parent_msb, parent_lsb) = parent; }
   void set_distance(float distance) {
     data.range(distance_msb, distance_lsb) =
@@ -150,6 +159,12 @@ inline std::ostream& operator<<(std::ostream& os, const QueueOpResp& obj) {
   }
   return os << "}";
 }
+
+struct VertexCacheEntry {
+  bool is_valid = false;
+  bool is_locked;
+  TaskOnChip task;
+};
 
 struct HeapStaleIndexEntry : public HeapIndexEntry {
   Vid vid;
