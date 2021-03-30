@@ -409,7 +409,7 @@ int main(int argc, char* argv[]) {
   }
 
   // Other kernel arguments.
-  aligned_vector<int64_t> metadata(9 + kPeCount);
+  aligned_vector<int64_t> metadata(9 + kPeCount + kIntervalCount * 4);
   array<aligned_vector<Vertex>, kIntervalCount> vertices;
   for (auto& interval : vertices) {
     interval.resize(tapa::round_up_div<kIntervalCount>(vertex_count));
@@ -526,6 +526,18 @@ int main(int argc, char* argv[]) {
             << " (" << std::fixed << std::setprecision(1)
             << 100. * pe_active_total / cycle_count / kIntervalCount << "%) ("
             << kIntervalCount << " intervals)";
+
+    for (int iid = 0; iid < kIntervalCount; ++iid) {
+      VLOG(3) << "  interval[" << iid << "]:";
+      const auto read_hit = metadata[9 + kPeCount + iid * 4 + 0];
+      const auto read_miss = metadata[9 + kPeCount + iid * 4 + 1];
+      const auto write_hit = metadata[9 + kPeCount + iid * 4 + 2];
+      const auto write_miss = metadata[9 + kPeCount + iid * 4 + 3];
+      VLOG(3) << "    read hit: " << std::fixed << std::setprecision(1)
+              << 100. * read_hit / (read_hit + read_miss) << "%";
+      VLOG(3) << "    write hit: " << std::fixed << std::setprecision(1)
+              << 100. * write_hit / (write_hit + write_miss) << "%";
+    }
 
     if (!IsValid(root, edges_view, weights_view, indexed_weights,
                  parents.data(), distances.data(), vertex_count)) {

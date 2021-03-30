@@ -11,6 +11,7 @@
 using tapa::detach;
 using tapa::istream;
 using tapa::istreams;
+using tapa::join;
 using tapa::mmap;
 using tapa::ostream;
 using tapa::ostreams;
@@ -782,6 +783,8 @@ void GenPush(ostream<Vid>& write_addr_q, ostream<Vertex>& write_data_q,
 
 void VertexCache(
     //
+    istream<bool>& done_q, ostream<int32_t>& stat_q,
+    //
     istream<TaskOnChip>& req_q, ostream<TaskOnChip>& push_q,
     ostream<bool>& noop_q,
     //
@@ -799,9 +802,31 @@ void VertexCache(
     VLOG(5) << "task     -> NOOP";
   };
 
+  int32_t read_hit = 0;
+  int32_t read_miss = 0;
+  int32_t write_hit = 0;
+  int32_t write_miss = 0;
+
+  bool is_first_iteration = true;
+
 spin:
   for (;;) {
 #pragma HLS pipeline off
+    if (is_first_iteration || !done_q.empty()) {
+      if (!is_first_iteration) {
+        done_q.read(nullptr);
+        stat_q.write(read_hit);
+        stat_q.write(read_miss);
+        stat_q.write(write_hit);
+        stat_q.write(write_miss);
+      }
+    init:
+      for (int i = 0; i < kVertexCacheSize; ++i) {
+        cache[i].is_valid = false;
+      }
+      is_first_iteration = false;
+    }
+
     if (!read_data_q.empty()) {
       const auto vertex = read_data_q.read(nullptr);
       const auto vid = vid_in_q.read();
@@ -820,6 +845,7 @@ spin:
       } else {
         // Distance in cache is closer; generate PUSH.
         GenPush(write_addr_q, write_data_q, push_q, entry.task);
+        ++write_miss;
       }
       cache[vid % kVertexCacheSize] = entry;
     } else if (!req_q.empty()) {
@@ -840,8 +866,14 @@ spin:
         // If locked, PUSH will be generated when unlocked if necessary.
         if (is_entry_updated && !entry.is_locked) {
           GenPush(write_addr_q, write_data_q, push_q, entry.task);
+          ++write_miss;
         } else {
           GenNoop();
+        }
+
+        ++read_hit;
+        if (is_entry_updated && entry.is_locked) {
+          ++write_hit;
         }
       } else if (!(entry.is_valid && entry.is_locked)) {  // Miss.
         req_q.read(nullptr);
@@ -858,6 +890,8 @@ spin:
         entry.task.set_vid(vid);
         entry.task.set_value(task.vertex());
         is_entry_updated = true;
+
+        ++read_miss;
       }  // Otherwise, wait until entry is unlocked.
 
       if (is_entry_updated) {
@@ -961,6 +995,9 @@ void Dispatcher(
     const Task root,
     // Metadata.
     tapa::mmap<int64_t> metadata,
+    // Vertex cache control.
+    ostreams<bool, kIntervalCount>& vertex_cache_done_q,
+    istreams<int32_t, kIntervalCount>& vertex_cache_stat_q,
     // Task and queue requests.
     ostream<TaskReq>& task_req_q, istream<TaskResp>& task_resp_q,
     istream<uint_noop_t>& update_noop_q, ostream<uint_qid_t>& queue_req_q,
@@ -1124,6 +1161,8 @@ spin:
   CHECK_EQ(active_task_count, 0);
 #endif  // __SYNTHESIS__
 
+  RANGE(iid, kIntervalCount, vertex_cache_done_q[iid].write(false));
+
   metadata[0] = visited_edge_count;
   metadata[1] = push_count;
   metadata[2] = pushpop_count;
@@ -1137,6 +1176,11 @@ meta:
   for (int pe = 0; pe < kPeCount; ++pe) {
 #pragma HLS pipeline II = 1
     metadata[9 + pe] = pe_active_count[pe];
+  }
+
+vertex_cache_stat:
+  for (int i = 0; i < kIntervalCount * 4; ++i) {
+    metadata[9 + kPeCount + i] = vertex_cache_stat_q[i / 4].read();
   }
 }
 
@@ -1179,12 +1223,15 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   streams<Vid, kIntervalCount, 2> vertex_write_addr_q;
   streams<Vertex, kIntervalCount, 2> vertex_write_data_q;
   streams<Vid, kIntervalCount, 16> vid_q;
+  streams<bool, kIntervalCount, 2> vertex_cache_done_q;
+  streams<int32_t, kIntervalCount, 2> vertex_cache_stat_q;
 
   stream<uint_noop_t, 2> update_noop_q;
 
   tapa::task()
-      .invoke<0>(Dispatcher, root, metadata, task_req_q, task_resp_q,
-                 update_noop_q, pop_req_q, queue_resp_q)
+      .invoke<join>(Dispatcher, root, metadata, vertex_cache_done_q,
+                    vertex_cache_stat_q, task_req_q, task_resp_q, update_noop_q,
+                    pop_req_q, queue_resp_q)
       .invoke<detach>(TaskReqArbiter, task_req_q, task_req_qi)
       .invoke<detach>(TaskRespArbiter, task_resp_qi, task_resp_q)
       .invoke<detach, kQueueCount>(TaskQueue, seq(), push_req_qi, pop_req_qi,
@@ -1214,10 +1261,10 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
       .invoke<detach, kIntervalCount>(VertexMem, vertex_read_addr_q,
                                       vertex_read_data_q, vertex_write_addr_q,
                                       vertex_write_data_q, vertices)
-      .invoke<detach, kIntervalCount>(VertexCache, update_req_qi0, push_req_q,
-                                      update_noop_qi1, vid_q, vid_q,
-                                      vertex_read_addr_q, vertex_read_data_q,
-                                      vertex_write_addr_q, vertex_write_data_q)
+      .invoke<detach, kIntervalCount>(
+          VertexCache, vertex_cache_done_q, vertex_cache_stat_q, update_req_qi0,
+          push_req_q, update_noop_qi1, vid_q, vid_q, vertex_read_addr_q,
+          vertex_read_data_q, vertex_write_addr_q, vertex_write_data_q)
       .invoke<detach>(NoopMerger, update_noop_qi1, update_noop_q)
 
       // PEs.

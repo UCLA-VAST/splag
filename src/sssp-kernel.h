@@ -161,7 +161,7 @@ inline std::ostream& operator<<(std::ostream& os, const QueueOpResp& obj) {
 }
 
 struct VertexCacheEntry {
-  bool is_valid = false;
+  bool is_valid;
   bool is_locked;
   TaskOnChip task;
 };
