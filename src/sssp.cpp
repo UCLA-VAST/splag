@@ -582,10 +582,10 @@ void PiHeapBodyL14(HEAP_PORTS) { HEAP_BODY(14, URAM); }
 void PiHeapArrayMem(tapa::async_mmap<Task> mem) {
 spin:
   for (;;) {
-    if (!mem.read_data_empty()) {
-      mem.read_addr_try_write({});
-      mem.write_addr_try_write({});
-      mem.write_data_try_write({});
+    if (!mem.read_data.empty()) {
+      mem.read_addr.try_write({});
+      mem.write_addr.try_write({});
+      mem.write_data.try_write({});
     }
   }
 }
@@ -593,10 +593,10 @@ spin:
 void PiHeapIndexMem(tapa::async_mmap<HeapIndexEntry> mem) {
 spin:
   for (;;) {
-    if (!mem.read_data_empty()) {
-      mem.read_addr_try_write({});
-      mem.write_addr_try_write({});
-      mem.write_data_try_write({});
+    if (!mem.read_data.empty()) {
+      mem.read_addr.try_write({});
+      mem.write_addr.try_write({});
+      mem.write_data.try_write({});
     }
   }
 }
@@ -766,16 +766,17 @@ spin:
 void VertexMem(
     //
     istream<Vid>& read_addr_q, ostream<Vertex>& read_data_q,
-    istream<Vid>& write_addr_q, istream<Vertex>& write_data_q,
+    istream<packet<Vid, Vertex>>& write_req_q, ostream<bool>& write_resp_q,
     //
     tapa::async_mmap<Vertex> mem) {
-  ReadWriteMem(read_addr_q, read_data_q, write_addr_q, write_data_q, mem);
+  ReadWriteMem(read_addr_q, read_data_q, write_req_q, write_resp_q, mem);
 }
 
-void GenPush(ostream<Vid>& write_addr_q, ostream<Vertex>& write_data_q,
-             ostream<TaskOnChip>& push_q, const TaskOnChip& task) {
-  write_addr_q.write(task.vid() / kIntervalCount);
-  write_data_q.write(task.vertex());
+void GenPush(ostream<packet<Vid, Vertex>>& write_req_q,
+             ostream<Vid>& write_vid_out_q, ostream<TaskOnChip>& push_q,
+             const TaskOnChip& task) {
+  write_req_q.write({task.vid() / kIntervalCount, task.vertex()});
+  write_vid_out_q.write(task.vid());
   VLOG(5) << "vmem[" << task.vid() << "] <- " << task;
   push_q.write(task);
   VLOG(5) << "task     -> " << task;
@@ -788,10 +789,11 @@ void VertexCache(
     istream<TaskOnChip>& req_q, ostream<TaskOnChip>& push_q,
     ostream<bool>& noop_q,
     //
-    ostream<Vid>& vid_out_q, istream<Vid>& vid_in_q,
+    ostream<Vid>& read_vid_out_q, istream<Vid>& read_vid_in_q,
+    ostream<Vid>& write_vid_out_q, istream<Vid>& write_vid_in_q,
     //
     ostream<Vid>& read_addr_q, istream<Vertex>& read_data_q,
-    ostream<Vid>& write_addr_q, ostream<Vertex>& write_data_q) {
+    ostream<packet<Vid, Vertex>>& write_req_q, istream<bool>& write_resp_q) {
   constexpr int kVertexCacheSize = 4096;
   VertexCacheEntry cache[kVertexCacheSize];
 #pragma HLS bind_storage variable = cache type = RAM_S2P impl = URAM
@@ -809,10 +811,12 @@ void VertexCache(
 
   bool is_first_iteration = true;
 
+  int8_t active_write_count = 0;
+
 spin:
   for (;;) {
 #pragma HLS pipeline off
-    if (is_first_iteration || !done_q.empty()) {
+    if (is_first_iteration || (active_write_count == 0 && !done_q.empty())) {
       if (!is_first_iteration) {
         done_q.read(nullptr);
         stat_q.write(read_hit);
@@ -827,14 +831,20 @@ spin:
       is_first_iteration = false;
     }
 
-    if (!read_data_q.empty()) {
+    if (!write_resp_q.empty() && !write_vid_in_q.empty()) {
+      write_resp_q.read(nullptr);
+      const auto vid = write_vid_in_q.read(nullptr);
+      cache[vid % kVertexCacheSize].is_writing = false;
+      CHECK_GT(active_write_count, 0);
+      --active_write_count;
+    } else if (!read_data_q.empty() && !read_vid_in_q.empty()) {
       const auto vertex = read_data_q.read(nullptr);
-      const auto vid = vid_in_q.read();
+      const auto vid = read_vid_in_q.read(nullptr);
       VLOG(5) << "vmem[" << vid << "] -> " << vertex;
       auto entry = cache[vid % kVertexCacheSize];
       CHECK_EQ(entry.task.vid(), vid);
-      CHECK(entry.is_locked);
-      entry.is_locked = false;
+      CHECK(entry.is_reading);
+      entry.is_reading = false;
       // Vertex updates do not have metadata of the destination vertex, so
       // update cache using metadata from DRAM.
       entry.task.set_metadata(vertex);
@@ -844,7 +854,9 @@ spin:
         entry.task.set_value(vertex);
       } else {
         // Distance in cache is closer; generate PUSH.
-        GenPush(write_addr_q, write_data_q, push_q, entry.task);
+        GenPush(write_req_q, write_vid_out_q, push_q, entry.task);
+        ++active_write_count;
+        entry.is_writing = true;
         ++write_miss;
       }
       cache[vid % kVertexCacheSize] = entry;
@@ -862,37 +874,40 @@ spin:
           entry.task.set_value(task.vertex());
         }
 
-        // Generate PUSH if and only if cache is updated and not locked.
-        // If locked, PUSH will be generated when unlocked if necessary.
-        if (is_entry_updated && !entry.is_locked) {
-          GenPush(write_addr_q, write_data_q, push_q, entry.task);
+        // Generate PUSH if and only if cache is updated and not reading.
+        // If reading, PUSH will be generated when read finishes, if necessary.
+        if (is_entry_updated && !entry.is_reading) {
+          GenPush(write_req_q, write_vid_out_q, push_q, entry.task);
+          ++active_write_count;
+          entry.is_writing = true;
           ++write_miss;
         } else {
           GenNoop();
         }
 
         ++read_hit;
-        if (is_entry_updated && entry.is_locked) {
+        if (is_entry_updated && entry.is_reading) {
           ++write_hit;
         }
-      } else if (!(entry.is_valid && entry.is_locked)) {  // Miss.
+      } else if (!(entry.is_valid && (entry.is_reading || entry.is_writing)) &&
+                 !read_addr_q.full() && !read_vid_out_q.full()) {  // Miss.
         req_q.read(nullptr);
         VLOG(5) << "task     <- " << task;
 
         // Issue DRAM read request.
-        read_addr_q.write(vid / kIntervalCount);
+        read_addr_q.try_write(vid / kIntervalCount);
         VLOG(5) << "vmem[" << vid << "] ?";
-        vid_out_q.write(vid);
+        read_vid_out_q.try_write(vid);
 
         // Replace cache with new task.
         entry.is_valid = true;
-        entry.is_locked = true;
+        entry.is_reading = true;
         entry.task.set_vid(vid);
         entry.task.set_value(task.vertex());
         is_entry_updated = true;
 
         ++read_miss;
-      }  // Otherwise, wait until entry is unlocked.
+      }  // Otherwise, wait until entry is not reading.
 
       if (is_entry_updated) {
         cache[vid % kVertexCacheSize] = entry;
@@ -1220,9 +1235,10 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   streams<bool, kIntervalCount, 2> update_noop_qi1;
   streams<Vid, kIntervalCount, 2> vertex_read_addr_q;
   streams<Vertex, kIntervalCount, 2> vertex_read_data_q;
-  streams<Vid, kIntervalCount, 2> vertex_write_addr_q;
-  streams<Vertex, kIntervalCount, 2> vertex_write_data_q;
-  streams<Vid, kIntervalCount, 16> vid_q;
+  streams<packet<Vid, Vertex>, kIntervalCount, 2> vertex_write_req_q;
+  streams<bool, kIntervalCount, 2> vertex_write_resp_q;
+  streams<Vid, kIntervalCount, 16> read_vid_q;
+  streams<Vid, kIntervalCount, 16> write_vid_q;
   streams<bool, kIntervalCount, 2> vertex_cache_done_q;
   streams<int32_t, kIntervalCount, 2> vertex_cache_stat_q;
 
@@ -1259,12 +1275,13 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
       // clang-format on
 
       .invoke<detach, kIntervalCount>(VertexMem, vertex_read_addr_q,
-                                      vertex_read_data_q, vertex_write_addr_q,
-                                      vertex_write_data_q, vertices)
+                                      vertex_read_data_q, vertex_write_req_q,
+                                      vertex_write_resp_q, vertices)
       .invoke<detach, kIntervalCount>(
           VertexCache, vertex_cache_done_q, vertex_cache_stat_q, update_req_qi0,
-          push_req_q, update_noop_qi1, vid_q, vid_q, vertex_read_addr_q,
-          vertex_read_data_q, vertex_write_addr_q, vertex_write_data_q)
+          push_req_q, update_noop_qi1, read_vid_q, read_vid_q, write_vid_q,
+          write_vid_q, vertex_read_addr_q, vertex_read_data_q,
+          vertex_write_req_q, vertex_write_resp_q)
       .invoke<detach>(NoopMerger, update_noop_qi1, update_noop_q)
 
       // PEs.

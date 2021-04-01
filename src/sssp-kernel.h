@@ -162,7 +162,8 @@ inline std::ostream& operator<<(std::ostream& os, const QueueOpResp& obj) {
 
 struct VertexCacheEntry {
   bool is_valid;
-  bool is_locked;
+  bool is_reading;
+  bool is_writing;
   TaskOnChip task;
 };
 
@@ -392,8 +393,8 @@ spin:
   for (;;) {
 #pragma HLS pipeline II = 1
     UPDATE(read_addr, read_addr_q.try_read(read_addr),
-           mem.read_addr_try_write(read_addr));
-    UPDATE(read_data, mem.read_data_try_read(read_data),
+           mem.read_addr.try_write(read_addr));
+    UPDATE(read_data, mem.read_data.try_read(read_data),
            read_data_q.try_write(read_data));
   }
 }
@@ -411,36 +412,42 @@ spin:
   for (;;) {
 #pragma HLS pipeline II = 1
     UPDATE(write_addr, write_addr_q.try_read(write_addr),
-           mem.write_addr_try_write(write_addr));
+           mem.write_addr.try_write(write_addr));
     UPDATE(write_data, write_data_q.try_read(write_data),
-           mem.write_data_try_write(write_data));
+           mem.write_data.try_write(write_data));
   }
 }
 
 // A fully pipelined lightweight proxy for read-write tapa::async_mmap.
 template <typename data_t, typename addr_t>
-inline void ReadWriteMem(tapa::istream<addr_t>& read_addr_q,
-                         tapa::ostream<data_t>& read_data_q,
-                         tapa::istream<addr_t>& write_addr_q,
-                         tapa::istream<data_t>& write_data_q,
-                         tapa::async_mmap<data_t>& mem) {
+inline void ReadWriteMem(
+    tapa::istream<addr_t>& read_addr_q, tapa::ostream<data_t>& read_data_q,
+    tapa::istream<tapa::packet<addr_t, data_t>>& write_req_q,
+    tapa::ostream<bool>& write_resp_q, tapa::async_mmap<data_t>& mem) {
 #pragma HLS inline
-  DECL_BUF(addr_t, read_addr);
-  DECL_BUF(data_t, read_data);
-  DECL_BUF(addr_t, write_addr);
-  DECL_BUF(data_t, write_data);
+  int32_t write_count = 0;
 
 spin:
   for (;;) {
 #pragma HLS pipeline II = 1
-    UPDATE(read_addr, read_addr_q.try_read(read_addr),
-           mem.read_addr_try_write(read_addr));
-    UPDATE(read_data, mem.read_data_try_read(read_data),
-           read_data_q.try_write(read_data));
-    UPDATE(write_addr, write_addr_q.try_read(write_addr),
-           mem.write_addr_try_write(write_addr));
-    UPDATE(write_data, write_data_q.try_read(write_data),
-           mem.write_data_try_write(write_data));
+    if (!read_addr_q.empty() && !mem.read_addr.full()) {
+      mem.read_addr.try_write(read_addr_q.read(nullptr));
+    }
+    if (!mem.read_data.empty() && !read_data_q.full()) {
+      read_data_q.try_write(mem.read_data.read(nullptr));
+    }
+    if (!write_req_q.empty() && !mem.write_addr.full() &&
+        !mem.write_data.full()) {
+      const auto pkt = write_req_q.read(nullptr);
+      mem.write_addr.try_write(pkt.addr);
+      mem.write_data.try_write(pkt.payload);
+    }
+    if (write_count > 0 && write_resp_q.try_write(false)) {
+      --write_count;
+    }
+    if (!mem.write_resp.empty()) {
+      write_count += mem.write_resp.read(nullptr) + 1;
+    }
   }
 }
 
