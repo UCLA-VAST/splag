@@ -337,6 +337,8 @@ HeapRespOp PiHeapCmp(const HeapElem<level>& left, const HeapElem<level>& right,
 }
 
 void PiHeapHead(
+    //
+    istream<bool>& done_q, ostream<int32_t>& stat_q,
     // Scalar
     Vid qid,
     // Queue requests.
@@ -356,8 +358,16 @@ void PiHeapHead(
     CHECK_EQ(root.cap_right, cap) << "q[" << qid << "]";
   });
 
+  int32_t stall_iteration_count = 0;
+
 spin:
   for (;;) {
+#pragma HLS pipeline off
+    if (!done_q.empty()) {
+      done_q.read(nullptr);
+      stat_q.write(stall_iteration_count);
+      stall_iteration_count = 0;
+    }
     bool do_push = false;
     bool do_pop = false;
     const auto push_req = push_req_q.read(do_push);
@@ -404,12 +414,14 @@ spin:
       acquire:
         do {
 #pragma HLS pipeline off
+          ++stall_iteration_count;
           index_req_q.write({.op = ACQUIRE_INDEX,
                              .vid = req.task.vid(),
                              .entry = {0, 0, req.task.vertex().distance}});
           ap_wait();
           heap_index_resp = index_resp_q.read();
         } while (heap_index_resp.yield);
+        --stall_iteration_count;
         if (heap_index_resp.enable) {
           PiHeapPush(qid,
                      {
@@ -609,6 +621,8 @@ spin:
 // Each pop removes a task if the queue is not empty, otherwise the response
 // indicates that the queue is empty.
 void TaskQueue(
+    //
+    istream<bool>& done_q, ostream<int32_t>& stat_q,
     // Scalar
     Vid qid,
     // Queue requests.
@@ -623,8 +637,9 @@ void TaskQueue(
   stream<packet<LevelId, HeapIndexReq>, 2> index_req_q;
   stream<packet<LevelId, HeapIndexResp>, 2> index_resp_q;
   task()
-      .invoke<detach>(PiHeapHead, qid, push_req_q, pop_req_q, queue_resp_q,
-                      req_q[0], resp_q[0], index_req_qs[0], index_resp_qs[0])
+      .invoke<detach>(PiHeapHead, done_q, stat_q, qid, push_req_q, pop_req_q,
+                      queue_resp_q, req_q[0], resp_q[0], index_req_qs[0],
+                      index_resp_qs[0])
       // clang-format off
       .invoke<detach>(PiHeapBodyL1,  qid, req_q[ 0], resp_q[ 0], req_q[ 1], resp_q[ 1], index_req_qs[ 1], index_resp_qs[ 1])
       .invoke<detach>(PiHeapBodyL2,  qid, req_q[ 1], resp_q[ 1], req_q[ 2], resp_q[ 2], index_req_qs[ 2], index_resp_qs[ 2])
@@ -1013,6 +1028,8 @@ void Dispatcher(
     // Vertex cache control.
     ostreams<bool, kIntervalCount>& vertex_cache_done_q,
     istreams<int32_t, kIntervalCount>& vertex_cache_stat_q,
+    ostreams<bool, kQueueCount>& queue_done_q,
+    istreams<int32_t, kQueueCount>& queue_stat_q,
     // Task and queue requests.
     ostream<TaskReq>& task_req_q, istream<TaskResp>& task_resp_q,
     istream<uint_noop_t>& update_noop_q, ostream<uint_qid_t>& queue_req_q,
@@ -1177,6 +1194,7 @@ spin:
 #endif  // __SYNTHESIS__
 
   RANGE(iid, kIntervalCount, vertex_cache_done_q[iid].write(false));
+  RANGE(qid, kQueueCount, queue_done_q[qid].write(false));
 
   metadata[0] = visited_edge_count;
   metadata[1] = push_count;
@@ -1197,6 +1215,11 @@ vertex_cache_stat:
   for (int i = 0; i < kIntervalCount * 4; ++i) {
     metadata[9 + kPeCount + i] = vertex_cache_stat_q[i / 4].read();
   }
+
+queue_stat:
+  for (int i = 0; i < kQueueCount; ++i) {
+    metadata[9 + kPeCount + kIntervalCount * 4 + i] = queue_stat_q[i].read();
+  }
 }
 
 void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
@@ -1210,6 +1233,8 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   streams<bool, kQueueCount, 2> pop_req_qi("pop_req_i");
   tapa::stream<QueueOpResp, 2> queue_resp_q("queue_resp");
   tapa::streams<QueueOpResp, kQueueCount, 2> queue_resp_qi("queue_resp_i");
+  streams<bool, kQueueCount, 2> queue_done_q;
+  streams<int32_t, kQueueCount, 2> queue_stat_q;
 
   streams<TaskOnChip, kPeCount, 2> task_req_qi("task_req_i");
   streams<Vid, kPeCount, 2> task_resp_qi("task_resp_i");
@@ -1246,12 +1271,12 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
 
   tapa::task()
       .invoke<join>(Dispatcher, root, metadata, vertex_cache_done_q,
-                    vertex_cache_stat_q, task_req_q, task_resp_q, update_noop_q,
-                    pop_req_q, queue_resp_q)
+                    vertex_cache_stat_q, queue_done_q, queue_stat_q, task_req_q,
+                    task_resp_q, update_noop_q, pop_req_q, queue_resp_q)
       .invoke<detach>(TaskReqArbiter, task_req_q, task_req_qi)
       .invoke<detach>(TaskRespArbiter, task_resp_qi, task_resp_q)
-      .invoke<detach, kQueueCount>(TaskQueue, seq(), push_req_qi, pop_req_qi,
-                                   queue_resp_qi)
+      .invoke<detach, kQueueCount>(TaskQueue, queue_done_q, queue_stat_q, seq(),
+                                   push_req_qi, pop_req_qi, queue_resp_qi)
       .invoke<detach>(PushReqArbiter, push_req_q, push_req_qi)
       .invoke<detach>(PopReqArbiter, pop_req_q, pop_req_qi)
       .invoke<-1>(QueueRespArbiter, queue_resp_qi, queue_resp_q)

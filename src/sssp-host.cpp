@@ -409,7 +409,8 @@ int main(int argc, char* argv[]) {
   }
 
   // Other kernel arguments.
-  aligned_vector<int64_t> metadata(9 + kPeCount + kIntervalCount * 4);
+  aligned_vector<int64_t> metadata(9 + kPeCount + kIntervalCount * 4 +
+                                   kQueueCount);
   array<aligned_vector<Vertex>, kIntervalCount> vertices;
   for (auto& interval : vertices) {
     interval.resize(tapa::round_up_div<kIntervalCount>(vertex_count));
@@ -537,6 +538,11 @@ int main(int argc, char* argv[]) {
               << 100. * read_hit / (read_hit + read_miss) << "%";
       VLOG(3) << "    write hit: " << std::fixed << std::setprecision(1)
               << 100. * write_hit / (write_hit + write_miss) << "%";
+    }
+    for (int qid = 0; qid < kQueueCount; ++qid) {
+      VLOG(3) << "  queue[" << qid << "] stalled for "
+              << metadata[9 + kPeCount + kIntervalCount * 4 + qid]
+              << " iterations";
     }
 
     if (!IsValid(root, edges_view, weights_view, indexed_weights,
