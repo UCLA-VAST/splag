@@ -101,6 +101,7 @@ struct VertexCacheEntry {
   bool is_valid;
   bool is_reading;
   bool is_writing;
+  bool is_dirty;
   TaskOnChip task;
 };
 
