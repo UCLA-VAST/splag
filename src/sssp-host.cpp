@@ -299,7 +299,8 @@ void Refine(
 void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
           tapa::mmaps<Edge, kShardCount> edges,
           tapa::mmaps<Vertex, kIntervalCount> vertices,
-          tapa::mmap<Task> heap_array, tapa::mmap<HeapIndexEntry> heap_index);
+          tapa::mmap<HeapElemPairAxi> heap_array,
+          tapa::mmap<HeapIndexEntry> heap_index);
 
 int main(int argc, char* argv[]) {
   FLAGS_logtostderr = true;
@@ -415,8 +416,10 @@ int main(int argc, char* argv[]) {
   for (auto& interval : vertices) {
     interval.resize(tapa::round_up_div<kIntervalCount>(vertex_count));
   }
-  aligned_vector<Task> heap_array(vertex_count);
-  aligned_vector<HeapIndexEntry> heap_index(vertex_count);
+  aligned_vector<HeapElemPairAxi> heap_array(250 * 1024 * 1024 /
+                                             sizeof(HeapElemPairAxi));
+  aligned_vector<HeapIndexEntry> heap_index(250 * 1024 * 1024 /
+                                            sizeof(HeapIndexEntry));
 
   // Statistics.
   vector<double> teps;
@@ -430,6 +433,23 @@ int main(int argc, char* argv[]) {
       std::fill(interval.begin(), interval.end(),
                 Vertex{.parent = kNullVid, .distance = kInfDistance});
     }
+
+    for (int level = kOnChipLevelCount; level < kLevelCount; ++level) {
+      for (int idx = 0; idx < 1 << level; idx += 2) {
+        for (int qid = 0; qid < kQueueCount; ++qid) {
+          const auto cap = (1 << (kLevelCount - level - 1)) - 1;
+          HeapElemAxi init_elem;
+          init_elem.valid = false;
+          init_elem.cap_left = init_elem.cap_right = cap;
+          HeapElemPairAxi init_elem_pair;
+          init_elem.UpdatePair<0>(init_elem_pair);
+          init_elem.UpdatePair<1>(init_elem_pair);
+          const auto addr = GetAddrOfOffChipHeapElem(level, idx, qid);
+          heap_array[addr] = init_elem_pair;
+        }
+      }
+    }
+
     for (size_t i = 0; i < heap_index.size(); ++i) {
       heap_index[i].invalidate();
     }
@@ -455,7 +475,7 @@ int main(int argc, char* argv[]) {
             tapa::write_only_mmap<int64_t>(metadata),
             tapa::read_only_mmaps<Edge, kShardCount>(edges),
             tapa::read_write_mmaps<Vertex, kIntervalCount>(vertices),
-            tapa::placeholder_mmap<Task>(heap_array),
+            tapa::read_only_mmap<HeapElemPairAxi>(heap_array),
             tapa::read_only_mmap<HeapIndexEntry>(heap_index));
     VLOG(3) << "kernel time: " << elapsed_time << " s";
 

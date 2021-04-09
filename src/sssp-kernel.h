@@ -10,69 +10,6 @@
 
 using PeId = uint8_t;
 
-class TaskOnChip {
- public:
-  TaskOnChip() {}
-
-  TaskOnChip(const Task& task) {
-    set_vid(task.vid);
-    set_vertex(task.vertex);
-  }
-
-  operator Task() const { return {.vid = vid(), .vertex = vertex()}; }
-
-  bool operator<=(const TaskOnChip& other) const {
-    return Task(*this) <= Task(other);
-  }
-
-  Vid vid() const { return data.range(vid_msb, vid_lsb); };
-  Vertex vertex() const {
-    ap_uint<32> distance = 0;
-    distance.range(kFloatMsb, kFloatLsb) =
-        data.range(distance_msb, distance_lsb);
-    return {
-        .parent = Vid(data.range(parent_msb, parent_lsb)),
-        .distance = bit_cast<float>(distance.to_uint()),
-        .offset = Eid(data.range(offset_msb, offset_lsb)),
-        .degree = Vid(data.range(degree_msb, degree_lsb)),
-    };
-  }
-
-  void set_vid(Vid vid) { data.range(vid_msb, vid_lsb) = vid; }
-  void set_value(const Vertex& vertex) {
-    set_parent(vertex.parent);
-    set_distance(vertex.distance);
-  }
-  void set_metadata(const Vertex& vertex) {
-    set_offset(vertex.offset);
-    set_degree(vertex.degree);
-  }
-  void set_vertex(const Vertex& vertex) {
-    set_value(vertex);
-    set_metadata(vertex);
-  }
-  void set_parent(Vid parent) { data.range(parent_msb, parent_lsb) = parent; }
-  void set_distance(float distance) {
-    data.range(distance_msb, distance_lsb) =
-        ap_uint<32>(bit_cast<uint32_t>(distance)).range(kFloatMsb, kFloatLsb);
-  }
-  void set_offset(Eid offset) { data.range(offset_msb, offset_lsb) = offset; }
-  void set_degree(Vid degree) { data.range(degree_msb, degree_lsb) = degree; }
-
- private:
-  static constexpr int vid_lsb = 0;
-  static constexpr int vid_msb = vid_lsb + kVidWidth - 1;
-  static constexpr int parent_lsb = vid_msb + 1;
-  static constexpr int parent_msb = parent_lsb + kVidWidth - 1;
-  static constexpr int distance_lsb = parent_msb + 1;
-  static constexpr int distance_msb = distance_lsb + kFloatWidth - 1;
-  static constexpr int offset_lsb = distance_msb + 1;
-  static constexpr int offset_msb = offset_lsb + kEidWidth - 1;
-  static constexpr int degree_lsb = offset_msb + 1;
-  static constexpr int degree_msb = degree_lsb + kVidWidth - 1;
-  ap_uint<degree_msb + 1> data;
-};
-
 struct SourceVertex {
   Vid parent;
   float distance;

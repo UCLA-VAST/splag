@@ -109,9 +109,125 @@ inline std::ostream& operator<<(std::ostream& os, const Task& obj) {
 }
 
 constexpr int kQueueCount = 4;
-constexpr int kLevelCount = 15;
+constexpr int kOnChipLevelCount = 15;
+constexpr int kOffChipLevelCount = 5;
+constexpr int kLevelCount = kOnChipLevelCount + kOffChipLevelCount;
+using OffChipLevelId = ap_uint<bit_length(kOffChipLevelCount - 1)>;
 using LevelId = ap_uint<bit_length(kLevelCount - 1)>;
 using LevelIndex = ap_uint<kLevelCount - 1>;
+
+inline int GetAddrOfOffChipHeapElem(int level, int idx, int qid) {
+  CHECK_GE(level, 0);
+  CHECK_LT(level, kLevelCount);
+  CHECK_GE(idx, 0);
+  CHECK_LT(idx, 1 << level);
+  CHECK_GE(qid, 0);
+  CHECK_LT(qid, kQueueCount);
+  return ((1 << level) / 2 + idx / 2) * kQueueCount + qid;
+}
+
+class TaskOnChip {
+ public:
+  TaskOnChip() {}
+
+  TaskOnChip(const Task& task) {
+    set_vid(task.vid);
+    set_vertex(task.vertex);
+  }
+
+  operator Task() const { return {.vid = vid(), .vertex = vertex()}; }
+
+  bool operator<=(const TaskOnChip& other) const {
+    return Task(*this) <= Task(other);
+  }
+
+  Vid vid() const { return data.range(vid_msb, vid_lsb); };
+  Vertex vertex() const {
+    ap_uint<32> distance = 0;
+    distance.range(kFloatMsb, kFloatLsb) =
+        data.range(distance_msb, distance_lsb);
+    return {
+        .parent = Vid(data.range(parent_msb, parent_lsb)),
+        .distance = bit_cast<float>(distance.to_uint()),
+        .offset = Eid(data.range(offset_msb, offset_lsb)),
+        .degree = Vid(data.range(degree_msb, degree_lsb)),
+    };
+  }
+
+  void set_vid(Vid vid) { data.range(vid_msb, vid_lsb) = vid; }
+  void set_value(const Vertex& vertex) {
+    set_parent(vertex.parent);
+    set_distance(vertex.distance);
+  }
+  void set_metadata(const Vertex& vertex) {
+    set_offset(vertex.offset);
+    set_degree(vertex.degree);
+  }
+  void set_vertex(const Vertex& vertex) {
+    set_value(vertex);
+    set_metadata(vertex);
+  }
+  void set_parent(Vid parent) { data.range(parent_msb, parent_lsb) = parent; }
+  void set_distance(float distance) {
+    data.range(distance_msb, distance_lsb) =
+        ap_uint<32>(bit_cast<uint32_t>(distance)).range(kFloatMsb, kFloatLsb);
+  }
+  void set_offset(Eid offset) { data.range(offset_msb, offset_lsb) = offset; }
+  void set_degree(Vid degree) { data.range(degree_msb, degree_lsb) = degree; }
+
+ private:
+  static constexpr int vid_lsb = 0;
+  static constexpr int vid_msb = vid_lsb + kVidWidth - 1;
+  static constexpr int parent_lsb = vid_msb + 1;
+  static constexpr int parent_msb = parent_lsb + kVidWidth - 1;
+  static constexpr int distance_lsb = parent_msb + 1;
+  static constexpr int distance_msb = distance_lsb + kFloatWidth - 1;
+  static constexpr int offset_lsb = distance_msb + 1;
+  static constexpr int offset_msb = offset_lsb + kEidWidth - 1;
+  static constexpr int degree_lsb = offset_msb + 1;
+  static constexpr int degree_msb = degree_lsb + kVidWidth - 1;
+  static constexpr int length = degree_msb + 1;
+  ap_uint<length> data;
+
+  friend struct HeapElemAxi;
+};
+
+struct HeapElemPairAxi : public ap_uint<256> {
+  static constexpr int length = 256;
+};
+
+struct HeapElemAxi {
+  static constexpr int kCapWidth =
+      (HeapElemPairAxi::length / 2 - TaskOnChip::length - 1) / 2;
+  using Capacity = ap_uint<kCapWidth>;
+
+  bool valid;
+  Capacity cap_left;
+  Capacity cap_right;
+  TaskOnChip task;
+
+  template <int idx>  // Makes sure HLS won't generate complex structure.
+  static HeapElemAxi ExtractFromPair(const HeapElemPairAxi& pair) {
+    constexpr int offset = idx * (HeapElemPairAxi::length / 2);
+    HeapElemAxi elem;
+    elem.valid = pair.get_bit(offset);
+    elem.cap_left = pair.range(offset + kCapWidth, offset + 1);
+    elem.cap_right = pair.range(offset + kCapWidth * 2, offset + kCapWidth + 1);
+    elem.task.data = pair.range(offset + kCapWidth * 2 + TaskOnChip::length,
+                                offset + kCapWidth * 2 + 1);
+    return elem;
+  }
+
+  template <int idx>  // Makes sure HLS won't generate complex structure.
+  void UpdatePair(HeapElemPairAxi& pair) const {
+    constexpr int offset = idx * (HeapElemPairAxi::length / 2);
+    pair.set_bit(offset, valid);
+    pair.range(offset + kCapWidth, offset + 1) = cap_left;
+    pair.range(offset + kCapWidth * 2, offset + kCapWidth + 1) = cap_right;
+    pair.range(offset + kCapWidth * 2 + TaskOnChip::length,
+               offset + kCapWidth * 2 + 1) = task.data;
+  }
+};
 
 class HeapIndexEntry {
  public:
