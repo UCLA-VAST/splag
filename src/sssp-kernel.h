@@ -167,6 +167,12 @@ struct VertexCacheEntry {
   TaskOnChip task;
 };
 
+struct HeapIndexCacheEntry {
+  bool is_valid;
+  Vid vid;
+  HeapIndexEntry index;
+};
+
 struct HeapStaleIndexEntry : public HeapIndexEntry {
   Vid vid;
   bool matches(Vid vid) const { return valid() && this->vid == vid; }

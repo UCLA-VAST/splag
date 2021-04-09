@@ -54,61 +54,80 @@ spin:
   }
 }
 
-void PiHeapIndex(istream<packet<LevelId, HeapIndexReq>>& req_q,
-                 ostream<packet<LevelId, HeapIndexResp>>& resp_q) {
+constexpr int kStaleCapacity = kLevelCount * 2 + 2;
+using StalePos = ap_uint<bit_length(kStaleCapacity - 1)>;
+
+template <int N>
+void FindStaleIndex(Vid vid, const HeapStaleIndexEntry (&array)[N],
+                    bool& is_match_found, StalePos& match_idx,
+                    bool& is_empty_found, StalePos& empty_idx) {
+  bool is_match_found_0, is_match_found_1;
+  StalePos match_idx_0, match_idx_1;
+  bool is_empty_found_0, is_empty_found_1;
+  StalePos empty_idx_0, empty_idx_1;
+  FindStaleIndex(vid, (const HeapStaleIndexEntry(&)[N / 2])(array),
+                 is_match_found_0, match_idx_0, is_empty_found_0, empty_idx_0);
+  FindStaleIndex(vid, (const HeapStaleIndexEntry(&)[N - N / 2])(array[N / 2]),
+                 is_match_found_1, match_idx_1, is_empty_found_1, empty_idx_1);
+  is_match_found = is_match_found_0 || is_match_found_1;
+  match_idx = is_match_found_0 ? match_idx_0 : StalePos(match_idx_1 + N / 2);
+  is_empty_found = is_empty_found_0 || is_empty_found_1;
+  empty_idx = is_empty_found_0 ? empty_idx_0 : StalePos(empty_idx_1 + N / 2);
+}
+
+template <>
+void FindStaleIndex<1>(Vid vid, const HeapStaleIndexEntry (&array)[1],
+                       bool& is_match_found, StalePos& match_idx,
+                       bool& is_empty_found, StalePos& empty_idx) {
+  is_match_found = array[0].matches(vid);
+  match_idx = 0;
+  is_empty_found = !array[0].valid();
+  empty_idx = 0;
+}
+
+HeapIndexEntry GetStaleIndexLocked(
+    const HeapStaleIndexEntry (&array)[kStaleCapacity], Vid vid,
+    StalePos& pos) {
+  // If found, pos is set to the entry, entry is returned; otherwise, pos is
+  // set to an available (invalid) location.
+  bool is_match_found;
+  StalePos match_idx;
+  bool is_empty_found;
+  StalePos empty_idx;
+  FindStaleIndex(vid, array, is_match_found, match_idx, is_empty_found,
+                 empty_idx);
+  pos = is_match_found ? match_idx : empty_idx;
+  return array[pos];
+}
+
+void PiHeapIndex(
+    //
+    istream<packet<LevelId, HeapIndexReq>>& req_q,
+    ostream<packet<LevelId, HeapIndexResp>>& resp_q,
+    //
+    ostream<Vid>& read_addr_q, istream<HeapIndexEntry>& read_data_q,
+    ostream<packet<Vid, HeapIndexEntry>>& write_req_q,
+    istream<bool>& write_resp_q) {
 #pragma HLS inline recursive
 
-  constexpr int kFreshCacheSize = 4096 * 8;
-  constexpr int kStaleCapacity = kLevelCount * 2 + 2;
+  constexpr int kFreshCacheSize = 4096;
 
-  HeapIndexEntry fresh_index[kFreshCacheSize];
+  HeapIndexCacheEntry fresh_index[kFreshCacheSize];
 #pragma HLS bind_storage variable = fresh_index type = RAM_S2P impl = URAM
 #pragma HLS aggregate variable = fresh_index bit
 init:
   for (int i = 0; i < kFreshCacheSize; ++i) {
-    fresh_index[i].invalidate();
+    fresh_index[i].is_valid = false;
   }
   CLEAN_UP(clean_up, [&] {
     for (int i = 0; i < kFreshCacheSize; ++i) {
-      CHECK(!fresh_index[i].valid());
+      CHECK(!fresh_index[i].is_valid);
     }
   });
-  auto GetFreshIndexLocked = [&fresh_index](Vid vid) {
-    return fresh_index[vid];
-  };
-  auto SetFreshIndexLocked = [&fresh_index](Vid vid,
-                                            const HeapIndexEntry& entry) {
-    fresh_index[vid] = entry;
-    VLOG(5) << "INDX q[" << (vid % kQueueCount) << "] v[" << vid << "] -> "
-            << entry;
-  };
 
   DECL_ARRAY(HeapStaleIndexEntry, stale_index, kStaleCapacity, nullptr);
 #pragma HLS aggregate variable = stale_index bit
-  auto GetStaleIndexLocked = [&stale_index](Vid vid,
-                                            int& idx) -> HeapIndexEntry {
-    // If found, idx is set to the entry, entry is returned; otherwise, idx is
-    // set to an available location, which is invalid.
-    bool found_match = false;
-    int match_idx;
-    bool found_empty = false;
-    int empty_idx;
-    RANGE(i, kStaleCapacity, {
-      const auto entry = stale_index[i];
-      if (!found_match && entry.matches(vid)) {
-        found_match |= true;
-        match_idx = i;
-      }
-      if (!found_empty && !entry.valid()) {
-        found_empty |= true;
-        empty_idx = i;
-      }
-    });
-
-    idx = found_match ? match_idx : empty_idx;
-    return stale_index[idx];
-  };
-  auto SetStaleIndexLocked = [&stale_index](int idx, Vid vid,
+  auto SetStaleIndexLocked = [&stale_index](StalePos idx, Vid vid,
                                             const HeapIndexEntry& entry) {
     CHECK(!stale_index[idx].valid() || stale_index[idx].matches(vid));
     stale_index[idx].set(vid, entry);
@@ -118,53 +137,117 @@ init:
 
 spin:
   for (;;) {
-#pragma HLS pipeline
-    if (req_q.empty()) continue;
-    const auto pkt = req_q.read(nullptr);
+#pragma HLS pipeline off
+    const auto pkt = req_q.read();
     const auto req = pkt.payload;
-    int idx;
-    const auto stale_entry = GetStaleIndexLocked(req.vid, idx);
+
+    StalePos stale_entry_pos;
+    HeapIndexEntry stale_entry;
+    if (req.op != CLEAR_FRESH) {
+      stale_entry = GetStaleIndexLocked(stale_index, req.vid, stale_entry_pos);
+    }
+    bool is_stale_entry_updated = false;
+
+    auto fresh_entry = fresh_index[req.vid % kFreshCacheSize];
+    const bool is_fresh_entry_hit =
+        fresh_entry.is_valid && fresh_entry.vid == req.vid;
+    const bool is_writing_fresh_entry_needed =
+        fresh_entry.is_valid && fresh_entry.vid != req.vid;
+    bool is_fresh_entry_updated = false;
+
+    packet<Vid, HeapIndexEntry> index_write_req;
+    bool is_index_write_requested = false;
+
     switch (req.op) {
       case GET_STALE: {
-        int idx;
         resp_q.write({pkt.addr, {.entry = stale_entry}});
       } break;
       case CLEAR_STALE: {
         CHECK(stale_entry.valid());
-        SetStaleIndexLocked(idx, req.vid, nullptr);
+        stale_entry.invalidate();
+        is_stale_entry_updated = true;
       } break;
       case ACQUIRE_INDEX: {
         if (stale_entry.valid()) {
           resp_q.write({pkt.addr, {.entry = {}, .yield = true}});
           break;
         }
-        const auto active_entry = GetFreshIndexLocked(req.vid);
-        if (active_entry.valid()) {
-          if (active_entry.distance_le(req.entry)) {
+
+        // Write cache entry to memory if necessary.
+        if (is_writing_fresh_entry_needed) {
+          index_write_req = {fresh_entry.vid, fresh_entry.index};
+          write_req_q.write(index_write_req);
+          is_index_write_requested = true;
+        }
+
+        // Fetch entry from memory on miss.
+        if (!is_fresh_entry_hit) {
+          read_addr_q.write(req.vid);
+          ap_wait();
+          fresh_entry.is_valid = true;
+          fresh_entry.vid = req.vid;
+          fresh_entry.index = read_data_q.read();
+          is_fresh_entry_updated = true;
+        }
+
+        if (fresh_entry.index.valid()) {
+          if (fresh_entry.index.distance_le(req.entry)) {
             resp_q.write(
                 {pkt.addr, {.entry = {}, .yield = false, .enable = false}});
             break;
           }
-          SetStaleIndexLocked(idx, req.vid, active_entry);
+          stale_entry = fresh_entry.index;
+          is_stale_entry_updated = true;
         }
         CHECK_EQ(req.entry.level(), 0);
         CHECK_EQ(req.entry.index(), 0);
-        SetFreshIndexLocked(req.vid, req.entry);
 
-        resp_q.write({pkt.addr,
-                      {.entry = active_entry, .yield = false, .enable = true}});
+        resp_q.write(
+            {pkt.addr,
+             {.entry = fresh_entry.index, .yield = false, .enable = true}});
+
+        fresh_entry.is_valid = true;
+        fresh_entry.vid = req.vid;
+        fresh_entry.index = req.entry;
+        is_fresh_entry_updated = true;
       } break;
       case UPDATE_INDEX: {
         if (stale_entry.distance_eq(req.entry)) {
-          SetStaleIndexLocked(idx, req.vid, req.entry);
+          stale_entry = req.entry;
+          is_stale_entry_updated = true;
         } else {
-          SetFreshIndexLocked(req.vid, req.entry);
+          // Write cache entry to memory if necessary.
+          if (is_writing_fresh_entry_needed) {
+            index_write_req = {fresh_entry.vid, fresh_entry.index};
+            write_req_q.write(index_write_req);
+            is_index_write_requested = true;
+          }
+          fresh_entry.is_valid = true;
+          fresh_entry.vid = req.vid;
+          fresh_entry.index = req.entry;
+          is_fresh_entry_updated = true;
         }
         resp_q.write({pkt.addr});
       } break;
       case CLEAR_FRESH: {
-        SetFreshIndexLocked(req.vid, nullptr);
+        if (is_fresh_entry_hit) {
+          fresh_entry.is_valid = false;
+          is_fresh_entry_updated = true;
+        }
+        index_write_req = {req.vid, nullptr};
+        write_req_q.write(index_write_req);
+        is_index_write_requested = true;
       } break;
+    }
+
+    if (is_fresh_entry_updated) {
+      fresh_index[req.vid % kFreshCacheSize] = fresh_entry;
+    }
+    if (is_stale_entry_updated) {
+      SetStaleIndexLocked(stale_entry_pos, req.vid, stale_entry);
+    }
+    if (is_index_write_requested) {
+      write_resp_q.read();
     }
   }
 }
@@ -602,15 +685,14 @@ spin:
   }
 }
 
-void PiHeapIndexMem(tapa::async_mmap<HeapIndexEntry> mem) {
-spin:
-  for (;;) {
-    if (!mem.read_data.empty()) {
-      mem.read_addr.try_write({});
-      mem.write_addr.try_write({});
-      mem.write_data.try_write({});
-    }
-  }
+void PiHeapIndexMem(
+    //
+    istream<Vid>& read_addr_q, ostream<HeapIndexEntry>& read_data_q,
+    istream<packet<Vid, HeapIndexEntry>>& write_req_q,
+    ostream<bool>& write_resp_q,
+    //
+    tapa::async_mmap<HeapIndexEntry> mem) {
+  ReadWriteMem(read_addr_q, read_data_q, write_req_q, write_resp_q, mem);
 }
 
 // Each push request puts the task in the queue if there isn't a task for the
@@ -628,7 +710,12 @@ void TaskQueue(
     // Queue requests.
     istream<TaskOnChip>& push_req_q, istream<bool>& pop_req_q,
     // Queue responses.
-    tapa::ostream<QueueOpResp>& queue_resp_q) {
+    ostream<QueueOpResp>& queue_resp_q,
+    //
+    ostream<Vid>& piheap_index_read_addr_q,
+    istream<HeapIndexEntry>& piheap_index_read_data_q,
+    ostream<packet<Vid, HeapIndexEntry>>& piheap_index_write_req_q,
+    istream<bool>& piheap_index_write_resp_q) {
   // Heap rule: child <= parent
   streams<HeapReq, kLevelCount, 2> req_q;
   streams<HeapResp, kLevelCount, 2> resp_q;
@@ -659,7 +746,9 @@ void TaskQueue(
       .invoke<detach>(PiHeapDummyTail, qid, req_q[kLevelCount - 1],
                       resp_q[kLevelCount - 1])
       .invoke<detach>(PiHeapIndexReqArbiter, index_req_qs, index_req_q)
-      .invoke<detach>(PiHeapIndex, index_req_q, index_resp_q)
+      .invoke<detach>(PiHeapIndex, index_req_q, index_resp_q,
+                      piheap_index_read_addr_q, piheap_index_read_data_q,
+                      piheap_index_write_req_q, piheap_index_write_resp_q)
       .invoke<detach>(PiHeapIndexRespArbiter, index_resp_q, index_resp_qs);
 }
 
@@ -1236,6 +1325,11 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   streams<bool, kQueueCount, 2> queue_done_q;
   streams<int32_t, kQueueCount, 2> queue_stat_q;
 
+  streams<Vid, kQueueCount, 2> piheap_index_read_addr_q;
+  streams<HeapIndexEntry, kQueueCount, 2> piheap_index_read_data_q;
+  streams<packet<Vid, HeapIndexEntry>, kQueueCount, 2> piheap_index_write_req_q;
+  streams<bool, kQueueCount, 2> piheap_index_write_resp_q;
+
   streams<TaskOnChip, kPeCount, 2> task_req_qi("task_req_i");
   streams<Vid, kPeCount, 2> task_resp_qi("task_resp_i");
 
@@ -1275,15 +1369,19 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
                     task_resp_q, update_noop_q, pop_req_q, queue_resp_q)
       .invoke<detach>(TaskReqArbiter, task_req_q, task_req_qi)
       .invoke<detach>(TaskRespArbiter, task_resp_qi, task_resp_q)
-      .invoke<detach, kQueueCount>(TaskQueue, queue_done_q, queue_stat_q, seq(),
-                                   push_req_qi, pop_req_qi, queue_resp_qi)
+      .invoke<detach, kQueueCount>(
+          TaskQueue, queue_done_q, queue_stat_q, seq(), push_req_qi, pop_req_qi,
+          queue_resp_qi, piheap_index_read_addr_q, piheap_index_read_data_q,
+          piheap_index_write_req_q, piheap_index_write_resp_q)
       .invoke<detach>(PushReqArbiter, push_req_q, push_req_qi)
       .invoke<detach>(PopReqArbiter, pop_req_q, pop_req_qi)
       .invoke<-1>(QueueRespArbiter, queue_resp_qi, queue_resp_q)
 
       // Put mmaps are in the top level to enable flexible floorplanning.
       .invoke<detach>(PiHeapArrayMem, heap_array)
-      .invoke<detach>(PiHeapIndexMem, heap_index)
+      .invoke<detach, kQueueCount>(
+          PiHeapIndexMem, piheap_index_read_addr_q, piheap_index_read_data_q,
+          piheap_index_write_req_q, piheap_index_write_resp_q, heap_index)
 
       // For edges.
       .invoke<detach, kShardCount>(EdgeMem, edge_read_addr_q, edge_read_data_q,
