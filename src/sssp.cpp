@@ -261,6 +261,7 @@ void PiHeapPush(int qid, int level, HeapReq req, HeapElemType& elem,
   auto& idx = req.index;
   if (elem.valid) {
     if (req.replace) {
+#ifdef TAPA_SSSP_PHEAP_INDEX
       if (elem.task.vid() == req.vid) {
         // Current element is replaced by req.
         // req must have a higher priority.
@@ -321,6 +322,8 @@ void PiHeapPush(int qid, int level, HeapReq req, HeapElemType& elem,
         index_resp_q.read();
         req_out_q.write(req);
       }
+#endif  // TAPA_SSSP_PHEAP_INDEX
+
     } else {  // req.replace
       CHECK(elem.cap_left > 0 || elem.cap_right > 0);
 
@@ -335,6 +338,7 @@ void PiHeapPush(int qid, int level, HeapReq req, HeapElemType& elem,
       if (!(req.task <= elem.task)) {
         std::swap(elem.task, req.task);
       }
+#ifdef TAPA_SSSP_PHEAP_INDEX
       index_req_q.write({
           .op = UPDATE_INDEX,
           .vid = req.task.vid(),
@@ -342,6 +346,12 @@ void PiHeapPush(int qid, int level, HeapReq req, HeapElemType& elem,
       });
       ap_wait();
       index_resp_q.read();
+#else   // TAPA_SSSP_PHEAP_INDEX
+      const auto is_full = index_req_q.full();
+      const auto is_empty = index_resp_q.empty();
+      CHECK(!is_full);
+      CHECK(is_empty);
+#endif  // TAPA_SSSP_PHEAP_INDEX
       req_out_q.write(req);
     }
   } else {  // elem.valid
@@ -493,6 +503,7 @@ spin:
     switch (req.op) {
       case QueueOp::PUSH: {
         HeapIndexResp heap_index_resp;
+#ifdef TAPA_SSSP_PHEAP_INDEX
       acquire:
         do {
 #pragma HLS pipeline off
@@ -504,6 +515,10 @@ spin:
           heap_index_resp = index_resp_q.read();
         } while (heap_index_resp.yield);
         --stall_iteration_count;
+#else   // TAPA_SSSP_PHEAP_INDEX
+        heap_index_resp.entry.invalidate();
+        heap_index_resp.enable = true;
+#endif  // TAPA_SSSP_PHEAP_INDEX
         if (heap_index_resp.enable) {
           PiHeapPush(qid, /*level=*/0,
                      {
@@ -523,7 +538,9 @@ spin:
           resp.task = root.task;
           CHECK_EQ(resp.task.vid() % kQueueCount, qid);
 
+#ifdef TAPA_SSSP_PHEAP_INDEX
           index_req_q.write({.op = CLEAR_FRESH, .vid = root.task.vid()});
+#endif  // TAPA_SSSP_PHEAP_INDEX
 
           PiHeapPop(req, 0, root, resp_in_q, req_out_q);
         } else if (req.is_pop()) {
@@ -574,6 +591,7 @@ bool IsPiHeapElemUpdated(  //
           ++idx;
           elem = elem_1;
         case LEFT:
+#ifdef TAPA_SSSP_PHEAP_INDEX
           index_req_q.write({
               .op = UPDATE_INDEX,
               .vid = elem.task.vid(),
@@ -581,6 +599,7 @@ bool IsPiHeapElemUpdated(  //
           });
           ap_wait();
           index_resp_q.read();
+#endif  // TAPA_SSSP_PHEAP_INDEX
           resp_out_q.write({
               .op = is_pushpop ? NOCHANGE : op,
               .task = elem.task,
