@@ -21,6 +21,8 @@ using tapa::stream;
 using tapa::streams;
 using tapa::task;
 
+#define TAPA_SSSP_PHEAP_INDEX
+
 static_assert(kQueueCount % kShardCount == 0,
               "current implementation requires that queue count is a multiple "
               "of shard count");
@@ -158,9 +160,13 @@ spin:
     packet<Vid, HeapIndexEntry> index_write_req;
     bool is_index_write_requested = false;
 
+    HeapIndexResp resp;
+    bool is_resp_written = false;
+
     switch (req.op) {
       case GET_STALE: {
-        resp_q.write({pkt.addr, {.entry = stale_entry}});
+        resp.entry = stale_entry;
+        is_resp_written = true;
       } break;
       case CLEAR_STALE: {
         CHECK(stale_entry.valid());
@@ -169,14 +175,14 @@ spin:
       } break;
       case ACQUIRE_INDEX: {
         if (stale_entry.valid()) {
-          resp_q.write({pkt.addr, {.entry = {}, .yield = true}});
+          resp.yield = true;
+          is_resp_written = true;
           break;
         }
 
         // Write cache entry to memory if necessary.
         if (is_writing_fresh_entry_needed) {
           index_write_req = {fresh_entry.vid, fresh_entry.index};
-          write_req_q.write(index_write_req);
           is_index_write_requested = true;
         }
 
@@ -192,8 +198,9 @@ spin:
 
         if (fresh_entry.index.valid()) {
           if (fresh_entry.index.distance_le(req.entry)) {
-            resp_q.write(
-                {pkt.addr, {.entry = {}, .yield = false, .enable = false}});
+            resp.yield = false;
+            resp.enable = false;
+            is_resp_written = true;
             break;
           }
           stale_entry = fresh_entry.index;
@@ -202,9 +209,8 @@ spin:
         CHECK_EQ(req.entry.level(), 0);
         CHECK_EQ(req.entry.index(), 0);
 
-        resp_q.write(
-            {pkt.addr,
-             {.entry = fresh_entry.index, .yield = false, .enable = true}});
+        resp = {.entry = fresh_entry.index, .yield = false, .enable = true};
+        is_resp_written = true;
 
         fresh_entry.is_valid = true;
         fresh_entry.vid = req.vid;
@@ -219,7 +225,6 @@ spin:
           // Write cache entry to memory if necessary.
           if (is_writing_fresh_entry_needed) {
             index_write_req = {fresh_entry.vid, fresh_entry.index};
-            write_req_q.write(index_write_req);
             is_index_write_requested = true;
           }
           fresh_entry.is_valid = true;
@@ -227,7 +232,7 @@ spin:
           fresh_entry.index = req.entry;
           is_fresh_entry_updated = true;
         }
-        resp_q.write({pkt.addr});
+        is_resp_written = true;
       } break;
       case CLEAR_FRESH: {
         if (is_fresh_entry_hit) {
@@ -235,11 +240,13 @@ spin:
           is_fresh_entry_updated = true;
         }
         index_write_req = {req.vid, nullptr};
-        write_req_q.write(index_write_req);
         is_index_write_requested = true;
       } break;
     }
 
+    if (is_resp_written) {
+      resp_q.write({pkt.addr, resp});
+    }
     if (is_fresh_entry_updated) {
       fresh_index[req.vid % kFreshCacheSize] = fresh_entry;
     }
@@ -247,6 +254,8 @@ spin:
       SetStaleIndexLocked(stale_entry_pos, req.vid, stale_entry);
     }
     if (is_index_write_requested) {
+      write_req_q.write(index_write_req);
+      ap_wait();
       write_resp_q.read();
     }
   }
