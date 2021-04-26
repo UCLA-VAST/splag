@@ -463,7 +463,10 @@ spin:
     bool do_push = false;
     bool do_pop = false;
     const auto push_req = push_req_q.read(do_push);
-    if (!do_push) pop_req_q.read(do_pop);
+#ifdef TAPA_SSSP_PHEAP_INDEX
+    if (!do_push)
+#endif  // TAPA_SSSP_PHEAP_INDEX
+      pop_req_q.read(do_pop);
 
     QueueOp req;
     if (do_push) {
