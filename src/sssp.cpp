@@ -161,12 +161,10 @@ spin:
     bool is_index_write_requested = false;
 
     HeapIndexResp resp;
-    bool is_resp_written = false;
 
     switch (req.op) {
       case GET_STALE: {
         resp.entry = stale_entry;
-        is_resp_written = true;
       } break;
       case CLEAR_STALE: {
         CHECK(stale_entry.valid());
@@ -176,7 +174,6 @@ spin:
       case ACQUIRE_INDEX: {
         if (stale_entry.valid()) {
           resp.yield = true;
-          is_resp_written = true;
           break;
         }
 
@@ -200,7 +197,6 @@ spin:
           if (fresh_entry.index.distance_le(req.entry)) {
             resp.yield = false;
             resp.enable = false;
-            is_resp_written = true;
             break;
           }
           stale_entry = fresh_entry.index;
@@ -210,7 +206,6 @@ spin:
         CHECK_EQ(req.entry.index(), 0);
 
         resp = {.entry = fresh_entry.index, .yield = false, .enable = true};
-        is_resp_written = true;
 
         fresh_entry.is_valid = true;
         fresh_entry.vid = req.vid;
@@ -232,7 +227,6 @@ spin:
           fresh_entry.index = req.entry;
           is_fresh_entry_updated = true;
         }
-        is_resp_written = true;
       } break;
       case CLEAR_FRESH: {
         if (is_fresh_entry_hit) {
@@ -244,9 +238,7 @@ spin:
       } break;
     }
 
-    if (is_resp_written) {
-      resp_q.write({pkt.addr, resp});
-    }
+    resp_q.write({pkt.addr, resp});
     if (is_fresh_entry_updated) {
       fresh_index[req.vid % kFreshCacheSize] = fresh_entry;
     }
@@ -294,6 +286,8 @@ void PiHeapPush(int qid, int level, HeapReq req, HeapElemType& elem,
 #endif
 
         index_req_q.write({.op = CLEAR_STALE, .vid = req.vid});
+        ap_wait();
+        index_resp_q.read();
         elem.task = req.task;
         // Do nothing if new element has a lower priority.
       } else {
@@ -552,6 +546,8 @@ spin:
 
 #ifdef TAPA_SSSP_PHEAP_INDEX
           index_req_q.write({.op = CLEAR_FRESH, .vid = root.task.vid()});
+          ap_wait();
+          index_resp_q.read();
 #endif  // TAPA_SSSP_PHEAP_INDEX
 
           PiHeapPop(req, 0, root, resp_in_q, req_out_q);
