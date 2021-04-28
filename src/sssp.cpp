@@ -150,7 +150,7 @@ spin:
     }
     bool is_stale_entry_updated = false;
 
-    auto fresh_entry = fresh_index[req.vid % kFreshCacheSize];
+    auto fresh_entry = fresh_index[req.vid / kQueueCount % kFreshCacheSize];
     const bool is_fresh_entry_hit =
         fresh_entry.is_valid && fresh_entry.vid == req.vid;
     const bool is_writing_fresh_entry_needed =
@@ -240,7 +240,7 @@ spin:
 
     resp_q.write({pkt.addr, resp});
     if (is_fresh_entry_updated) {
-      fresh_index[req.vid % kFreshCacheSize] = fresh_entry;
+      fresh_index[req.vid / kQueueCount % kFreshCacheSize] = fresh_entry;
     }
     if (is_stale_entry_updated) {
       SetStaleIndexLocked(stale_entry_pos, req.vid, stale_entry);
@@ -1146,18 +1146,18 @@ spin:
     if (!write_resp_q.empty() && !write_vid_in_q.empty()) {
       write_resp_q.read(nullptr);
       const auto vid = write_vid_in_q.read(nullptr);
-      const auto entry = cache[vid % kVertexCacheSize];
+      const auto entry = cache[vid / kIntervalCount % kVertexCacheSize];
       CHECK(entry.is_valid);
       CHECK_NE(entry.task.vid(), vid);
       CHECK(entry.is_writing);
-      cache[vid % kVertexCacheSize].is_writing = false;
+      cache[vid / kIntervalCount % kVertexCacheSize].is_writing = false;
       CHECK_GT(active_write_count, 0);
       --active_write_count;
     } else if (!read_data_q.empty() && !read_vid_in_q.empty()) {
       const auto vertex = read_data_q.read(nullptr);
       const auto vid = read_vid_in_q.read(nullptr);
       VLOG(5) << "vmem[" << vid << "] -> " << vertex;
-      auto entry = cache[vid % kVertexCacheSize];
+      auto entry = cache[vid / kIntervalCount % kVertexCacheSize];
       CHECK(entry.is_valid);
       CHECK_EQ(entry.task.vid(), vid);
       CHECK(entry.is_reading);
@@ -1174,11 +1174,11 @@ spin:
         GenPush(entry);
         ++write_hit;
       }
-      cache[vid % kVertexCacheSize] = entry;
+      cache[vid / kIntervalCount % kVertexCacheSize] = entry;
     } else if (!req_q.empty()) {
       const auto task = req_q.peek(nullptr);
       const auto vid = task.vid();
-      auto entry = cache[vid % kVertexCacheSize];
+      auto entry = cache[vid / kIntervalCount % kVertexCacheSize];
       bool is_entry_updated = false;
       if (entry.is_valid && entry.task.vid() == task.vid()) {  // Hit.
         req_q.read(nullptr);
@@ -1236,7 +1236,7 @@ spin:
       }  // Otherwise, wait until entry is not reading.
 
       if (is_entry_updated) {
-        cache[vid % kVertexCacheSize] = entry;
+        cache[vid / kIntervalCount % kVertexCacheSize] = entry;
         VLOG(5) << "v$$$[" << vid << "] <- " << entry.task;
       }
     }
