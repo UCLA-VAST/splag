@@ -37,11 +37,12 @@ constexpr int kQueueMemCount = 2;
 void PiHeapIndexReqArbiter(istreams<HeapIndexReq, kLevelCount>& req_in_q,
                            ostream<packet<LevelId, HeapIndexReq>>& req_out_q) {
 spin:
-  for (LevelId level = 0;;
-       level = level == kLevelCount - 1 ? LevelId(0) : LevelId(level + 1)) {
+  for (;;) {
 #pragma HLS pipeline II = 1
-    if (req_in_q[level].empty()) continue;
-    req_out_q.write({level, req_in_q[level].read(nullptr)});
+    LevelId level;
+    if (find_non_empty(req_in_q, level)) {
+      req_out_q.write({level, req_in_q[level].read(nullptr)});
+    }
   }
 }
 

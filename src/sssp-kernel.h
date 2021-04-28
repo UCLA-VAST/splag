@@ -319,6 +319,45 @@ inline bool none_of(const T (&array)[N]) {
   return !all_of(array, [&](T value) { return !value; });
 }
 
+template <int begin, int len>
+struct arbiter {
+  template <typename T, uint64_t S, typename index_t>
+  static bool find_non_empty(tapa::istreams<T, S>& in_qs, index_t& idx) {
+#pragma HLS inline
+    static_assert(begin >= 0, "begin must >= 0");
+    static_assert(len > 1, "len must > 1");
+    static_assert(begin + len <= S, "begin + len must <= S");
+    return arbiter<begin, len / 2>::find_non_empty(in_qs, idx) ||
+           arbiter<begin + len / 2, len - len / 2>::find_non_empty(in_qs, idx);
+  }
+};
+
+template <int begin>
+struct arbiter<begin, 1> {
+  template <typename T, uint64_t S, typename index_t>
+  static bool find_non_empty(tapa::istreams<T, S>& in_qs, index_t& idx) {
+#pragma HLS inline
+    static_assert(begin >= 0, "begin must >= 0");
+    static_assert(begin < S, "begin must < S");
+    if (in_qs[begin].empty()) {
+      return false;
+    }
+    idx = begin;
+    return true;
+  }
+};
+
+/// Find a non-empty istream.
+///
+/// @param[in] in_qs  Input streams.
+/// @param[out] idx   Index of the non-empty istream (updated only if found).
+/// @return           Whether a non-empty istream is found.
+template <typename T, uint64_t S, typename index_t>
+inline bool find_non_empty(tapa::istreams<T, S>& in_qs, index_t& idx) {
+#pragma HLS inline
+  return arbiter<0, S>::find_non_empty(in_qs, idx);
+}
+
 #ifndef __SYNTHESIS__
 inline void ap_wait() {}
 inline void ap_wait_n(int) {}
