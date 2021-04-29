@@ -145,10 +145,8 @@ spin:
     const auto req = pkt.payload;
 
     StalePos stale_entry_pos;
-    HeapIndexEntry stale_entry;
-    if (req.op != CLEAR_FRESH) {
-      stale_entry = GetStaleIndexLocked(stale_index, req.vid, stale_entry_pos);
-    }
+    HeapIndexEntry stale_entry =
+        GetStaleIndexLocked(stale_index, req.vid, stale_entry_pos);
     bool is_stale_entry_updated = false;
 
     auto fresh_entry = fresh_index[req.vid / kQueueCount % kFreshCacheSize];
