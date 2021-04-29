@@ -157,7 +157,8 @@ spin:
 
     auto fresh_entry = fresh_index[req.vid / kQueueCount % kFreshCacheSize];
     const bool is_fresh_entry_hit = fresh_entry.vid == req.vid;
-    const bool is_writing_fresh_entry_needed = !is_fresh_entry_hit;
+    const bool is_writing_fresh_entry_needed =
+        !is_fresh_entry_hit && fresh_entry.is_dirty;
     bool is_fresh_entry_updated = false;
 
     packet<Vid, HeapIndexEntry> index_write_req;
@@ -190,6 +191,7 @@ spin:
         if (!is_fresh_entry_hit) {
           read_addr_q.write(req.vid);
           ap_wait();
+          fresh_entry.is_dirty = false;
           fresh_entry.vid = req.vid;
           fresh_entry.index = read_data_q.read();
           is_fresh_entry_updated = true;
@@ -209,6 +211,7 @@ spin:
 
         resp = {.entry = fresh_entry.index, .yield = false, .enable = true};
 
+        fresh_entry.is_dirty = true;
         fresh_entry.vid = req.vid;
         fresh_entry.index = req.entry;
         is_fresh_entry_updated = true;
@@ -223,6 +226,7 @@ spin:
             index_write_req = {fresh_entry.vid, fresh_entry.index};
             is_index_write_requested = true;
           }
+          fresh_entry.is_dirty = true;
           fresh_entry.vid = req.vid;
           fresh_entry.index = req.entry;
           is_fresh_entry_updated = true;
@@ -230,6 +234,7 @@ spin:
       } break;
       case CLEAR_FRESH: {
         if (is_fresh_entry_hit) {
+          fresh_entry.is_dirty = false;
           fresh_entry.vid %= kFreshCacheSize * kQueueCount;
           fresh_entry.index.invalidate();
           is_fresh_entry_updated = true;
