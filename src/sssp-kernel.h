@@ -106,7 +106,7 @@ struct VertexCacheEntry {
 };
 
 struct HeapIndexCacheEntry {
-  bool is_valid;
+  bool is_dirty;
   Vid vid;
   HeapIndexEntry index;
 };

@@ -105,6 +105,8 @@ HeapIndexEntry GetStaleIndexLocked(
 
 void PiHeapIndex(
     //
+    int qid,
+    //
     istream<packet<LevelId, HeapIndexReq>>& req_q,
     ostream<packet<LevelId, HeapIndexResp>>& resp_q,
     //
@@ -120,11 +122,15 @@ void PiHeapIndex(
 #pragma HLS aggregate variable = fresh_index bit
 init:
   for (int i = 0; i < kFreshCacheSize; ++i) {
-    fresh_index[i].is_valid = false;
+    fresh_index[i] = {
+        .is_dirty = false,
+        .vid = i * kQueueCount + qid,
+        .index = nullptr,
+    };
   }
   CLEAN_UP(clean_up, [&] {
     for (int i = 0; i < kFreshCacheSize; ++i) {
-      CHECK(!fresh_index[i].is_valid);
+      CHECK(!fresh_index[i].is_dirty);
     }
   });
 
@@ -150,10 +156,8 @@ spin:
     bool is_stale_entry_updated = false;
 
     auto fresh_entry = fresh_index[req.vid / kQueueCount % kFreshCacheSize];
-    const bool is_fresh_entry_hit =
-        fresh_entry.is_valid && fresh_entry.vid == req.vid;
-    const bool is_writing_fresh_entry_needed =
-        fresh_entry.is_valid && fresh_entry.vid != req.vid;
+    const bool is_fresh_entry_hit = fresh_entry.vid == req.vid;
+    const bool is_writing_fresh_entry_needed = !is_fresh_entry_hit;
     bool is_fresh_entry_updated = false;
 
     packet<Vid, HeapIndexEntry> index_write_req;
@@ -186,7 +190,6 @@ spin:
         if (!is_fresh_entry_hit) {
           read_addr_q.write(req.vid);
           ap_wait();
-          fresh_entry.is_valid = true;
           fresh_entry.vid = req.vid;
           fresh_entry.index = read_data_q.read();
           is_fresh_entry_updated = true;
@@ -206,7 +209,6 @@ spin:
 
         resp = {.entry = fresh_entry.index, .yield = false, .enable = true};
 
-        fresh_entry.is_valid = true;
         fresh_entry.vid = req.vid;
         fresh_entry.index = req.entry;
         is_fresh_entry_updated = true;
@@ -221,7 +223,6 @@ spin:
             index_write_req = {fresh_entry.vid, fresh_entry.index};
             is_index_write_requested = true;
           }
-          fresh_entry.is_valid = true;
           fresh_entry.vid = req.vid;
           fresh_entry.index = req.entry;
           is_fresh_entry_updated = true;
@@ -229,7 +230,8 @@ spin:
       } break;
       case CLEAR_FRESH: {
         if (is_fresh_entry_hit) {
-          fresh_entry.is_valid = false;
+          fresh_entry.vid %= kFreshCacheSize * kQueueCount;
+          fresh_entry.index.invalidate();
           is_fresh_entry_updated = true;
         }
         index_write_req = {req.vid, nullptr};
@@ -920,7 +922,7 @@ void TaskQueue(
                       piheap_array_write_resp_q, array_write_resp_q)
 
       .invoke<detach>(PiHeapIndexReqArbiter, index_req_qs, index_req_q)
-      .invoke<detach>(PiHeapIndex, index_req_q, index_resp_q,
+      .invoke<detach>(PiHeapIndex, qid, index_req_q, index_resp_q,
                       piheap_index_read_addr_q, piheap_index_read_data_q,
                       piheap_index_write_req_q, piheap_index_write_resp_q)
       .invoke<detach>(PiHeapIndexRespArbiter, index_resp_q, index_resp_qs);
