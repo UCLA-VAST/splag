@@ -411,7 +411,7 @@ int main(int argc, char* argv[]) {
 
   // Other kernel arguments.
   aligned_vector<int64_t> metadata(9 + kPeCount + kIntervalCount * 4 +
-                                   kQueueCount);
+                                   kQueueCount * kPiHeapStatTotalCount);
   array<aligned_vector<Vertex>, kIntervalCount> vertices;
   for (auto& interval : vertices) {
     interval.resize(tapa::round_up_div<kIntervalCount>(vertex_count));
@@ -560,9 +560,35 @@ int main(int argc, char* argv[]) {
               << 100. * write_hit / (write_hit + write_miss) << "%";
     }
     for (int qid = 0; qid < kQueueCount; ++qid) {
-      VLOG(3) << "  queue[" << qid << "] stalled for "
-              << metadata[9 + kPeCount + kIntervalCount * 4 + qid]
+      VLOG(3) << "  queue[" << qid << "]:";
+      VLOG(3) << "    stalled for "
+              << metadata[9 + kPeCount + kIntervalCount * 4 +
+                          qid * kPiHeapStatTotalCount]
               << " iterations";
+
+      int64_t index_stats[kPiHeapStatCount[1]];
+      int64_t total_op_count = 0;
+      for (int i = 0; i < sizeof(index_stats) / sizeof(index_stats[0]); ++i) {
+        index_stats[i] =
+            metadata[9 + kPeCount + kIntervalCount * 4 +
+                     qid * kPiHeapStatTotalCount + kPiHeapStatCount[0] + i];
+        total_op_count += index_stats[i];
+      }
+
+      const char* kIndexOpNamesAligned[] = {
+          "#GET_STALE    ",  //
+          "#CLEAR_STALE  ",  //
+          "#ACQUIRE_INDEX",  //
+          "#UPDATE_INDEX ",  //
+          "#CLEAR_FRESH  ",  //
+      };
+
+      for (int i = 0; i < sizeof(index_stats) / sizeof(index_stats[0]); ++i) {
+        VLOG(3) << "    " << kIndexOpNamesAligned[i] << ": "
+                << std::setfill(' ') << std::setw(10) << index_stats[i] << " ("
+                << std::fixed << std::setprecision(1)
+                << 100. * index_stats[i] / total_op_count << "%)";
+      }
     }
 
     if (!IsValid(root, edges_view, weights_view, indexed_weights,

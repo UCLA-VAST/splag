@@ -103,7 +103,11 @@ HeapIndexEntry GetStaleIndexLocked(
   return array[pos];
 }
 
+using PiHeapStat = int32_t;
+
 void PiHeapIndex(
+    //
+    istream<bool>& done_q, ostream<PiHeapStat>& stat_q,
     //
     int qid,
     //
@@ -139,10 +143,25 @@ init:
             << entry << " (stale)";
   };
 
+  DECL_ARRAY(PiHeapStat, op_stats, 5, 0);
+
 spin:
   for (;;) {
 #pragma HLS pipeline off
-    const auto pkt = req_q.read();
+
+    if (!done_q.empty()) {
+      done_q.read(nullptr);
+      RANGE(i, sizeof(op_stats) / sizeof(op_stats[0]), {
+        stat_q.write(op_stats[i]);
+        op_stats[i] = 0;
+      });
+    }
+
+    if (req_q.empty()) {
+      continue;
+    }
+
+    const auto pkt = req_q.read(nullptr);
     const auto req = pkt.payload;
 
     StalePos stale_entry_pos;
@@ -159,6 +178,8 @@ spin:
     bool is_index_write_requested = false;
 
     HeapIndexResp resp;
+
+    ++op_stats[req.op];
 
     switch (req.op) {
       case GET_STALE: {
@@ -431,7 +452,7 @@ HeapRespOp PiHeapCmp(const HeapElemType& left, const HeapElemType& right,
 
 void PiHeapHead(
     //
-    istream<bool>& done_q, ostream<int32_t>& stat_q,
+    istream<bool>& done_q, ostream<PiHeapStat>& stat_q,
     // Scalar
     Vid qid,
     // Queue requests.
@@ -451,7 +472,7 @@ void PiHeapHead(
     CHECK_EQ(root.cap_right, cap) << "q[" << qid << "]";
   });
 
-  int32_t stall_iteration_count = 0;
+  PiHeapStat stall_iteration_count = 0;
 
 spin:
   for (;;) {
@@ -838,6 +859,24 @@ void PiHeapIndexMem(
   ReadWriteMem(read_addr_q, read_data_q, write_req_q, write_resp_q, mem);
 }
 
+void PiHeapStatArbiter(
+    //
+    istream<bool>& done_in_q, ostream<PiHeapStat>& stat_out_q,
+    //
+    ostreams<bool, kPiHeapStatTaskCount>& done_out_q,
+    istreams<PiHeapStat, kPiHeapStatTaskCount>& stat_in_q) {
+spin:
+  for (;;) {
+#pragma HLS pipeline off
+    const auto done = done_in_q.read();
+    RANGE(i, kPiHeapStatTaskCount, done_out_q[i].write(done));
+    ap_wait();
+    RANGE(i, kPiHeapStatTaskCount, {
+      RANGE(j, kPiHeapStatCount[i], stat_out_q.write(stat_in_q[i].read()));
+    });
+  }
+}
+
 // Each push request puts the task in the queue if there isn't a task for the
 // same vertex in the queue, or decreases the priority of the existing task
 // using the new value. Whether a new task is created is returned in the
@@ -847,7 +886,7 @@ void PiHeapIndexMem(
 // indicates that the queue is empty.
 void TaskQueue(
     //
-    istream<bool>& done_q, ostream<int32_t>& stat_q,
+    istream<bool>& done_q, ostream<PiHeapStat>& stat_q,
     // Scalar
     Vid qid,
     // Queue requests.
@@ -881,10 +920,14 @@ void TaskQueue(
       array_write_req_q;
   streams<bool, kOffChipLevelCount, 2> array_write_resp_q;
 
+  streams<bool, kPiHeapStatTaskCount, 2> done_qi;
+  streams<PiHeapStat, kPiHeapStatTaskCount, 2> stat_qi;
+
   task()
-      .invoke<detach>(PiHeapHead, done_q, stat_q, qid, push_req_q, pop_req_q,
-                      queue_resp_q, req_q[0], resp_q[0], index_req_qs[0],
-                      index_resp_qs[0])
+      .invoke<detach>(PiHeapStatArbiter, done_q, stat_q, done_qi, stat_qi)
+      .invoke<detach>(PiHeapHead, done_qi[0], stat_qi[0], qid, push_req_q,
+                      pop_req_q, queue_resp_q, req_q[0], resp_q[0],
+                      index_req_qs[0], index_resp_qs[0])
       // clang-format off
       .invoke<detach>(PiHeapBodyL1,  qid, req_q[ 0], resp_q[ 0], req_q[ 1], resp_q[ 1], index_req_qs[ 1], index_resp_qs[ 1])
       .invoke<detach>(PiHeapBodyL2,  qid, req_q[ 1], resp_q[ 1], req_q[ 2], resp_q[ 2], index_req_qs[ 2], index_resp_qs[ 2])
@@ -919,9 +962,10 @@ void TaskQueue(
                       piheap_array_write_resp_q, array_write_resp_q)
 
       .invoke<detach>(PiHeapIndexReqArbiter, index_req_qs, index_req_q)
-      .invoke<detach>(PiHeapIndex, qid, index_req_q, index_resp_q,
-                      piheap_index_read_addr_q, piheap_index_read_data_q,
-                      piheap_index_write_req_q, piheap_index_write_resp_q)
+      .invoke<detach>(PiHeapIndex, done_qi[1], stat_qi[1], qid, index_req_q,
+                      index_resp_q, piheap_index_read_addr_q,
+                      piheap_index_read_data_q, piheap_index_write_req_q,
+                      piheap_index_write_resp_q)
       .invoke<detach>(PiHeapIndexRespArbiter, index_resp_q, index_resp_qs);
 }
 
@@ -1338,7 +1382,7 @@ void Dispatcher(
     ostreams<bool, kIntervalCount>& vertex_cache_done_q,
     istreams<int32_t, kIntervalCount>& vertex_cache_stat_q,
     ostreams<bool, kQueueCount>& queue_done_q,
-    istreams<int32_t, kQueueCount>& queue_stat_q,
+    istreams<PiHeapStat, kQueueCount>& queue_stat_q,
     // Task and queue requests.
     ostream<TaskReq>& task_req_q, istream<TaskResp>& task_resp_q,
     istream<uint_noop_t>& update_noop_q, ostream<uint_qid_t>& queue_req_q,
@@ -1527,7 +1571,10 @@ vertex_cache_stat:
 
 queue_stat:
   for (int i = 0; i < kQueueCount; ++i) {
-    metadata[9 + kPeCount + kIntervalCount * 4 + i] = queue_stat_q[i].read();
+    for (int j = 0; j < kPiHeapStatTotalCount; ++j) {
+      metadata[9 + kPeCount + kIntervalCount * 4 + i * kPiHeapStatTotalCount +
+               j] = queue_stat_q[i].read();
+    }
   }
 }
 
@@ -1544,7 +1591,7 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   tapa::stream<QueueOpResp, 2> queue_resp_q("queue_resp");
   tapa::streams<QueueOpResp, kQueueCount, 2> queue_resp_qi("queue_resp_i");
   streams<bool, kQueueCount, 2> queue_done_q;
-  streams<int32_t, kQueueCount, 2> queue_stat_q;
+  streams<PiHeapStat, kQueueCount, 2> queue_stat_q;
 
   streams<Vid, kQueueCount, 2> piheap_array_read_addr_q;
   streams<HeapElemPairAxi, kQueueCount, 2> piheap_array_read_data_q;

@@ -126,6 +126,14 @@ inline int GetAddrOfOffChipHeapElem(int level, int idx, int qid) {
   return ((1 << level) / 2 + idx / 2) * kQueueCount + qid;
 }
 
+constexpr int kPiHeapStatCount[] = {
+    1,  // PiHeapHead
+    5,  // PiHeapIndex
+};
+constexpr int kPiHeapStatTotalCount = kPiHeapStatCount[0] + kPiHeapStatCount[1];
+constexpr int kPiHeapStatTaskCount =
+    sizeof(kPiHeapStatCount) / sizeof(kPiHeapStatCount[0]);
+
 class TaskOnChip {
  public:
   TaskOnChip() {}
