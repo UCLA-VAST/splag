@@ -156,7 +156,6 @@ spin:
         !is_fresh_entry_hit && fresh_entry.is_dirty;
     bool is_fresh_entry_updated = false;
 
-    packet<Vid, HeapIndexEntry> index_write_req;
     bool is_index_write_requested = false;
 
     HeapIndexResp resp;
@@ -178,7 +177,7 @@ spin:
 
         // Write cache entry to memory if necessary.
         if (is_writing_fresh_entry_needed) {
-          index_write_req = {fresh_entry.vid, fresh_entry.index};
+          write_req_q.write({fresh_entry.vid, fresh_entry.index});
           is_index_write_requested = true;
         }
 
@@ -218,7 +217,7 @@ spin:
         } else {
           // Write cache entry to memory if necessary.
           if (is_writing_fresh_entry_needed) {
-            index_write_req = {fresh_entry.vid, fresh_entry.index};
+            write_req_q.write({fresh_entry.vid, fresh_entry.index});
             is_index_write_requested = true;
           }
           fresh_entry.is_dirty = true;
@@ -233,7 +232,7 @@ spin:
           fresh_entry.index.invalidate();
           is_fresh_entry_updated = true;
         } else {
-          index_write_req = {req.vid, nullptr};
+          write_req_q.write({req.vid, nullptr});
           is_index_write_requested = true;
         }
       } break;
@@ -247,8 +246,6 @@ spin:
       SetStaleIndexLocked(stale_entry_pos, req.vid, stale_entry);
     }
     if (is_index_write_requested) {
-      write_req_q.write(index_write_req);
-      ap_wait();
       write_resp_q.read();
     }
   }
