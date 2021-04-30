@@ -128,11 +128,6 @@ init:
         .index = nullptr,
     };
   }
-  CLEAN_UP(clean_up, [&] {
-    for (int i = 0; i < kFreshCacheSize; ++i) {
-      CHECK(!fresh_index[i].is_dirty);
-    }
-  });
 
   DECL_ARRAY(HeapStaleIndexEntry, stale_index, kStaleCapacity, nullptr);
 #pragma HLS aggregate variable = stale_index bit
@@ -234,13 +229,13 @@ spin:
       } break;
       case CLEAR_FRESH: {
         if (is_fresh_entry_hit) {
-          fresh_entry.is_dirty = false;
-          fresh_entry.vid %= kFreshCacheSize * kQueueCount;
+          fresh_entry.is_dirty = true;
           fresh_entry.index.invalidate();
           is_fresh_entry_updated = true;
+        } else {
+          index_write_req = {req.vid, nullptr};
+          is_index_write_requested = true;
         }
-        index_write_req = {req.vid, nullptr};
-        is_index_write_requested = true;
       } break;
     }
 
