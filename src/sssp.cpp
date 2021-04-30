@@ -155,119 +155,115 @@ spin:
         stat_q.write(op_stats[i]);
         op_stats[i] = 0;
       });
-    }
+    } else if (!req_q.empty()) {
+      const auto pkt = req_q.read(nullptr);
+      const auto req = pkt.payload;
 
-    if (req_q.empty()) {
-      continue;
-    }
+      StalePos stale_entry_pos;
+      HeapIndexEntry stale_entry =
+          GetStaleIndexLocked(stale_index, req.vid, stale_entry_pos);
+      bool is_stale_entry_updated = false;
 
-    const auto pkt = req_q.read(nullptr);
-    const auto req = pkt.payload;
+      auto fresh_entry = fresh_index[req.vid / kQueueCount % kFreshCacheSize];
+      const bool is_fresh_entry_hit = fresh_entry.vid == req.vid;
+      const bool is_writing_fresh_entry_needed =
+          !is_fresh_entry_hit && fresh_entry.is_dirty;
+      bool is_fresh_entry_updated = false;
 
-    StalePos stale_entry_pos;
-    HeapIndexEntry stale_entry =
-        GetStaleIndexLocked(stale_index, req.vid, stale_entry_pos);
-    bool is_stale_entry_updated = false;
+      bool is_index_write_requested = false;
 
-    auto fresh_entry = fresh_index[req.vid / kQueueCount % kFreshCacheSize];
-    const bool is_fresh_entry_hit = fresh_entry.vid == req.vid;
-    const bool is_writing_fresh_entry_needed =
-        !is_fresh_entry_hit && fresh_entry.is_dirty;
-    bool is_fresh_entry_updated = false;
+      HeapIndexResp resp;
 
-    bool is_index_write_requested = false;
+      ++op_stats[req.op];
 
-    HeapIndexResp resp;
-
-    ++op_stats[req.op];
-
-    switch (req.op) {
-      case GET_STALE: {
-        resp.entry = stale_entry;
-      } break;
-      case CLEAR_STALE: {
-        CHECK(stale_entry.valid());
-        stale_entry.invalidate();
-        is_stale_entry_updated = true;
-      } break;
-      case ACQUIRE_INDEX: {
-        if (stale_entry.valid()) {
-          resp.yield = true;
-          break;
-        }
-
-        // Write cache entry to memory if necessary.
-        if (is_writing_fresh_entry_needed) {
-          write_req_q.write({fresh_entry.vid, fresh_entry.index});
-          is_index_write_requested = true;
-        }
-
-        // Fetch entry from memory on miss.
-        if (!is_fresh_entry_hit) {
-          read_addr_q.write(req.vid);
-          ap_wait();
-          fresh_entry.is_dirty = false;
-          fresh_entry.vid = req.vid;
-          fresh_entry.index = read_data_q.read();
-          is_fresh_entry_updated = true;
-        }
-
-        if (fresh_entry.index.valid()) {
-          if (fresh_entry.index.distance_le(req.entry)) {
-            resp.yield = false;
-            resp.enable = false;
+      switch (req.op) {
+        case GET_STALE: {
+          resp.entry = stale_entry;
+        } break;
+        case CLEAR_STALE: {
+          CHECK(stale_entry.valid());
+          stale_entry.invalidate();
+          is_stale_entry_updated = true;
+        } break;
+        case ACQUIRE_INDEX: {
+          if (stale_entry.valid()) {
+            resp.yield = true;
             break;
           }
-          stale_entry = fresh_entry.index;
-          is_stale_entry_updated = true;
-        }
-        CHECK_EQ(req.entry.level(), 0);
-        CHECK_EQ(req.entry.index(), 0);
 
-        resp = {.entry = fresh_entry.index, .yield = false, .enable = true};
-
-        fresh_entry.is_dirty = true;
-        fresh_entry.vid = req.vid;
-        fresh_entry.index = req.entry;
-        is_fresh_entry_updated = true;
-      } break;
-      case UPDATE_INDEX: {
-        if (stale_entry.distance_eq(req.entry)) {
-          stale_entry = req.entry;
-          is_stale_entry_updated = true;
-        } else {
           // Write cache entry to memory if necessary.
           if (is_writing_fresh_entry_needed) {
             write_req_q.write({fresh_entry.vid, fresh_entry.index});
             is_index_write_requested = true;
           }
+
+          // Fetch entry from memory on miss.
+          if (!is_fresh_entry_hit) {
+            read_addr_q.write(req.vid);
+            ap_wait();
+            fresh_entry.is_dirty = false;
+            fresh_entry.vid = req.vid;
+            fresh_entry.index = read_data_q.read();
+            is_fresh_entry_updated = true;
+          }
+
+          if (fresh_entry.index.valid()) {
+            if (fresh_entry.index.distance_le(req.entry)) {
+              resp.yield = false;
+              resp.enable = false;
+              break;
+            }
+            stale_entry = fresh_entry.index;
+            is_stale_entry_updated = true;
+          }
+          CHECK_EQ(req.entry.level(), 0);
+          CHECK_EQ(req.entry.index(), 0);
+
+          resp = {.entry = fresh_entry.index, .yield = false, .enable = true};
+
           fresh_entry.is_dirty = true;
           fresh_entry.vid = req.vid;
           fresh_entry.index = req.entry;
           is_fresh_entry_updated = true;
-        }
-      } break;
-      case CLEAR_FRESH: {
-        if (is_fresh_entry_hit) {
-          fresh_entry.is_dirty = true;
-          fresh_entry.index.invalidate();
-          is_fresh_entry_updated = true;
-        } else {
-          write_req_q.write({req.vid, nullptr});
-          is_index_write_requested = true;
-        }
-      } break;
-    }
+        } break;
+        case UPDATE_INDEX: {
+          if (stale_entry.distance_eq(req.entry)) {
+            stale_entry = req.entry;
+            is_stale_entry_updated = true;
+          } else {
+            // Write cache entry to memory if necessary.
+            if (is_writing_fresh_entry_needed) {
+              write_req_q.write({fresh_entry.vid, fresh_entry.index});
+              is_index_write_requested = true;
+            }
+            fresh_entry.is_dirty = true;
+            fresh_entry.vid = req.vid;
+            fresh_entry.index = req.entry;
+            is_fresh_entry_updated = true;
+          }
+        } break;
+        case CLEAR_FRESH: {
+          if (is_fresh_entry_hit) {
+            fresh_entry.is_dirty = true;
+            fresh_entry.index.invalidate();
+            is_fresh_entry_updated = true;
+          } else {
+            write_req_q.write({req.vid, nullptr});
+            is_index_write_requested = true;
+          }
+        } break;
+      }
 
-    resp_q.write({pkt.addr, resp});
-    if (is_fresh_entry_updated) {
-      fresh_index[req.vid / kQueueCount % kFreshCacheSize] = fresh_entry;
-    }
-    if (is_stale_entry_updated) {
-      SetStaleIndexLocked(stale_entry_pos, req.vid, stale_entry);
-    }
-    if (is_index_write_requested) {
-      write_resp_q.read();
+      resp_q.write({pkt.addr, resp});
+      if (is_fresh_entry_updated) {
+        fresh_index[req.vid / kQueueCount % kFreshCacheSize] = fresh_entry;
+      }
+      if (is_stale_entry_updated) {
+        SetStaleIndexLocked(stale_entry_pos, req.vid, stale_entry);
+      }
+      if (is_index_write_requested) {
+        write_resp_q.read();
+      }
     }
   }
 }
