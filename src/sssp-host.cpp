@@ -499,12 +499,16 @@ int main(int argc, char* argv[]) {
       }
     }
     teps.push_back(connected_edge_count / (elapsed_time + refine_time));
-    auto visited_edge_count = metadata[0];
-    auto push_count = metadata[1];
-    auto pushpop_count = metadata[2];
-    auto pop_valid_count = metadata[3];
-    auto pop_noop_count = metadata[4];
-    auto cycle_count = metadata[6];
+    auto metadata_it = metadata.begin();
+    auto visited_edge_count = *(metadata_it++);
+    auto push_count = *(metadata_it++);
+    auto pushpop_count = *(metadata_it++);
+    auto pop_valid_count = *(metadata_it++);
+    auto pop_noop_count = *(metadata_it++);
+    ++metadata_it;
+    auto cycle_count = *(metadata_it++);
+    auto queue_full_count = *(metadata_it++);
+    auto pe_full_count = *(metadata_it++);
     int64_t coarsened_edge_count = 0;
     for (auto& shard : edges) coarsened_edge_count += shard.size();
     VLOG(3) << "  TEPS:                  " << *teps.rbegin() << " ("
@@ -520,13 +524,15 @@ int main(int argc, char* argv[]) {
     VLOG(3) << "  #POP (valid):          " << pop_valid_count;
     VLOG(3) << "  #POP (noop):           " << pop_noop_count;
     VLOG(3) << "  cycle count:           " << cycle_count;
-    VLOG(3) << "    queue full:          " << metadata[7] << " (" << std::fixed
-            << std::setprecision(1) << 100. * metadata[7] / cycle_count << "%)";
-    VLOG(3) << "    PE full:             " << metadata[8] << " (" << std::fixed
-            << std::setprecision(1) << 100. * metadata[8] / cycle_count << "%)";
+    VLOG(3) << "    queue full:          " << queue_full_count << " ("
+            << std::fixed << std::setprecision(1)
+            << 100. * queue_full_count / cycle_count << "%)";
+    VLOG(3) << "    PE full:             " << pe_full_count << " ("
+            << std::fixed << std::setprecision(1)
+            << 100. * pe_full_count / cycle_count << "%)";
     int64_t pe_active_total = 0;
     for (int pe = 0; pe < kPeCount; ++pe) {
-      const auto count = metadata[9 + pe];
+      const auto count = *(metadata_it++);
       VLOG(3) << "    PE[" << std::setfill(' ') << std::setw(3) << pe
               << "] active:      " << count << " (" << std::fixed
               << std::setprecision(1) << 100. * count / cycle_count << "%)";
@@ -550,10 +556,10 @@ int main(int argc, char* argv[]) {
 
     for (int iid = 0; iid < kIntervalCount; ++iid) {
       VLOG(3) << "  interval[" << iid << "]:";
-      const auto read_hit = metadata[9 + kPeCount + iid * 4 + 0];
-      const auto read_miss = metadata[9 + kPeCount + iid * 4 + 1];
-      const auto write_hit = metadata[9 + kPeCount + iid * 4 + 2];
-      const auto write_miss = metadata[9 + kPeCount + iid * 4 + 3];
+      const auto read_hit = *(metadata_it++);
+      const auto read_miss = *(metadata_it++);
+      const auto write_hit = *(metadata_it++);
+      const auto write_miss = *(metadata_it++);
       VLOG(3) << "    read hit: " << std::fixed << std::setprecision(1)
               << 100. * read_hit / (read_hit + read_miss) << "%";
       VLOG(3) << "    write hit: " << std::fixed << std::setprecision(1)
@@ -561,17 +567,12 @@ int main(int argc, char* argv[]) {
     }
     for (int qid = 0; qid < kQueueCount; ++qid) {
       VLOG(3) << "  queue[" << qid << "]:";
-      VLOG(3) << "    stalled for "
-              << metadata[9 + kPeCount + kIntervalCount * 4 +
-                          qid * kPiHeapStatTotalCount]
-              << " iterations";
+      VLOG(3) << "    stalled for " << *(metadata_it++) << " iterations";
 
-      int64_t index_stats[kPiHeapStatCount[1]];
+      int64_t index_stats[5];
       int64_t total_op_count = 0;
       for (int i = 0; i < sizeof(index_stats) / sizeof(index_stats[0]); ++i) {
-        index_stats[i] =
-            metadata[9 + kPeCount + kIntervalCount * 4 +
-                     qid * kPiHeapStatTotalCount + kPiHeapStatCount[0] + i];
+        index_stats[i] = *(metadata_it++);
         total_op_count += index_stats[i];
       }
 
@@ -589,6 +590,15 @@ int main(int argc, char* argv[]) {
                 << std::fixed << std::setprecision(1)
                 << 100. * index_stats[i] / total_op_count << "%)";
       }
+
+      const auto read_hit = *(metadata_it++);
+      const auto read_miss = *(metadata_it++);
+      const auto write_hit = *(metadata_it++);
+      const auto write_miss = *(metadata_it++);
+      VLOG(3) << "    read hit: " << std::fixed << std::setprecision(1)
+              << 100. * read_hit / (read_hit + read_miss) << "%";
+      VLOG(3) << "    write hit: " << std::fixed << std::setprecision(1)
+              << 100. * write_hit / (write_hit + write_miss) << "%";
     }
 
     if (!IsValid(root, edges_view, weights_view, indexed_weights,

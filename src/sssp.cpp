@@ -144,6 +144,10 @@ init:
   };
 
   DECL_ARRAY(PiHeapStat, op_stats, 5, 0);
+  PiHeapStat read_hit = 0;
+  PiHeapStat read_miss = 0;
+  PiHeapStat write_hit = 0;
+  PiHeapStat write_miss = 0;
 
 spin:
   for (;;) {
@@ -155,6 +159,14 @@ spin:
         stat_q.write(op_stats[i]);
         op_stats[i] = 0;
       });
+      stat_q.write(read_hit);
+      stat_q.write(read_miss);
+      stat_q.write(write_hit);
+      stat_q.write(write_miss);
+      read_hit = 0;
+      read_miss = 0;
+      write_hit = 0;
+      write_miss = 0;
     } else if (!req_q.empty()) {
       const auto pkt = req_q.read(nullptr);
       const auto req = pkt.payload;
@@ -195,6 +207,9 @@ spin:
           if (is_writing_fresh_entry_needed) {
             write_req_q.write({fresh_entry.vid, fresh_entry.index});
             is_index_write_requested = true;
+            ++write_miss;
+          } else {
+            ++write_hit;
           }
 
           // Fetch entry from memory on miss.
@@ -205,6 +220,9 @@ spin:
             fresh_entry.vid = req.vid;
             fresh_entry.index = read_data_q.read();
             is_fresh_entry_updated = true;
+            ++read_miss;
+          } else {
+            ++read_hit;
           }
 
           if (fresh_entry.index.valid()) {
@@ -235,6 +253,9 @@ spin:
             if (is_writing_fresh_entry_needed) {
               write_req_q.write({fresh_entry.vid, fresh_entry.index});
               is_index_write_requested = true;
+              ++write_miss;
+            } else {
+              ++write_hit;
             }
             fresh_entry.is_dirty = true;
             fresh_entry.vid = req.vid;
@@ -247,9 +268,11 @@ spin:
             fresh_entry.is_dirty = true;
             fresh_entry.index.invalidate();
             is_fresh_entry_updated = true;
+            ++write_hit;
           } else {
             write_req_q.write({req.vid, nullptr});
             is_index_write_requested = true;
+            ++write_miss;
           }
         } break;
       }
