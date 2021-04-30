@@ -143,30 +143,27 @@ init:
             << entry << " (stale)";
   };
 
-  DECL_ARRAY(PiHeapStat, op_stats, 5, 0);
-  PiHeapStat read_hit = 0;
-  PiHeapStat read_miss = 0;
-  PiHeapStat write_hit = 0;
-  PiHeapStat write_miss = 0;
+  DECL_ARRAY(PiHeapStat, op_stats, kPiHeapStatCount[1], 0);
+  auto& read_hit = op_stats[5];
+  auto& read_miss = op_stats[6];
+  auto& write_hit = op_stats[7];
+  auto& write_miss = op_stats[8];
+
+  ap_uint<bit_length(kPiHeapStatCount[1])> stat_idx = 0;
 
 spin:
   for (;;) {
 #pragma HLS pipeline off
 
     if (!done_q.empty()) {
-      done_q.read(nullptr);
-      RANGE(i, sizeof(op_stats) / sizeof(op_stats[0]), {
-        stat_q.write(op_stats[i]);
-        op_stats[i] = 0;
-      });
-      stat_q.write(read_hit);
-      stat_q.write(read_miss);
-      stat_q.write(write_hit);
-      stat_q.write(write_miss);
-      read_hit = 0;
-      read_miss = 0;
-      write_hit = 0;
-      write_miss = 0;
+      stat_q.write(op_stats[stat_idx]);
+      op_stats[stat_idx] = 0;
+      if (stat_idx == kPiHeapStatCount[1] - 1) {
+        stat_idx = 0;
+        done_q.read(nullptr);
+      } else {
+        ++stat_idx;
+      }
     } else if (!req_q.empty()) {
       const auto pkt = req_q.read(nullptr);
       const auto req = pkt.payload;
