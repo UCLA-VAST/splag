@@ -175,8 +175,6 @@ spin:
 
       auto fresh_entry = fresh_index[req.vid / kQueueCount % kFreshCacheSize];
       const bool is_fresh_entry_hit = fresh_entry.vid == req.vid;
-      const bool is_writing_fresh_entry_needed =
-          !is_fresh_entry_hit && fresh_entry.is_dirty;
       bool is_fresh_entry_updated = false;
 
       bool is_index_write_requested = false;
@@ -200,17 +198,17 @@ spin:
             break;
           }
 
-          // Write cache entry to memory if necessary.
-          if (is_writing_fresh_entry_needed) {
-            write_req_q.write({fresh_entry.vid, fresh_entry.index});
-            is_index_write_requested = true;
-            ++write_miss;
-          } else {
-            ++write_hit;
-          }
-
           // Fetch entry from memory on miss.
           if (!is_fresh_entry_hit) {
+            // Write cache entry to memory if necessary.
+            if (fresh_entry.is_dirty) {
+              write_req_q.write({fresh_entry.vid, fresh_entry.index});
+              is_index_write_requested = true;
+              ++write_miss;
+            } else {
+              ++write_hit;
+            }
+
             read_addr_q.write(req.vid);
             ap_wait();
             fresh_entry.is_dirty = false;
@@ -247,7 +245,7 @@ spin:
             is_stale_entry_updated = true;
           } else {
             // Write cache entry to memory if necessary.
-            if (is_writing_fresh_entry_needed) {
+            if (!is_fresh_entry_hit && fresh_entry.is_dirty) {
               write_req_q.write({fresh_entry.vid, fresh_entry.index});
               is_index_write_requested = true;
               ++write_miss;
