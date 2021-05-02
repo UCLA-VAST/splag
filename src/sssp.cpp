@@ -175,7 +175,6 @@ spin:
 
       auto fresh_entry = fresh_index[req.vid / kQueueCount % kFreshCacheSize];
       const bool is_fresh_entry_hit = fresh_entry.vid == req.vid;
-      bool is_fresh_entry_updated = false;
 
       bool is_index_write_requested = false;
 
@@ -214,7 +213,6 @@ spin:
             fresh_entry.is_dirty = false;
             fresh_entry.vid = req.vid;
             fresh_entry.index = read_data_q.read();
-            is_fresh_entry_updated = true;
             ++read_miss;
           } else {
             ++read_hit;
@@ -237,7 +235,6 @@ spin:
           fresh_entry.is_dirty = true;
           fresh_entry.vid = req.vid;
           fresh_entry.index = req.entry;
-          is_fresh_entry_updated = true;
         } break;
         case UPDATE_INDEX: {
           if (stale_entry.distance_eq(req.entry)) {
@@ -255,14 +252,12 @@ spin:
             fresh_entry.is_dirty = true;
             fresh_entry.vid = req.vid;
             fresh_entry.index = req.entry;
-            is_fresh_entry_updated = true;
           }
         } break;
         case CLEAR_FRESH: {
           if (is_fresh_entry_hit) {
             fresh_entry.is_dirty = true;
             fresh_entry.index.invalidate();
-            is_fresh_entry_updated = true;
             ++write_hit;
           } else {
             write_req_q.write({req.vid, nullptr});
@@ -273,9 +268,7 @@ spin:
       }
 
       resp_q.write({pkt.addr, resp});
-      if (is_fresh_entry_updated) {
-        fresh_index[req.vid / kQueueCount % kFreshCacheSize] = fresh_entry;
-      }
+      fresh_index[req.vid / kQueueCount % kFreshCacheSize] = fresh_entry;
       if (is_stale_entry_updated) {
         SetStaleIndexLocked(stale_entry_pos, req.vid, stale_entry);
       }
