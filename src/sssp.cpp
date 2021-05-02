@@ -192,6 +192,10 @@ spin:
           is_stale_entry_updated = true;
         } break;
         case ACQUIRE_INDEX: {
+          CHECK_EQ(pkt.addr, 0);
+          CHECK_EQ(req.entry.level(), 0);
+          CHECK_EQ(req.entry.index(), 0);
+
           if (stale_entry.valid()) {
             resp.yield = true;
             break;
@@ -227,8 +231,6 @@ spin:
             stale_entry = fresh_entry.index;
             is_stale_entry_updated = true;
           }
-          CHECK_EQ(req.entry.level(), 0);
-          CHECK_EQ(req.entry.index(), 0);
 
           resp = {.entry = fresh_entry.index, .yield = false, .enable = true};
 
