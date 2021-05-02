@@ -116,10 +116,11 @@ void PiHeapIndex(
     //
     ostream<Vid>& read_addr_q, istream<HeapIndexEntry>& read_data_q,
     ostream<packet<Vid, HeapIndexEntry>>& write_req_q,
-    istream<bool>& write_resp_q) {
+    istream<bool>& write_resp_q,
+    //
+    ostream<HeapAcquireIndexContext>& acquire_index_ctx_out_q,
+    istream<HeapAcquireIndexContext>& acquire_index_ctx_in_q) {
 #pragma HLS inline recursive
-
-  constexpr int kFreshCacheSize = 4096;
 
   HeapIndexCacheEntry fresh_index[kFreshCacheSize];
 #pragma HLS bind_storage variable = fresh_index type = RAM_S2P impl = URAM
@@ -151,11 +152,66 @@ init:
 
   ap_uint<bit_length(kPiHeapStatCount[1])> stat_idx = 0;
 
+  shiftreg<uint_fresh_index_pos_t, 16> reading_fresh_pos;
+  shiftreg<uint_fresh_index_pos_t, 16> writing_fresh_pos;
+
 spin:
   for (;;) {
-#pragma HLS pipeline off
+#pragma HLS pipeline II = 2
 
-    if (!done_q.empty()) {
+    // Determine what to do.
+    const bool can_send_stat = !done_q.empty();
+
+    const bool can_collect_write = !write_resp_q.empty();
+
+    bool is_ctx_valid;
+    const auto ctx = acquire_index_ctx_in_q.peek(is_ctx_valid);
+    const auto ctx_pos = GetFreshCachePos(ctx.vid);
+    const bool can_acquire_index =
+        // Context must be valid.
+        is_ctx_valid &&
+        // Read data must be valid.
+        !read_data_q.empty();
+
+    bool is_req_valid;
+    const auto pkt = req_q.peek(is_req_valid);
+    const auto req = pkt.payload;
+    const auto req_pos = GetFreshCachePos(req.vid);
+    const bool can_process_req =
+        // Request must be valid.
+        is_req_valid &&
+        // The request must not violate fresh index dependency.
+        (
+            // Get stale and clear stale won't create any violation.
+            req.op == GET_STALE || req.op == CLEAR_STALE ||
+            !(
+                // Outstanding reads must not be accessed.
+                reading_fresh_pos.contains(req_pos) ||
+                // Outstanding writes must not be accessed.
+                writing_fresh_pos.contains(req_pos) ||
+                // Memory write must not block.
+                writing_fresh_pos.full() ||
+                // If acquire index is requested...
+                (req.op == ACQUIRE_INDEX &&
+                 // memory read must not block.
+                 reading_fresh_pos.full())));
+
+    // Determine which vertex to work on.
+    const auto vid = can_acquire_index ? ctx.vid : req.vid;
+
+    // Read fresh entry.
+    auto fresh_entry = fresh_index[GetFreshCachePos(vid)];
+
+    // Read stale entry.
+    StalePos stale_entry_pos;
+    auto stale_entry = GetStaleIndexLocked(stale_index, vid, stale_entry_pos);
+    bool is_stale_entry_updated = false;
+
+    // Prepare response.
+    HeapIndexResp resp;
+    bool is_resp_written = false;
+
+    if (can_send_stat) {
       stat_q.write(op_stats[stat_idx]);
       op_stats[stat_idx] = 0;
       if (stat_idx == kPiHeapStatCount[1] - 1) {
@@ -164,21 +220,45 @@ spin:
       } else {
         ++stat_idx;
       }
-    } else if (!req_q.empty()) {
-      const auto pkt = req_q.read(nullptr);
-      const auto req = pkt.payload;
+    } else if (can_collect_write) {
+      write_resp_q.read(nullptr);
+      writing_fresh_pos.pop();
+    } else if (can_acquire_index) {
+      is_resp_written = true;
 
-      StalePos stale_entry_pos;
-      HeapIndexEntry stale_entry =
-          GetStaleIndexLocked(stale_index, req.vid, stale_entry_pos);
-      bool is_stale_entry_updated = false;
+      acquire_index_ctx_in_q.read(nullptr);
 
-      auto fresh_entry = fresh_index[req.vid / kQueueCount % kFreshCacheSize];
+      CHECK(!stale_entry.valid());
+      CHECK(!read_data_q.empty());
+      const auto reading_pos = reading_fresh_pos.pop();
+      CHECK_EQ(reading_pos, GetFreshCachePos(ctx.vid));
+
+      const auto read_data = read_data_q.read(nullptr);
+
+      if (read_data.distance_le(ctx.entry)) {  // Implies read_data.valid().
+        resp = {.entry = {}, .yield = false, .enable = false};
+
+        fresh_entry.is_dirty = false;
+        fresh_entry.vid = ctx.vid;
+        fresh_entry.index = read_data;
+      } else {
+        if (read_data.valid()) {
+          stale_entry = read_data;
+          is_stale_entry_updated = true;
+        }
+
+        resp = {.entry = read_data, .yield = false, .enable = true};
+
+        fresh_entry.is_dirty = true;
+        fresh_entry.vid = ctx.vid;
+        fresh_entry.index = ctx.entry;
+      }
+    } else if (can_process_req) {
+      is_resp_written = true;
+
+      req_q.read(nullptr);
+
       const bool is_fresh_entry_hit = fresh_entry.vid == req.vid;
-
-      bool is_index_write_requested = false;
-
-      HeapIndexResp resp;
 
       ++op_stats[req.op];
 
@@ -203,40 +283,43 @@ spin:
 
           // Fetch entry from memory on miss.
           if (!is_fresh_entry_hit) {
+            is_resp_written = false;
+
             // Write cache entry to memory if necessary.
             if (fresh_entry.is_dirty) {
               write_req_q.write({fresh_entry.vid, fresh_entry.index});
-              is_index_write_requested = true;
+              writing_fresh_pos.push(GetFreshCachePos(vid));
+
               ++write_miss;
             } else {
               ++write_hit;
             }
 
+            // Issue read request and save context.
             read_addr_q.write(req.vid);
-            ap_wait();
-            fresh_entry.is_dirty = false;
-            fresh_entry.vid = req.vid;
-            fresh_entry.index = read_data_q.read();
+            reading_fresh_pos.push(GetFreshCachePos(vid));
+            acquire_index_ctx_out_q.write({.vid = req.vid, .entry = req.entry});
+
             ++read_miss;
-          } else {
+          } else {  // Read hit.
+            if (fresh_entry.index.distance_le(req.entry)) {
+              // Implies read_data.valid().
+              resp = {.entry = {}, .yield = false, .enable = false};
+            } else {
+              if (fresh_entry.index.valid()) {
+                stale_entry = fresh_entry.index;
+                is_stale_entry_updated = true;
+              }
+
+              resp = {
+                  .entry = fresh_entry.index, .yield = false, .enable = true};
+
+              fresh_entry.is_dirty = true;
+              fresh_entry.index = req.entry;
+            }
+
             ++read_hit;
           }
-
-          if (fresh_entry.index.valid()) {
-            if (fresh_entry.index.distance_le(req.entry)) {
-              resp.yield = false;
-              resp.enable = false;
-              break;
-            }
-            stale_entry = fresh_entry.index;
-            is_stale_entry_updated = true;
-          }
-
-          resp = {.entry = fresh_entry.index, .yield = false, .enable = true};
-
-          fresh_entry.is_dirty = true;
-          fresh_entry.vid = req.vid;
-          fresh_entry.index = req.entry;
         } break;
         case UPDATE_INDEX: {
           if (stale_entry.distance_eq(req.entry)) {
@@ -246,11 +329,13 @@ spin:
             // Write cache entry to memory if necessary.
             if (!is_fresh_entry_hit && fresh_entry.is_dirty) {
               write_req_q.write({fresh_entry.vid, fresh_entry.index});
-              is_index_write_requested = true;
+              writing_fresh_pos.push(GetFreshCachePos(vid));
+
               ++write_miss;
             } else {
               ++write_hit;
             }
+
             fresh_entry.is_dirty = true;
             fresh_entry.vid = req.vid;
             fresh_entry.index = req.entry;
@@ -260,23 +345,34 @@ spin:
           if (is_fresh_entry_hit) {
             fresh_entry.is_dirty = true;
             fresh_entry.index.invalidate();
+
             ++write_hit;
           } else {
             write_req_q.write({req.vid, nullptr});
-            is_index_write_requested = true;
+            writing_fresh_pos.push(GetFreshCachePos(vid));
+
             ++write_miss;
           }
         } break;
       }
+    }
 
-      resp_q.write({pkt.addr, resp});
-      fresh_index[req.vid / kQueueCount % kFreshCacheSize] = fresh_entry;
-      if (is_stale_entry_updated) {
-        SetStaleIndexLocked(stale_entry_pos, req.vid, stale_entry);
-      }
-      if (is_index_write_requested) {
-        write_resp_q.read();
-      }
+    if (is_resp_written) {
+      resp_q.write({
+          .addr = can_acquire_index
+                      ? LevelId(0)  // Only the head can acquire index.
+                      : pkt.addr,
+          .payload = resp,
+      });
+    }
+
+    if (!can_send_stat && !can_collect_write &&
+        (can_acquire_index || can_process_req)) {
+      fresh_index[GetFreshCachePos(vid)] = fresh_entry;
+    }
+
+    if (is_stale_entry_updated) {
+      SetStaleIndexLocked(stale_entry_pos, vid, stale_entry);
     }
   }
 }
@@ -932,6 +1028,8 @@ void TaskQueue(
   streams<bool, kPiHeapStatTaskCount, 2> done_qi;
   streams<PiHeapStat, kPiHeapStatTaskCount, 2> stat_qi;
 
+  stream<HeapAcquireIndexContext, 64> acquire_index_ctx_q;
+
   task()
       .invoke<detach>(PiHeapStatArbiter, done_q, stat_q, done_qi, stat_qi)
       .invoke<detach>(PiHeapHead, done_qi[0], stat_qi[0], qid, push_req_q,
@@ -974,7 +1072,8 @@ void TaskQueue(
       .invoke<detach>(PiHeapIndex, done_qi[1], stat_qi[1], qid, index_req_q,
                       index_resp_q, piheap_index_read_addr_q,
                       piheap_index_read_data_q, piheap_index_write_req_q,
-                      piheap_index_write_resp_q)
+                      piheap_index_write_resp_q, acquire_index_ctx_q,
+                      acquire_index_ctx_q)
       .invoke<detach>(PiHeapIndexRespArbiter, index_resp_q, index_resp_qs);
 }
 

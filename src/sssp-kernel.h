@@ -148,6 +148,22 @@ struct HeapIndexReq {
   HeapIndexEntry entry;
 };
 
+constexpr int kFreshCacheSize = 4096;
+
+using uint_fresh_index_pos_t = ap_uint<bit_length(kFreshCacheSize - 1)>;
+using int_fresh_pos_t = ap_uint<bit_length(kFreshCacheSize - 1) + 1>;
+
+inline uint_fresh_index_pos_t GetFreshCachePos(Vid vid) {
+  constexpr int kLsb = log(kQueueCount, 2);
+  constexpr int kMsb = kLsb + log(kFreshCacheSize, 2) - 1;
+  return ap_uint<kVidWidth>(vid).range(kMsb, kLsb);
+}
+
+struct HeapAcquireIndexContext {
+  Vid vid;
+  HeapIndexEntry entry;
+};
+
 struct HeapIndexResp {
   HeapIndexEntry entry;
   bool yield;   // If true, requester should try again.
@@ -367,6 +383,95 @@ inline bool find_non_empty(tapa::istreams<T, S>& in_qs, index_t& idx) {
 #pragma HLS inline
   return arbiter<0, S>::find_non_empty(in_qs, idx);
 }
+
+template <typename T, int N>
+struct shiftreg {
+ public:
+  static constexpr int depth = N;
+  using value_type = T;
+  T array[N];
+  ap_uint<bit_length(N)> size = 0;
+
+  T shift(T value) {
+#pragma HLS inline
+#pragma HLS array_partition complete variable = array
+    const T result = array[0];
+    for (int i = 1; i < depth; ++i) {
+#pragma HLS unroll
+      array[i - 1] = array[i];
+    }
+    array[depth - 1] = value;
+    return result;
+  }
+
+  void push(T value) {
+#pragma HLS inline
+    CHECK_LT(size, depth);
+    array[size++] = value;
+  }
+
+  T pop() {
+#pragma HLS inline
+    CHECK_GT(size, 0);
+    --size;
+    return shift({});
+  }
+
+  void set(T value) {
+    for (int i = 0; i < depth; ++i) {
+#pragma HLS unroll
+      array[i] = value;
+    }
+    size = depth;
+  }
+
+  T front() const {
+#pragma HLS inline
+    CHECK(!is_empty());
+    return array[0];
+  }
+
+  bool contains(T value) const {
+#pragma HLS inline
+#pragma HLS array_partition complete variable = array
+    return recursor<0, depth>::contains(array, value, size);
+  }
+
+  bool is_empty() const {
+#pragma HLS inline
+    return size == 0;
+  }
+
+  bool full() const {
+#pragma HLS inline
+    return size >= depth;
+  }
+
+ private:
+  template <int i, int n>
+  struct recursor {
+    static bool contains(const T (&array)[N], T value,
+                         ap_uint<bit_length(N)> size) {
+#pragma HLS inline
+      static_assert(i >= 0, "i must >= 0");
+      static_assert(n > 1, "n must > 1");
+      static_assert(i + n <= depth, "i + n must <= depth");
+      return recursor<i, n / 2>::contains(array, value, size) ||
+             recursor<i + n / 2, n - n / 2>::contains(array, value, size);
+    }
+  };
+
+  template <int i>
+  struct recursor<i, 1> {
+    static bool contains(const T (&array)[N], T value,
+                         ap_uint<bit_length(N)> size) {
+#pragma HLS inline
+      static_assert(i >= 0, "i must >= 0");
+      static_assert(i < depth, "i must < depth");
+      return i < size && array[i] == value;
+    }
+  };
+};
 
 #ifndef __SYNTHESIS__
 inline void ap_wait() {}
