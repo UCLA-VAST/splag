@@ -113,7 +113,17 @@ struct HeapIndexCacheEntry {
 
 struct HeapStaleIndexEntry : public HeapIndexEntry {
   Vid vid;
-  bool matches(Vid vid) const { return valid() && this->vid == vid; }
+  bool matches(Vid vid) const {
+    constexpr int kLsb = log(kQueueCount, 2);
+    constexpr int kMsb = kVidWidth - 1;
+    const bool result =
+        valid() && ap_uint<kVidWidth>(this->vid).range(kMsb, kLsb) ==
+                       ap_uint<kVidWidth>(vid).range(kMsb, kLsb);
+    if (result) {
+      CHECK_EQ(this->vid, vid);
+    }
+    return result;
+  }
   using HeapIndexEntry::operator=;
   void set(Vid vid, const HeapIndexEntry& entry) {
     HeapIndexEntry::operator=(entry);
