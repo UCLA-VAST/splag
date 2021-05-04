@@ -10,6 +10,8 @@
 
 using PeId = uint8_t;
 
+using uint_vid_t = ap_uint<kVidWidth>;
+
 struct SourceVertex {
   Vid parent;
   float distance;
@@ -105,12 +107,6 @@ struct VertexCacheEntry {
   TaskOnChip task;
 };
 
-struct HeapIndexCacheEntry {
-  bool is_dirty;
-  Vid vid;
-  HeapIndexEntry index;
-};
-
 struct HeapStaleIndexEntry : public HeapIndexEntry {
   Vid vid;
   bool matches(Vid vid) const {
@@ -147,17 +143,6 @@ struct HeapIndexReq {
   Vid vid;
   HeapIndexEntry entry;
 };
-
-constexpr int kFreshCacheSize = 4096;
-
-using uint_fresh_index_pos_t = ap_uint<bit_length(kFreshCacheSize - 1)>;
-using int_fresh_pos_t = ap_uint<bit_length(kFreshCacheSize - 1) + 1>;
-
-inline uint_fresh_index_pos_t GetFreshCachePos(Vid vid) {
-  constexpr int kLsb = log(kQueueCount, 2);
-  constexpr int kMsb = kLsb + log(kFreshCacheSize, 2) - 1;
-  return ap_uint<kVidWidth>(vid).range(kMsb, kLsb);
-}
 
 struct HeapAcquireIndexContext {
   Vid vid;

@@ -7,6 +7,7 @@
 #include <tapa.h>
 
 #include "sssp-kernel.h"
+#include "sssp-piheap-index.h"
 
 using tapa::detach;
 using tapa::istream;
@@ -122,14 +123,14 @@ void PiHeapIndex(
     istream<HeapAcquireIndexContext>& acquire_index_ctx_in_q) {
 #pragma HLS inline recursive
 
-  HeapIndexCacheEntry fresh_index[kFreshCacheSize];
+  HeapIndexCacheEntry fresh_index[kPifcSize];
 #pragma HLS bind_storage variable = fresh_index type = RAM_S2P impl = URAM
 #pragma HLS aggregate variable = fresh_index bit
 init:
-  for (int i = 0; i < kFreshCacheSize; ++i) {
+  for (int i = 0; i < kPifcSize; ++i) {
     fresh_index[i] = {
         .is_dirty = false,
-        .vid = i * kQueueCount + qid,
+        .tag = 0,
         .index = nullptr,
     };
   }
@@ -152,8 +153,8 @@ init:
 
   ap_uint<bit_length(kPiHeapStatCount[1])> stat_idx = 0;
 
-  shiftreg<uint_fresh_index_pos_t, 16> reading_fresh_pos;
-  shiftreg<uint_fresh_index_pos_t, 16> writing_fresh_pos;
+  shiftreg<uint_pifc_index_t, 16> reading_fresh_pos;
+  shiftreg<uint_pifc_index_t, 16> writing_fresh_pos;
 
 spin:
   for (;;) {
@@ -166,7 +167,6 @@ spin:
 
     bool is_ctx_valid;
     const auto ctx = acquire_index_ctx_in_q.peek(is_ctx_valid);
-    const auto ctx_pos = GetFreshCachePos(ctx.vid);
     const bool can_acquire_index =
         // Context must be valid.
         is_ctx_valid &&
@@ -176,7 +176,7 @@ spin:
     bool is_req_valid;
     const auto pkt = req_q.peek(is_req_valid);
     const auto req = pkt.payload;
-    const auto req_pos = GetFreshCachePos(req.vid);
+    const auto req_pos = GetPifcIndex(req.vid);
     const bool can_process_req =
         // Request must be valid.
         is_req_valid &&
@@ -198,9 +198,10 @@ spin:
 
     // Determine which vertex to work on.
     const auto vid = can_acquire_index ? ctx.vid : req.vid;
+    const auto pifc_index = GetPifcIndex(vid);
 
     // Read fresh entry.
-    auto fresh_entry = fresh_index[GetFreshCachePos(vid)];
+    auto fresh_entry = fresh_index[pifc_index];
 
     // Read stale entry.
     StalePos stale_entry_pos;
@@ -231,7 +232,7 @@ spin:
       CHECK(!stale_entry.valid());
       CHECK(!read_data_q.empty());
       const auto reading_pos = reading_fresh_pos.pop();
-      CHECK_EQ(reading_pos, GetFreshCachePos(ctx.vid));
+      CHECK_EQ(reading_pos, GetPifcIndex(ctx.vid));
 
       const auto read_data = read_data_q.read(nullptr);
 
@@ -239,7 +240,7 @@ spin:
         resp = {.entry = {}, .yield = false, .enable = false};
 
         fresh_entry.is_dirty = false;
-        fresh_entry.vid = ctx.vid;
+        fresh_entry.UpdateTag(ctx.vid);
         fresh_entry.index = read_data;
       } else {
         if (read_data.valid()) {
@@ -250,7 +251,7 @@ spin:
         resp = {.entry = read_data, .yield = false, .enable = true};
 
         fresh_entry.is_dirty = true;
-        fresh_entry.vid = ctx.vid;
+        fresh_entry.UpdateTag(ctx.vid);
         fresh_entry.index = ctx.entry;
       }
     } else if (can_process_req) {
@@ -258,7 +259,7 @@ spin:
 
       req_q.read(nullptr);
 
-      const bool is_fresh_entry_hit = fresh_entry.vid == req.vid;
+      const bool is_fresh_entry_hit = fresh_entry.IsHit(req.vid);
 
       ++op_stats[req.op];
 
@@ -287,8 +288,9 @@ spin:
 
             // Write cache entry to memory if necessary.
             if (fresh_entry.is_dirty) {
-              write_req_q.write({fresh_entry.vid, fresh_entry.index});
-              writing_fresh_pos.push(GetFreshCachePos(vid));
+              write_req_q.write(
+                  {fresh_entry.GetVid(pifc_index, qid), fresh_entry.index});
+              writing_fresh_pos.push(pifc_index);
 
               ++write_miss;
             } else {
@@ -297,7 +299,7 @@ spin:
 
             // Issue read request and save context.
             read_addr_q.write(req.vid);
-            reading_fresh_pos.push(GetFreshCachePos(vid));
+            reading_fresh_pos.push(pifc_index);
             acquire_index_ctx_out_q.write({.vid = req.vid, .entry = req.entry});
 
             ++read_miss;
@@ -328,8 +330,9 @@ spin:
           } else {
             // Write cache entry to memory if necessary.
             if (!is_fresh_entry_hit && fresh_entry.is_dirty) {
-              write_req_q.write({fresh_entry.vid, fresh_entry.index});
-              writing_fresh_pos.push(GetFreshCachePos(vid));
+              write_req_q.write(
+                  {fresh_entry.GetVid(pifc_index, qid), fresh_entry.index});
+              writing_fresh_pos.push(pifc_index);
 
               ++write_miss;
             } else {
@@ -337,7 +340,7 @@ spin:
             }
 
             fresh_entry.is_dirty = true;
-            fresh_entry.vid = req.vid;
+            fresh_entry.UpdateTag(req.vid);
             fresh_entry.index = req.entry;
           }
         } break;
@@ -349,7 +352,7 @@ spin:
             ++write_hit;
           } else {
             write_req_q.write({req.vid, nullptr});
-            writing_fresh_pos.push(GetFreshCachePos(vid));
+            writing_fresh_pos.push(pifc_index);
 
             ++write_miss;
           }
@@ -368,7 +371,7 @@ spin:
 
     if (!can_send_stat && !can_collect_write &&
         (can_acquire_index || can_process_req)) {
-      fresh_index[GetFreshCachePos(vid)] = fresh_entry;
+      fresh_index[pifc_index] = fresh_entry;
     }
 
     if (is_stale_entry_updated) {
