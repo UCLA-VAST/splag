@@ -8,6 +8,7 @@
 
 #include "sssp-kernel.h"
 #include "sssp-piheap-index.h"
+#include "sssp-piheap.h"
 
 using tapa::detach;
 using tapa::istream;
@@ -21,8 +22,6 @@ using tapa::seq;
 using tapa::stream;
 using tapa::streams;
 using tapa::task;
-
-#define TAPA_SSSP_PHEAP_INDEX
 
 static_assert(kQueueCount % kShardCount == 0,
               "current implementation requires that queue count is a multiple "
@@ -443,11 +442,10 @@ void PiHeapPush(int qid, int level, HeapReq req, HeapElemType& elem,
         CHECK_GE(old_idx.level(), level + 1)
             << "q[" << qid << "] level: " << level << " vid: " << req.vid
             << " elem: " << req.task;
-        if (old_idx.is_descendant_of(level + 1, idx * 2)) {
-          idx = idx * 2;
-        } else {
-          idx = idx * 2 + 1;
-        }
+        const auto new_idx = old_idx.parent_index_at(level + 1);
+        CHECK_GE(new_idx, idx * kPiHeapWidth);
+        CHECK_LT(new_idx, (idx + 1) * kPiHeapWidth);
+        idx = new_idx;
 
         if (!(req.task <= elem.task)) {
           std::swap(elem.task, req.task);
@@ -468,15 +466,14 @@ void PiHeapPush(int qid, int level, HeapReq req, HeapElemType& elem,
 #endif  // TAPA_SSSP_PHEAP_INDEX
 
     } else {  // req.replace
-      CHECK(elem.cap_left > 0 || elem.cap_right > 0);
+      bool has_slot = false;
+      RANGE(i, kPiHeapWidth, has_slot |= elem.cap[i] > 0);
+      CHECK(has_slot) << "level " << level;
 
-      if (elem.cap_right <= elem.cap_left) {  // TODO: optimize priority?
-        --elem.cap_left;
-        idx = idx * 2;
-      } else {
-        --elem.cap_right;
-        idx = idx * 2 + 1;
-      }
+      const auto max = FindMax(elem);
+      CHECK_GT(elem.cap[max], 0);
+      --elem.cap[max];
+      idx = idx * kPiHeapWidth + max;
 
       if (!(req.task <= elem.task)) {
         std::swap(elem.task, req.task);
@@ -516,7 +513,7 @@ void PiHeapPop(QueueOp req, int idx, HeapElemType& elem,
 #pragma HLS inline
   CHECK(elem.valid);
   req_out_q.write({
-      .index = idx * 2,
+      .index = idx * kPiHeapWidth,
       .op = req.op,
       .task = req.task,
       .replace = false,
@@ -528,51 +525,13 @@ void PiHeapPop(QueueOp req, int idx, HeapElemType& elem,
     case EMPTY: {
       elem.valid = false;
     } break;
-    case LEFT: {
-      ++elem.cap_left;
-    } break;
-    case RIGHT: {
-      ++elem.cap_right;
+    case CHILD: {
+      ++elem.cap[resp.child];
+      CHECK_GT(elem.cap[resp.child], 0);
     } break;
     case NOCHANGE: {
     } break;
   }
-}
-
-template <typename HeapElemType>
-HeapRespOp PiHeapCmp(const HeapElemType& left, const HeapElemType& right) {
-#pragma HLS inline
-  const bool left_le_right = left.task <= right.task;
-  const bool left_is_ok = !left.valid || (right.valid && left_le_right);
-  const bool right_is_ok = !right.valid || (left.valid && !left_le_right);
-  if (left_is_ok && right_is_ok) {
-    return EMPTY;
-  }
-  CHECK_NE(left_is_ok, right_is_ok);
-  if (!left_is_ok) {
-    return LEFT;
-  }
-  CHECK(!right_is_ok);
-  return RIGHT;
-}
-
-template <typename HeapElemType>
-HeapRespOp PiHeapCmp(const HeapElemType& left, const HeapElemType& right,
-                     const HeapReq& elem) {
-#pragma HLS inline
-  const bool left_le_elem = left.task <= elem.task;
-  const bool right_le_elem = right.task <= elem.task;
-  const bool left_le_right = left.task <= right.task;
-  const bool left_is_ok = !left.valid || left_le_elem;
-  const bool right_is_ok = !right.valid || right_le_elem;
-  if (left_is_ok && right_is_ok) {
-    return EMPTY;
-  }
-  if (!left_is_ok && (right_is_ok || !left_le_right)) {
-    return LEFT;
-  }
-  CHECK(!right_is_ok && (left_is_ok || left_le_right));
-  return RIGHT;
 }
 
 void PiHeapHead(
@@ -588,13 +547,13 @@ void PiHeapHead(
     // Heap index
     ostream<HeapIndexReq>& index_req_q, istream<HeapIndexResp>& index_resp_q) {
 #pragma HLS inline recursive
-  const auto cap = (1 << (kLevelCount - 1)) - 1;
-  HeapElem<0> root{.valid = false, .cap_left = cap, .cap_right = cap};
+  const auto cap = GetChildCapOfLevel(0);
+  HeapElem<0> root{.valid = false};
+  RANGE(i, kPiHeapWidth, root.cap[i] = cap);
 
   CLEAN_UP(clean_up, [&] {
     CHECK_EQ(root.valid, false) << "q[" << qid << "]";
-    CHECK_EQ(root.cap_left, cap) << "q[" << qid << "]";
-    CHECK_EQ(root.cap_right, cap) << "q[" << qid << "]";
+    RANGE(i, kPiHeapWidth, CHECK_EQ(root.cap[i], cap) << "q[" << qid << "]");
   });
 
   PiHeapStat stall_iteration_count = 0;
@@ -709,7 +668,7 @@ template <typename HeapElemType>
 bool IsPiHeapElemUpdated(  //
     int qid, int level, const HeapReq& req,
     //
-    const HeapElemType& elem_0, const HeapElemType& elem_1,
+    const HeapElemType (&elems)[kPiHeapWidth],
     LevelIndex& idx,     // In/out
     HeapElemType& elem,  // Output
     // Parent level
@@ -718,7 +677,7 @@ bool IsPiHeapElemUpdated(  //
     ostream<HeapReq>& req_out_q, istream<HeapResp>& resp_in_q,
     //
     ostream<HeapIndexReq>& index_req_q, istream<HeapIndexResp>& index_resp_q) {
-  elem = idx % 2 == 0 ? elem_0 : elem_1;
+  elem = elems[idx % kPiHeapWidth];
   bool is_elem_written = false;
   switch (req.op) {
     case QueueOp::PUSH: {
@@ -732,39 +691,36 @@ bool IsPiHeapElemUpdated(  //
 
     case QueueOp::PUSHPOP:
     case QueueOp::POP: {
-      CHECK_EQ(idx % 2, 0);
+      CHECK_EQ(idx % kPiHeapWidth, 0);
       const bool is_pushpop = req.op == QueueOp::PUSHPOP;
-      switch (auto op = is_pushpop ? PiHeapCmp(elem_0, elem_1, req)
-                                   : PiHeapCmp(elem_0, elem_1)) {
-        case EMPTY:
-          resp_out_q.write({
-              .op = is_pushpop ? NOCHANGE : op,
-              .task = req.task,
-          });
-          break;
-        case RIGHT:
-          ++idx;
-          elem = elem_1;
-        case LEFT:
+      uint_pi_child_t child;
+      if (IsUpdateNeeded(elems, req, is_pushpop, child)) {
+        idx += child;
+        elem = elems[child];
 #ifdef TAPA_SSSP_PHEAP_INDEX
-          index_req_q.write({
-              .op = UPDATE_INDEX,
-              .vid = elem.task.vid(),
-              .entry = {level - 1, idx / 2, elem.task.vertex().distance},
-          });
-          ap_wait();
-          index_resp_q.read();
+        index_req_q.write({
+            .op = UPDATE_INDEX,
+            .vid = elem.task.vid(),
+            .entry = {level - 1, idx / kPiHeapWidth,
+                      elem.task.vertex().distance},
+        });
+        ap_wait();
+        index_resp_q.read();
 #endif  // TAPA_SSSP_PHEAP_INDEX
-          resp_out_q.write({
-              .op = is_pushpop ? NOCHANGE : op,
-              .task = elem.task,
-          });
-          PiHeapPop({.op = req.op, .task = req.task}, idx, elem, resp_in_q,
-                    req_out_q);
-          is_elem_written = true;
-          break;
-        default:
-          CHECK(false);
+        resp_out_q.write({
+            .op = is_pushpop ? NOCHANGE : CHILD,
+            .child = child,
+            .task = elem.task,
+        });
+        PiHeapPop({.op = req.op, .task = req.task}, idx, elem, resp_in_q,
+                  req_out_q);
+        is_elem_written = true;
+      } else {
+        resp_out_q.write({
+            .op = is_pushpop ? NOCHANGE : EMPTY,
+            .child = child,
+            .task = req.task,
+        });
       }
     } break;
   }
@@ -776,7 +732,7 @@ void PiHeapBody(
     //
     int qid,
     // Heap array
-    HeapElem<level> (&heap_array)[1 << level],
+    HeapElem<level> (&heap_array)[GetCapOfLevel(level)],
     // Parent level
     istream<HeapReq>& req_in_q, ostream<HeapResp>& resp_out_q,
     // Child level
@@ -784,20 +740,19 @@ void PiHeapBody(
     //
     ostream<HeapIndexReq>& index_req_q, istream<HeapIndexResp>& index_resp_q) {
 #pragma HLS inline recursive
-  const auto cap = (1 << (kLevelCount - level - 1)) - 1;
+  const auto cap = GetChildCapOfLevel(level);
 
 init:
-  for (int i = 0; i < 1 << level; ++i) {
+  for (int i = 0; i < GetCapOfLevel(level); ++i) {
 #pragma HLS pipeline II = 1
     heap_array[i].valid = false;
-    heap_array[i].cap_left = heap_array[i].cap_right = cap;
+    RANGE(j, kPiHeapWidth, heap_array[i].cap[j] = cap);
   }
 
   CLEAN_UP(clean_up, [&] {
-    for (int i = 0; i < 1 << level; ++i) {
+    for (int i = 0; i < GetCapOfLevel(level); ++i) {
       CHECK_EQ(heap_array[i].valid, false);
-      CHECK_EQ(heap_array[i].cap_left, cap);
-      CHECK_EQ(heap_array[i].cap_right, cap);
+      RANGE(j, kPiHeapWidth, CHECK_EQ(heap_array[i].cap[j], cap));
     }
   });
 
@@ -807,14 +762,14 @@ spin:
     const auto req = req_in_q.read();
     auto idx = req.index;
     CHECK_GE(idx, 0);
-    CHECK_LT(idx, 1 << level);
+    CHECK_LT(idx, GetCapOfLevel(level));
 
-    const auto elem_0 = heap_array[idx / 2 * 2];
-    const auto elem_1 = heap_array[idx / 2 * 2 + 1];
+    DECL_ARRAY(HeapElem<level>, elems, kPiHeapWidth,
+               heap_array[idx / kPiHeapWidth * kPiHeapWidth + _i]);
     HeapElem<level> elem;
-    if (IsPiHeapElemUpdated(qid, level, req, elem_0, elem_1, idx, elem,
-                            req_in_q, resp_out_q, req_out_q, resp_in_q,
-                            index_req_q, index_resp_q)) {
+    if (IsPiHeapElemUpdated(qid, level, req, elems, idx, elem, req_in_q,
+                            resp_out_q, req_out_q, resp_in_q, index_req_q,
+                            index_resp_q)) {
       heap_array[idx] = elem;
     }
   }
@@ -832,36 +787,55 @@ void PiHeapBodyOffChip(
     //
     int level,
     //
-    ostream<Vid>& read_addr_q, istream<HeapElemPairAxi>& read_data_q,
-    ostream<packet<Vid, HeapElemPairAxi>>& write_req_q,
+    ostream<Vid>& read_addr_q, istream<HeapElemPacked>& read_data_q,
+    ostream<packet<Vid, HeapElemPacked>>& write_req_q,
     istream<bool>& write_resp_q) {
 #pragma HLS inline recursive
-  const auto cap = (1 << (kLevelCount - level - 1)) - 1;
+  const auto cap = GetChildCapOfLevel(level);
 
 spin:
-  for (;;) {
+  for (bool is_first_time = true;; is_first_time = false) {
 #pragma HLS pipeline off
     const auto req = req_in_q.read();
+    LOG_IF(INFO, is_first_time)
+        << "q[" << qid << "]: off-chip level " << level << " accessed";
     auto idx = req.index;
     CHECK_GE(idx, 0);
-    CHECK_LT(idx, 1 << level);
+    CHECK_LT(idx, GetCapOfLevel(level));
 
-    read_addr_q.write(GetAddrOfOffChipHeapElem(level, idx, qid));
-    ap_wait();
-    auto elem_pair = read_data_q.read();
+    HeapElemAxi elems[kPiHeapWidth];
 
-    const auto elem_0 = HeapElemAxi::ExtractFromPair<0>(elem_pair);
-    const auto elem_1 = HeapElemAxi::ExtractFromPair<1>(elem_pair);
-    HeapElemAxi elem;
-    if (IsPiHeapElemUpdated(qid, level, req, elem_0, elem_1, idx, elem,
-                            req_in_q, resp_out_q, req_out_q, resp_in_q,
-                            index_req_q, index_resp_q)) {
-      if (idx % 2 == 0) {
-        elem.UpdatePair<0>(elem_pair);
-      } else {
-        elem.UpdatePair<1>(elem_pair);
+    // Read [idx_base + begin : idx_base + end] to elems[begin : end].
+    const LevelIndex idx_base = idx / kPiHeapWidth * kPiHeapWidth;
+    const ap_uint<bit_length(kPiHeapWidth)> begin = idx % kPiHeapWidth;
+    ap_uint<bit_length(kPiHeapWidth)> end = kPiHeapWidth;
+    if (req.op == QueueOp::PUSH) {  // Only need to read one element.
+      end = begin + 1;
+    } else {
+      CHECK_EQ(begin, 0);
+    }
+  read_elems:
+    for (auto i_req = begin, i_resp = begin; i_resp < end;) {
+#pragma HLS pipeline II = 1
+      if (i_req < end && read_addr_q.try_write(GetAddrOfOffChipHeapElem(
+                             level, idx_base + i_req, qid))) {
+        if (req.op == QueueOp::PUSH) {
+          CHECK_EQ(idx, idx_base + i_req);
+          CHECK_EQ(i_req + 1, end);
+        }
+        ++i_req;
       }
-      write_req_q.write({GetAddrOfOffChipHeapElem(level, idx, qid), elem_pair});
+      if (!read_data_q.empty()) {
+        elems[i_resp] = HeapElemAxi::Unpack(read_data_q.read(nullptr));
+        ++i_resp;
+      }
+    }
+    HeapElemAxi elem;  // Output from IsPiHeapElemUpdated.
+    if (IsPiHeapElemUpdated(qid, level, req, elems, idx, elem, req_in_q,
+                            resp_out_q, req_out_q, resp_in_q, index_req_q,
+                            index_resp_q)) {
+      write_req_q.write(
+          {GetAddrOfOffChipHeapElem(level, idx, qid), elem.Pack()});
       ap_wait();
       write_resp_q.read();
     }
@@ -889,12 +863,13 @@ spin:
       istream<HeapIndexResp>&index_resp_in_q
 #define HEAP_BODY(level, mem)                                                  \
   _Pragma("HLS inline recursive");                                             \
-  HeapElem<level> heap_array[1 << level];                                      \
+  HeapElem<level> heap_array[GetCapOfLevel(level)];                            \
   _Pragma("HLS aggregate variable = heap_array bit");                          \
   DO_PRAGMA(HLS bind_storage variable = heap_array type = RAM_S2P impl = mem); \
   PiHeapBody<level>(qid, heap_array, req_in_q, resp_out_q, req_out_q,          \
                     resp_in_q, index_req_out_q, index_resp_in_q)
 
+#if TAPA_SSSP_PHEAP_WIDTH == 2
 void PiHeapBodyL1(HEAP_PORTS) { HEAP_BODY(1, LUTRAM); }
 void PiHeapBodyL2(HEAP_PORTS) { HEAP_BODY(2, LUTRAM); }
 void PiHeapBodyL3(HEAP_PORTS) { HEAP_BODY(3, LUTRAM); }
@@ -909,16 +884,36 @@ void PiHeapBodyL11(HEAP_PORTS) { HEAP_BODY(11, BRAM); }
 void PiHeapBodyL12(HEAP_PORTS) { HEAP_BODY(12, URAM); }
 void PiHeapBodyL13(HEAP_PORTS) { HEAP_BODY(13, URAM); }
 void PiHeapBodyL14(HEAP_PORTS) { HEAP_BODY(14, URAM); }
+#elif TAPA_SSSP_PHEAP_WIDTH == 4
+void PiHeapBodyL1(HEAP_PORTS) { HEAP_BODY(1, LUTRAM); }
+void PiHeapBodyL2(HEAP_PORTS) { HEAP_BODY(2, LUTRAM); }
+void PiHeapBodyL3(HEAP_PORTS) { HEAP_BODY(3, LUTRAM); }
+void PiHeapBodyL4(HEAP_PORTS) { HEAP_BODY(4, LUTRAM); }
+void PiHeapBodyL5(HEAP_PORTS) { HEAP_BODY(5, BRAM); }
+void PiHeapBodyL6(HEAP_PORTS) { HEAP_BODY(6, URAM); }
+void PiHeapBodyL7(HEAP_PORTS) { HEAP_BODY(7, URAM); }
+#elif TAPA_SSSP_PHEAP_WIDTH == 8
+void PiHeapBodyL1(HEAP_PORTS) { HEAP_BODY(1, LUTRAM); }
+void PiHeapBodyL2(HEAP_PORTS) { HEAP_BODY(2, LUTRAM); }
+void PiHeapBodyL3(HEAP_PORTS) { HEAP_BODY(3, BRAM); }
+void PiHeapBodyL4(HEAP_PORTS) { HEAP_BODY(4, URAM); }
+#elif TAPA_SSSP_PHEAP_WIDTH == 16
+void PiHeapBodyL1(HEAP_PORTS) { HEAP_BODY(1, LUTRAM); }
+void PiHeapBodyL2(HEAP_PORTS) { HEAP_BODY(2, LUTRAM); }
+void PiHeapBodyL3(HEAP_PORTS) { HEAP_BODY(3, URAM); }
+#else
+#error "invalid TAPA_SSSP_PHEAP_WIDTH"
+#endif  // TAPA_SSSP_PHEAP_WIDTH
 #undef HEAP_BODY
 #undef HEAP_PORTS
 
 void PiHeapArrayMem(
     //
-    istream<Vid>& read_addr_q, ostream<HeapElemPairAxi>& read_data_q,
-    istream<packet<Vid, HeapElemPairAxi>>& write_req_q,
+    istream<Vid>& read_addr_q, ostream<HeapElemPacked>& read_data_q,
+    istream<packet<Vid, HeapElemPacked>>& write_req_q,
     ostream<bool>& write_resp_q,
     //
-    tapa::async_mmap<HeapElemPairAxi> mem) {
+    tapa::async_mmap<HeapElemPacked> mem) {
   ReadWriteMem(read_addr_q, read_data_q, write_req_q, write_resp_q, mem);
 }
 
@@ -938,8 +933,8 @@ spin:
 }
 
 void PiHeapArrayReadDataArbiter(  //
-    istream<OffChipLevelId>& req_id_q, istream<HeapElemPairAxi>& req_in_q,
-    ostreams<HeapElemPairAxi, kOffChipLevelCount>& req_out_q) {
+    istream<OffChipLevelId>& req_id_q, istream<HeapElemPacked>& req_in_q,
+    ostreams<HeapElemPacked, kOffChipLevelCount>& req_out_q) {
 spin:
   for (;;) {
 #pragma HLS pipeline II = 1
@@ -950,9 +945,9 @@ spin:
 }
 
 void PiHeapArrayWriteReqArbiter(  //
-    istreams<packet<Vid, HeapElemPairAxi>, kOffChipLevelCount>& req_in_q,
+    istreams<packet<Vid, HeapElemPacked>, kOffChipLevelCount>& req_in_q,
     ostream<OffChipLevelId>& req_id_q,
-    ostream<packet<Vid, HeapElemPairAxi>>& req_out_q) {
+    ostream<packet<Vid, HeapElemPacked>>& req_out_q) {
 spin:
   for (OffChipLevelId level = 0;; level = level == kOffChipLevelCount - 1
                                               ? OffChipLevelId(0)
@@ -1023,8 +1018,8 @@ void TaskQueue(
     ostream<QueueOpResp>& queue_resp_q,
     //
     ostream<Vid>& piheap_array_read_addr_q,
-    istream<HeapElemPairAxi>& piheap_array_read_data_q,
-    ostream<packet<Vid, HeapElemPairAxi>>& piheap_array_write_req_q,
+    istream<HeapElemPacked>& piheap_array_read_data_q,
+    ostream<packet<Vid, HeapElemPacked>>& piheap_array_write_req_q,
     istream<bool>& piheap_array_write_resp_q,
     //
     ostream<Vid>& piheap_index_read_addr_q,
@@ -1041,11 +1036,10 @@ void TaskQueue(
 
   stream<OffChipLevelId, 64> array_read_id_q;
   streams<Vid, kOffChipLevelCount, 2> array_read_addr_q;
-  streams<HeapElemPairAxi, kOffChipLevelCount, 2> array_read_data_q;
+  streams<HeapElemPacked, kOffChipLevelCount, 2> array_read_data_q;
 
   stream<OffChipLevelId, 64> array_write_id_q;
-  streams<packet<Vid, HeapElemPairAxi>, kOffChipLevelCount, 2>
-      array_write_req_q;
+  streams<packet<Vid, HeapElemPacked>, kOffChipLevelCount, 2> array_write_req_q;
   streams<bool, kOffChipLevelCount, 2> array_write_resp_q;
 
   streams<bool, kPiHeapStatTaskCount, 2> done_qi;
@@ -1058,6 +1052,7 @@ void TaskQueue(
       .invoke<detach>(PiHeapHead, done_qi[0], stat_qi[0], qid, push_req_q,
                       pop_req_q, queue_resp_q, req_q[0], resp_q[0],
                       index_req_qs[0], index_resp_qs[0])
+#if TAPA_SSSP_PHEAP_WIDTH == 2
       // clang-format off
       .invoke<detach>(PiHeapBodyL1,  qid, req_q[ 0], resp_q[ 0], req_q[ 1], resp_q[ 1], index_req_qs[ 1], index_resp_qs[ 1])
       .invoke<detach>(PiHeapBodyL2,  qid, req_q[ 1], resp_q[ 1], req_q[ 2], resp_q[ 2], index_req_qs[ 2], index_resp_qs[ 2])
@@ -1078,7 +1073,41 @@ void TaskQueue(
       .invoke<detach>(PiHeapBodyOffChip, qid, req_q[16], resp_q[16], req_q[17], resp_q[17], index_req_qs[17], index_resp_qs[17], 17, array_read_addr_q[2], array_read_data_q[2], array_write_req_q[2], array_write_resp_q[2])
       .invoke<detach>(PiHeapBodyOffChip, qid, req_q[17], resp_q[17], req_q[18], resp_q[18], index_req_qs[18], index_resp_qs[18], 18, array_read_addr_q[3], array_read_data_q[3], array_write_req_q[3], array_write_resp_q[3])
       .invoke<detach>(PiHeapBodyOffChip, qid, req_q[18], resp_q[18], req_q[19], resp_q[19], index_req_qs[19], index_resp_qs[19], 19, array_read_addr_q[4], array_read_data_q[4], array_write_req_q[4], array_write_resp_q[4])
-      // clang-format on
+  // clang-format on
+#elif TAPA_SSSP_PHEAP_WIDTH == 4
+      // clang-format off
+      .invoke<detach>(PiHeapBodyL1,  qid, req_q[0], resp_q[0], req_q[1], resp_q[1], index_req_qs[1], index_resp_qs[1])
+      .invoke<detach>(PiHeapBodyL2,  qid, req_q[1], resp_q[1], req_q[2], resp_q[2], index_req_qs[2], index_resp_qs[2])
+      .invoke<detach>(PiHeapBodyL3,  qid, req_q[2], resp_q[2], req_q[3], resp_q[3], index_req_qs[3], index_resp_qs[3])
+      .invoke<detach>(PiHeapBodyL4,  qid, req_q[3], resp_q[3], req_q[4], resp_q[4], index_req_qs[4], index_resp_qs[4])
+      .invoke<detach>(PiHeapBodyL5,  qid, req_q[4], resp_q[4], req_q[5], resp_q[5], index_req_qs[5], index_resp_qs[5])
+      .invoke<detach>(PiHeapBodyL6,  qid, req_q[5], resp_q[5], req_q[6], resp_q[6], index_req_qs[6], index_resp_qs[6])
+      .invoke<detach>(PiHeapBodyL7,  qid, req_q[6], resp_q[6], req_q[7], resp_q[7], index_req_qs[7], index_resp_qs[7])
+      .invoke<detach>(PiHeapBodyOffChip, qid, req_q[ 7], resp_q[ 7], req_q[ 8], resp_q[ 8], index_req_qs[ 8], index_resp_qs[ 8],  8, array_read_addr_q[0], array_read_data_q[0], array_write_req_q[0], array_write_resp_q[0])
+      .invoke<detach>(PiHeapBodyOffChip, qid, req_q[ 8], resp_q[ 8], req_q[ 9], resp_q[ 9], index_req_qs[ 9], index_resp_qs[ 9],  9, array_read_addr_q[1], array_read_data_q[1], array_write_req_q[1], array_write_resp_q[1])
+      .invoke<detach>(PiHeapBodyOffChip, qid, req_q[ 9], resp_q[ 9], req_q[10], resp_q[10], index_req_qs[10], index_resp_qs[10], 10, array_read_addr_q[2], array_read_data_q[2], array_write_req_q[2], array_write_resp_q[2])
+  // clang-format on
+#elif TAPA_SSSP_PHEAP_WIDTH == 8
+      // clang-format off
+      .invoke<detach>(PiHeapBodyL1,  qid, req_q[0], resp_q[0], req_q[1], resp_q[1], index_req_qs[1], index_resp_qs[1])
+      .invoke<detach>(PiHeapBodyL2,  qid, req_q[1], resp_q[1], req_q[2], resp_q[2], index_req_qs[2], index_resp_qs[2])
+      .invoke<detach>(PiHeapBodyL3,  qid, req_q[2], resp_q[2], req_q[3], resp_q[3], index_req_qs[3], index_resp_qs[3])
+      .invoke<detach>(PiHeapBodyL4,  qid, req_q[3], resp_q[3], req_q[4], resp_q[4], index_req_qs[4], index_resp_qs[4])
+      .invoke<detach>(PiHeapBodyOffChip, qid, req_q[4], resp_q[4], req_q[5], resp_q[5], index_req_qs[5], index_resp_qs[5], 5, array_read_addr_q[0], array_read_data_q[0], array_write_req_q[0], array_write_resp_q[0])
+      .invoke<detach>(PiHeapBodyOffChip, qid, req_q[5], resp_q[5], req_q[6], resp_q[6], index_req_qs[6], index_resp_qs[6], 6, array_read_addr_q[1], array_read_data_q[1], array_write_req_q[1], array_write_resp_q[1])
+      .invoke<detach>(PiHeapBodyOffChip, qid, req_q[6], resp_q[6], req_q[7], resp_q[7], index_req_qs[7], index_resp_qs[7], 7, array_read_addr_q[2], array_read_data_q[2], array_write_req_q[2], array_write_resp_q[2])
+  // clang-format on
+#elif TAPA_SSSP_PHEAP_WIDTH == 16
+      // clang-format off
+      .invoke<detach>(PiHeapBodyL1,  qid, req_q[0], resp_q[0], req_q[1], resp_q[1], index_req_qs[1], index_resp_qs[1])
+      .invoke<detach>(PiHeapBodyL2,  qid, req_q[1], resp_q[1], req_q[2], resp_q[2], index_req_qs[2], index_resp_qs[2])
+      .invoke<detach>(PiHeapBodyL3,  qid, req_q[2], resp_q[2], req_q[3], resp_q[3], index_req_qs[3], index_resp_qs[3])
+      .invoke<detach>(PiHeapBodyOffChip, qid, req_q[3], resp_q[3], req_q[4], resp_q[4], index_req_qs[4], index_resp_qs[4], 4, array_read_addr_q[0], array_read_data_q[0], array_write_req_q[0], array_write_resp_q[0])
+      .invoke<detach>(PiHeapBodyOffChip, qid, req_q[4], resp_q[4], req_q[5], resp_q[5], index_req_qs[5], index_resp_qs[5], 5, array_read_addr_q[1], array_read_data_q[1], array_write_req_q[1], array_write_resp_q[1])
+  // clang-format on
+#else
+#error "invalid TAPA_SSSP_PHEAP_WIDTH"
+#endif  // TAPA_SSSP_PHEAP_WIDTH
       .invoke<detach>(PiHeapDummyTail, qid, req_q[kLevelCount - 1],
                       resp_q[kLevelCount - 1])
 
@@ -1713,7 +1742,7 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
           tapa::mmaps<Edge, kShardCount> edges,
           tapa::mmaps<Vertex, kIntervalCount> vertices,
           // For queues.
-          tapa::mmap<HeapElemPairAxi> heap_array,
+          tapa::mmap<HeapElemPacked> heap_array,
           tapa::mmap<HeapIndexEntry> heap_index) {
   streams<TaskOnChip, kIntervalCount, 2> push_req_q;
   streams<TaskOnChip, kQueueCount, 512> push_req_qi;
@@ -1725,9 +1754,8 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   streams<PiHeapStat, kQueueCount, 2> queue_stat_q;
 
   streams<Vid, kQueueCount, 2> piheap_array_read_addr_q;
-  streams<HeapElemPairAxi, kQueueCount, 2> piheap_array_read_data_q;
-  streams<packet<Vid, HeapElemPairAxi>, kQueueCount, 2>
-      piheap_array_write_req_q;
+  streams<HeapElemPacked, kQueueCount, 2> piheap_array_read_data_q;
+  streams<packet<Vid, HeapElemPacked>, kQueueCount, 2> piheap_array_write_req_q;
   streams<bool, kQueueCount, 2> piheap_array_write_resp_q;
 
   streams<Vid, kQueueCount, 2> piheap_index_read_addr_q;

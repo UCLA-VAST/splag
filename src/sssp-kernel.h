@@ -163,12 +163,11 @@ struct HeapArrayReq {
 
 template <int level>
 struct HeapElem {
-  using Capacity = ap_uint<kLevelCount - level>;
+  using Capacity = ap_uint<bit_length(GetChildCapOfLevel(level))>;
 
   bool valid;
-  Capacity cap_left;
-  Capacity cap_right;
   TaskOnChip task;
+  Capacity cap[kPiHeapWidth];
 };
 
 struct HeapReq {
@@ -181,13 +180,15 @@ struct HeapReq {
 
 enum HeapRespOp {
   EMPTY,     // No element returned.
-  LEFT,      // New element is from the left child.
-  RIGHT,     // New element is from the right child.
+  CHILD,     // New element is from a child.
   NOCHANGE,  // New element returned but children capacity not changed.
 };
 
+using uint_pi_child_t = ap_uint<log2(kPiHeapWidth)>;
+
 struct HeapResp {
   HeapRespOp op;
+  uint_pi_child_t child;
   TaskOnChip task;
 };
 

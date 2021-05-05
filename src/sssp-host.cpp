@@ -299,7 +299,7 @@ void Refine(
 void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
           tapa::mmaps<Edge, kShardCount> edges,
           tapa::mmaps<Vertex, kIntervalCount> vertices,
-          tapa::mmap<HeapElemPairAxi> heap_array,
+          tapa::mmap<HeapElemPacked> heap_array,
           tapa::mmap<HeapIndexEntry> heap_index);
 
 int main(int argc, char* argv[]) {
@@ -416,11 +416,25 @@ int main(int argc, char* argv[]) {
   for (auto& interval : vertices) {
     interval.resize(tapa::round_up_div<kIntervalCount>(vertex_count));
   }
-  aligned_vector<HeapElemPairAxi> heap_array((1 << kLevelCount) * kQueueCount);
+  aligned_vector<HeapElemPacked> heap_array(GetAddrOfOffChipHeapElem(
+      kLevelCount - 1, GetCapOfLevel(kLevelCount - 1) - 1, kQueueCount - 1));
   aligned_vector<HeapIndexEntry> heap_index(vertex_count);
 
   // Statistics.
   vector<double> teps;
+
+  for (int level = kOnChipLevelCount; level < kLevelCount; ++level) {
+    VLOG(5) << "off-chip level " << level << " addr: ["
+            << GetAddrOfOffChipHeapElem(level, 0, 0) << ", "
+            << GetAddrOfOffChipHeapElem(level, GetCapOfLevel(level) - 1,
+                                        kQueueCount - 1)
+            << "]";
+  }
+  for (int level = 0; level < kLevelCount - 1; ++level) {
+    // Child capacity should be the sum of all children's child capacity + 1.
+    CHECK_EQ(GetChildCapOfLevel(level),
+             GetChildCapOfLevel(level + 1) * kPiHeapWidth + 1);
+  }
 
   for (const auto root : SampleVertices(degree_no_self_loop)) {
     CHECK_GE(root, 0) << "invalid root";
@@ -433,17 +447,19 @@ int main(int argc, char* argv[]) {
     }
 
     for (int level = kOnChipLevelCount; level < kLevelCount; ++level) {
-      for (int idx = 0; idx < 1 << level; idx += 2) {
+      for (int idx = 0; idx < GetCapOfLevel(level); idx += kPiHeapWidth) {
         for (int qid = 0; qid < kQueueCount; ++qid) {
-          const auto cap = (1 << (kLevelCount - level - 1)) - 1;
+          const auto cap = GetChildCapOfLevel(level);
           HeapElemAxi init_elem;
           init_elem.valid = false;
-          init_elem.cap_left = init_elem.cap_right = cap;
-          HeapElemPairAxi init_elem_pair;
-          init_elem.UpdatePair<0>(init_elem_pair);
-          init_elem.UpdatePair<1>(init_elem_pair);
-          const auto addr = GetAddrOfOffChipHeapElem(level, idx, qid);
-          heap_array[addr] = init_elem_pair;
+          for (int i = 0; i < kPiHeapWidth; ++i) {
+            init_elem.cap[i] = cap;
+          }
+          const auto init_elem_packed = init_elem.Pack();
+          for (int i = 0; i < kPiHeapWidth; ++i) {
+            const auto addr = GetAddrOfOffChipHeapElem(level, idx, qid);
+            heap_array[addr + i] = init_elem_packed;
+          }
         }
       }
     }
@@ -473,7 +489,7 @@ int main(int argc, char* argv[]) {
             tapa::write_only_mmap<int64_t>(metadata),
             tapa::read_only_mmaps<Edge, kShardCount>(edges),
             tapa::read_write_mmaps<Vertex, kIntervalCount>(vertices),
-            tapa::read_only_mmap<HeapElemPairAxi>(heap_array),
+            tapa::read_only_mmap<HeapElemPacked>(heap_array),
             tapa::read_only_mmap<HeapIndexEntry>(heap_index));
     VLOG(3) << "kernel time: " << elapsed_time << " s";
 

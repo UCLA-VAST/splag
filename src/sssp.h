@@ -110,21 +110,55 @@ inline std::ostream& operator<<(std::ostream& os, const Task& obj) {
 }
 
 constexpr int kQueueCount = 4;
+
+#ifndef TAPA_SSSP_PHEAP_WIDTH
+#define TAPA_SSSP_PHEAP_WIDTH 2
+#endif
+
+constexpr int kPiHeapWidth = TAPA_SSSP_PHEAP_WIDTH;
+
+inline constexpr int GetCapOfLevel(int level) {
+  constexpr int width = log2(kPiHeapWidth);  // Makes HLS happy.
+  return 1 << (width * level);
+}
+
+#if TAPA_SSSP_PHEAP_WIDTH == 2
 constexpr int kOnChipLevelCount = 15;
 constexpr int kOffChipLevelCount = 5;
+#elif TAPA_SSSP_PHEAP_WIDTH == 4
+constexpr int kOnChipLevelCount = 8;
+constexpr int kOffChipLevelCount = 3;
+#elif TAPA_SSSP_PHEAP_WIDTH == 8
+constexpr int kOnChipLevelCount = 5;
+constexpr int kOffChipLevelCount = 3;
+#elif TAPA_SSSP_PHEAP_WIDTH == 16
+constexpr int kOnChipLevelCount = 4;
+constexpr int kOffChipLevelCount = 2;
+#else
+#error "invalid TAPA_SSSP_PHEAP_WIDTH"
+#endif  // TAPA_SSSP_PHEAP_WIDTH
+
 constexpr int kLevelCount = kOnChipLevelCount + kOffChipLevelCount;
+
+inline constexpr int GetChildCapOfLevel(int level) {
+  return (GetCapOfLevel(kLevelCount - level - 1) - 1) / (kPiHeapWidth - 1);
+}
+
 using OffChipLevelId = ap_uint<bit_length(kOffChipLevelCount - 1)>;
 using LevelId = ap_uint<bit_length(kLevelCount - 1)>;
-using LevelIndex = ap_uint<kLevelCount - 1>;
+using LevelIndex = ap_uint<bit_length(GetCapOfLevel(kLevelCount - 1) - 1)>;
 
 inline int GetAddrOfOffChipHeapElem(int level, int idx, int qid) {
-  CHECK_GE(level, 0);
+  CHECK_GE(level, kOnChipLevelCount) << "not an off-chip level";
   CHECK_LT(level, kLevelCount);
   CHECK_GE(idx, 0);
-  CHECK_LT(idx, 1 << level);
+  CHECK_LT(idx, GetCapOfLevel(level));
   CHECK_GE(qid, 0);
   CHECK_LT(qid, kQueueCount);
-  return ((1 << level) / 2 + idx / 2) * kQueueCount + qid;
+  CHECK_EQ(GetCapOfLevel(level) % kPiHeapWidth, 0);
+  return ((GetCapOfLevel(level) + idx) / kPiHeapWidth * kQueueCount + qid) *
+             kPiHeapWidth +
+         idx % kPiHeapWidth;
 }
 
 constexpr int kPiHeapStatCount[] = {
@@ -201,41 +235,49 @@ class TaskOnChip {
   friend struct HeapElemAxi;
 };
 
-struct HeapElemPairAxi : public ap_uint<256> {
-  static constexpr int length = 256;
-};
+using HeapElemPacked = ap_uint<256>;
 
 struct HeapElemAxi {
   static constexpr int kCapWidth =
-      (HeapElemPairAxi::length / 2 - TaskOnChip::length - 1) / 2;
+      bit_length(GetChildCapOfLevel(kOnChipLevelCount));
   using Capacity = ap_uint<kCapWidth>;
 
   bool valid;
-  Capacity cap_left;
-  Capacity cap_right;
   TaskOnChip task;
+  Capacity cap[kPiHeapWidth];
 
-  template <int idx>  // Makes sure HLS won't generate complex structure.
-  static HeapElemAxi ExtractFromPair(const HeapElemPairAxi& pair) {
-    constexpr int offset = idx * (HeapElemPairAxi::length / 2);
+  static HeapElemAxi Unpack(const HeapElemPacked& packed) {
     HeapElemAxi elem;
-    elem.valid = pair.get_bit(offset);
-    elem.cap_left = pair.range(offset + kCapWidth, offset + 1);
-    elem.cap_right = pair.range(offset + kCapWidth * 2, offset + kCapWidth + 1);
-    elem.task.data = pair.range(offset + kCapWidth * 2 + TaskOnChip::length,
-                                offset + kCapWidth * 2 + 1);
+    elem.valid = packed.get_bit(kValidBit);
+    elem.task.data = packed.range(kTaskMsb, kTaskLsb);
+    for (int i = 0; i < kPiHeapWidth; ++i) {
+#pragma HLS unroll
+      elem.cap[i] = packed.range(kCapLsb + kCapWidth * (i + 1) - 1,
+                                 kCapLsb + kCapWidth * i);
+    }
     return elem;
   }
 
-  template <int idx>  // Makes sure HLS won't generate complex structure.
-  void UpdatePair(HeapElemPairAxi& pair) const {
-    constexpr int offset = idx * (HeapElemPairAxi::length / 2);
-    pair.set_bit(offset, valid);
-    pair.range(offset + kCapWidth, offset + 1) = cap_left;
-    pair.range(offset + kCapWidth * 2, offset + kCapWidth + 1) = cap_right;
-    pair.range(offset + kCapWidth * 2 + TaskOnChip::length,
-               offset + kCapWidth * 2 + 1) = task.data;
+  HeapElemPacked Pack() const {
+    HeapElemPacked packed;
+    packed.set_bit(kValidBit, valid);
+    packed.range(kTaskMsb, kTaskLsb) = task.data;
+    for (int i = 0; i < kPiHeapWidth; ++i) {
+#pragma HLS unroll
+      packed.range(kCapLsb + kCapWidth * (i + 1) - 1, kCapLsb + kCapWidth * i) =
+          cap[i];
+    }
+    return packed;
   }
+
+ private:
+  static constexpr int kValidBit = 0;
+  static constexpr int kTaskLsb = kValidBit + 1;
+  static constexpr int kTaskMsb = kTaskLsb + TaskOnChip::length - 1;
+  static constexpr int kCapLsb = kTaskMsb + 1;
+
+  static_assert(kCapLsb + kCapWidth * kPiHeapWidth <= HeapElemPacked::width,
+                "HeapElemPacked has insufficient width");
 };
 
 class HeapIndexEntry {
@@ -266,7 +308,7 @@ class HeapIndexEntry {
     CHECK_GE(level, 0);
     CHECK_LT(level, kLevelCount);
     CHECK_GE(index, 0);
-    CHECK_LT(index, (1 << level));
+    CHECK_LT(index, GetCapOfLevel(level));
     data_.set(kValidBit);
     data_.range(kLevelMsb, kLevelLsb) = level;
     data_.range(kIndexMsb, kIndexLsb) = index;
@@ -274,10 +316,14 @@ class HeapIndexEntry {
         bit_cast<ap_uint<32>>(distance).range(kFloatMsb, kFloatLsb);
   }
 
-  bool is_descendant_of(LevelId level, LevelIndex index) const {
+  LevelIndex parent_index_at(LevelId level) const {
     CHECK(valid());
     CHECK_GE(this->level(), level);
-    return this->index() / (1 << (this->level() - level)) == index;
+    return this->index() / GetCapOfLevel(this->level() - level);
+  }
+
+  bool is_descendant_of(LevelId level, LevelIndex index) const {
+    return parent_index_at(level) == index;
   };
 
   bool distance_eq(const HeapIndexEntry& other) const {
