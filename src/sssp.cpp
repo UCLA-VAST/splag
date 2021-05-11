@@ -451,6 +451,10 @@ void PiHeapPush(int qid, int level, HeapReq req, HeapElemType& elem,
         ap_wait();
         index_resp_q.read();
         req_out_q.write(req);
+#ifdef TAPA_SSSP_PHEAP_PUSH_ACK
+        ap_wait();
+        resp_in_q.read();
+#endif  // TAPA_SSSP_PHEAP_PUSH_ACK
       }
 #endif  // TAPA_SSSP_PHEAP_INDEX
 
@@ -483,6 +487,10 @@ void PiHeapPush(int qid, int level, HeapReq req, HeapElemType& elem,
       CHECK(is_empty);
 #endif  // TAPA_SSSP_PHEAP_INDEX
       req_out_q.write(req);
+#ifdef TAPA_SSSP_PHEAP_PUSH_ACK
+      ap_wait();
+      resp_in_q.read();
+#endif  // TAPA_SSSP_PHEAP_PUSH_ACK
     }
   } else {  // elem.valid
     elem.task = req.task;
@@ -705,6 +713,9 @@ bool IsPiHeapElemUpdated(  //
   bool is_elem_written = false;
   switch (req.op) {
     case QueueOp::PUSH: {
+#ifdef TAPA_SSSP_PHEAP_PUSH_ACK
+      resp_out_q.write({});
+#endif  // TAPA_SSSP_PHEAP_PUSH_ACK
       PiHeapPush(qid, level, req, elem, resp_in_q, req_out_q, index_req_q,
                  index_resp_q);
       is_elem_written = true;
