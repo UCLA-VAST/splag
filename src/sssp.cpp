@@ -58,7 +58,7 @@ spin:
   }
 }
 
-constexpr int kStaleCapacity = kLevelCount * 2 + 2;
+constexpr int kStaleCapacity = kLevelCount;
 using StalePos = ap_uint<bit_length(kStaleCapacity - 1)>;
 
 template <int N>
@@ -91,7 +91,7 @@ void FindStaleIndex<1>(Vid vid, const HeapStaleIndexEntry (&array)[1],
 
 HeapIndexEntry GetStaleIndexLocked(
     const HeapStaleIndexEntry (&array)[kStaleCapacity], Vid vid,
-    StalePos& pos) {
+    bool& is_pos_valid, StalePos& pos) {
   // If found, pos is set to the entry, entry is returned; otherwise, pos is
   // set to an available (invalid) location.
   bool is_match_found;
@@ -100,6 +100,7 @@ HeapIndexEntry GetStaleIndexLocked(
   StalePos empty_idx;
   FindStaleIndex(vid, array, is_match_found, match_idx, is_empty_found,
                  empty_idx);
+  is_pos_valid = is_match_found || is_empty_found;
   pos = is_match_found ? match_idx : empty_idx;
   return array[pos];
 }
@@ -204,8 +205,10 @@ spin:
     auto fresh_entry = fresh_index[pifc_index];
 
     // Read stale entry.
+    bool is_stale_entry_pos_valid;
     StalePos stale_entry_pos;
-    auto stale_entry = GetStaleIndexLocked(stale_index, vid, stale_entry_pos);
+    auto stale_entry = GetStaleIndexLocked(
+        stale_index, vid, is_stale_entry_pos_valid, stale_entry_pos);
     bool is_stale_entry_updated = false;
 
     // Prepare response.
@@ -225,6 +228,7 @@ spin:
       write_resp_q.read(nullptr);
       writing_fresh_pos.pop();
     } else if (can_acquire_index) {
+      CHECK(is_stale_entry_pos_valid);
       is_resp_written = true;
 
       acquire_index_ctx_in_q.read(nullptr);
@@ -265,9 +269,11 @@ spin:
 
       switch (req.op) {
         case GET_STALE: {
+          CHECK(is_stale_entry_pos_valid);
           resp.entry = stale_entry;
         } break;
         case CLEAR_STALE: {
+          CHECK(is_stale_entry_pos_valid);
           CHECK(stale_entry.valid());
           stale_entry.invalidate();
           is_stale_entry_updated = true;
@@ -277,10 +283,12 @@ spin:
           CHECK_EQ(req.entry.level(), 0);
           CHECK_EQ(req.entry.index(), 0);
 
-          if (stale_entry.valid()) {
+          if (!is_stale_entry_pos_valid || stale_entry.valid()) {
             resp.yield = true;
             break;
           }
+
+          CHECK(is_stale_entry_pos_valid);
 
           // Fetch entry from memory on miss.
           if (!is_fresh_entry_hit) {
@@ -325,6 +333,7 @@ spin:
         } break;
         case UPDATE_INDEX: {
           if (stale_entry.distance_eq(req.entry)) {
+            CHECK(is_stale_entry_pos_valid);
             stale_entry = req.entry;
             is_stale_entry_updated = true;
           } else {
