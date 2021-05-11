@@ -112,7 +112,7 @@ inline std::ostream& operator<<(std::ostream& os, const Task& obj) {
 constexpr int kQueueCount = 4;
 
 #ifndef TAPA_SSSP_PHEAP_WIDTH
-#define TAPA_SSSP_PHEAP_WIDTH 8
+#define TAPA_SSSP_PHEAP_WIDTH 16
 #endif
 
 constexpr int kPiHeapWidth = TAPA_SSSP_PHEAP_WIDTH;
