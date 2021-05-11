@@ -436,6 +436,24 @@ int main(int argc, char* argv[]) {
              GetChildCapOfLevel(level + 1) * kPiHeapWidth + 1);
   }
 
+  for (int level = kOnChipLevelCount; level < kLevelCount; ++level) {
+    const auto cap = GetChildCapOfLevel(level);
+    HeapElemAxi init_elem;
+    init_elem.valid = false;
+    for (int i = 0; i < kPiHeapWidth; ++i) {
+      init_elem.cap[i] = cap;
+    }
+    const auto init_elem_packed = init_elem.Pack();
+
+    for (int qid = 0; qid < kQueueCount; ++qid) {
+      for (int idx = 0; idx < GetCapOfLevel(level); ++idx) {
+        const auto addr = GetAddrOfOffChipHeapElem(level, idx, qid);
+        CHECK_NE(heap_array[addr], init_elem_packed);
+        heap_array[addr] = init_elem_packed;
+      }
+    }
+  }
+
   for (const auto root : SampleVertices(degree_no_self_loop)) {
     CHECK_GE(root, 0) << "invalid root";
     CHECK_LT(root, vertex_count) << "invalid root";
@@ -444,24 +462,6 @@ int main(int argc, char* argv[]) {
     for (auto& interval : vertices) {
       std::fill(interval.begin(), interval.end(),
                 Vertex{.parent = kNullVid, .distance = kInfDistance});
-    }
-
-    for (int level = kOnChipLevelCount; level < kLevelCount; ++level) {
-      for (int idx = 0; idx < GetCapOfLevel(level); idx += kPiHeapWidth) {
-        for (int qid = 0; qid < kQueueCount; ++qid) {
-          const auto cap = GetChildCapOfLevel(level);
-          HeapElemAxi init_elem;
-          init_elem.valid = false;
-          for (int i = 0; i < kPiHeapWidth; ++i) {
-            init_elem.cap[i] = cap;
-          }
-          const auto init_elem_packed = init_elem.Pack();
-          for (int i = 0; i < kPiHeapWidth; ++i) {
-            const auto addr = GetAddrOfOffChipHeapElem(level, idx, qid);
-            heap_array[addr + i] = init_elem_packed;
-          }
-        }
-      }
     }
 
     for (size_t i = 0; i < heap_index.size(); ++i) {
