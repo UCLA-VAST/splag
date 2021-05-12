@@ -764,9 +764,15 @@ spin:
     CHECK_GE(idx, 0);
     CHECK_LT(idx, GetCapOfLevel(level));
 
-    DECL_ARRAY(HeapElem<level>, elems, kPiHeapWidth,
-               heap_array[idx / kPiHeapWidth * kPiHeapWidth + _i]);
-    HeapElem<level> elem;
+    HeapElem<level> elems[kPiHeapWidth];
+#pragma HLS aggregate variable = elems bit
+
+  read_elems:
+    for (int i = 0; i < kPiHeapWidth; ++i) {
+      elems[i] = heap_array[idx / kPiHeapWidth * kPiHeapWidth + i];
+    }
+
+    HeapElem<level> elem;  // Output from IsPiHeapElemUpdated.
     if (IsPiHeapElemUpdated(qid, level, req, elems, idx, elem, req_in_q,
                             resp_out_q, req_out_q, resp_in_q, index_req_q,
                             index_resp_q)) {
@@ -804,6 +810,7 @@ spin:
     CHECK_LT(idx, GetCapOfLevel(level));
 
     HeapElemAxi elems[kPiHeapWidth];
+#pragma HLS aggregate variable = elems bit
 
     // Read [idx_base + begin : idx_base + end] to elems[begin : end].
     const LevelIndex idx_base = idx / kPiHeapWidth * kPiHeapWidth;
@@ -830,6 +837,7 @@ spin:
         ++i_resp;
       }
     }
+
     HeapElemAxi elem;  // Output from IsPiHeapElemUpdated.
     if (IsPiHeapElemUpdated(qid, level, req, elems, idx, elem, req_in_q,
                             resp_out_q, req_out_q, resp_in_q, index_req_q,
