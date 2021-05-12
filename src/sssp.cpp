@@ -1163,6 +1163,21 @@ spin:
   }
 }
 
+void Switch(
+    //
+    ap_uint<log2(kIntervalCount)> b,
+    //
+    istream<TaskOnChip>& in_q0, istream<TaskOnChip>& in_q1,
+    //
+    ostream<TaskOnChip>& out_q0, ostream<TaskOnChip>& out_q1) {
+  streams<TaskOnChip, 4, 8> buffer;
+  tapa::task()
+      .invoke<detach>(VidDemux, b, in_q0, buffer[0], buffer[1])
+      .invoke<detach>(VidDemux, b, in_q1, buffer[2], buffer[3])
+      .invoke<detach>(VidMux, buffer[0], buffer[2], out_q0)
+      .invoke<detach>(VidMux, buffer[1], buffer[3], out_q1);
+}
+
 void EdgeReqArbiter(tapa::istreams<EdgeReq, kPeCount>& req_q,
                     tapa::ostreams<SourceVertex, kShardCount>& src_q,
                     tapa::ostreams<Vid, kShardCount>& addr_q) {
@@ -1788,8 +1803,6 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   streams<TaskOnChip, kShardCount, 2> update_req_q;
   //   Compose the update request network.
   streams<TaskOnChip, kIntervalCount, 8> update_req_qi1;
-  streams<TaskOnChip, kIntervalCount, 8> update_req_0_qi0;
-  streams<TaskOnChip, kIntervalCount, 8> update_req_1_qi0;
   streams<TaskOnChip, kIntervalCount, 8> update_req_qi0;
   //   Connect the vertex readers and updaters.
   streams<bool, kIntervalCount, 2> update_noop_qi1;
@@ -1837,9 +1850,7 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
       .invoke<detach>(UpdateReqArbiter, update_req_q, update_req_qi1)
 
       // clang-format off
-      .invoke<detach, kIntervalCount>(VidDemux, 0, update_req_qi1, update_req_0_qi0, update_req_1_qi0)
-      .invoke<detach>(VidMux, update_req_0_qi0[0], update_req_0_qi0[1], update_req_qi0[0])
-      .invoke<detach>(VidMux, update_req_1_qi0[0], update_req_1_qi0[1], update_req_qi0[1])
+      .invoke<detach>(Switch, 0, update_req_qi1[0], update_req_qi1[1], update_req_qi0[0], update_req_qi0[1])
       // clang-format on
 
       .invoke<detach, kIntervalCount>(VertexMem, vertex_read_addr_q,
