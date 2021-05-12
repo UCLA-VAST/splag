@@ -39,8 +39,8 @@ constexpr int kFloatLsb = kFloatMsb - kFloatWidth + 1;
 static_assert(kFloatLsb >= 0, "invalid configuration");
 static_assert(kFloatMsb <= 32, "invalid configuration");
 
-static constexpr int kVidWidth = 20;
-static constexpr int kEidWidth = 25;
+static constexpr int kVidWidth = 25;
+static constexpr int kEidWidth = 28;
 
 constexpr Vid kNullVid = -1;
 constexpr float kInfDistance = std::numeric_limits<float>::infinity();
