@@ -156,9 +156,22 @@ inline int GetAddrOfOffChipHeapElem(int level, int idx, int qid) {
   CHECK_GE(qid, 0);
   CHECK_LT(qid, kQueueCount);
   CHECK_EQ(GetCapOfLevel(level) % kPiHeapWidth, 0);
-  return ((GetCapOfLevel(level) + idx) / kPiHeapWidth * kQueueCount + qid) *
-             kPiHeapWidth +
-         idx % kPiHeapWidth;
+
+  // Raw index in queue: GetCapOfLevel(level) + idx.
+  // Mapped index is concatenated by the following parts:
+  //  1. index;
+  //  2. qid: log2(kQueueCount) bits;
+  //  3. offset: log2(kPiHeapWidth)  bits.
+  constexpr int kQidWidth = log2(kQueueCount);
+  constexpr int kOffsetWidth = log2(kPiHeapWidth);
+  constexpr int kIndexWidth = LevelIndex::width + 1 - kOffsetWidth;
+  static_assert(kIndexWidth + kQidWidth + kOffsetWidth < 32,
+                "need to change return value");
+  const auto raw_index =
+      ap_uint<kIndexWidth + kOffsetWidth>(GetCapOfLevel(level) + idx);
+  return ap_uint<kIndexWidth>(
+             raw_index.range(kIndexWidth + kOffsetWidth - 1, kOffsetWidth)),
+         ap_uint<kQidWidth>(qid), ap_uint<kOffsetWidth>(idx);
 }
 
 constexpr int kPiHeapStatCount[] = {
