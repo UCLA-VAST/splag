@@ -410,7 +410,7 @@ int main(int argc, char* argv[]) {
   }
 
   // Other kernel arguments.
-  aligned_vector<int64_t> metadata(9 + kPeCount + kIntervalCount * 4 +
+  aligned_vector<int64_t> metadata(9 + kPeCount + kSubIntervalCount * 4 +
                                    kQueueCount * kPiHeapStatTotalCount);
   array<aligned_vector<Vertex>, kIntervalCount> vertices;
   for (auto& interval : vertices) {
@@ -569,15 +569,17 @@ int main(int argc, char* argv[]) {
             << kIntervalCount << " intervals)";
 
     for (int iid = 0; iid < kIntervalCount; ++iid) {
-      VLOG(3) << "  interval[" << iid << "]:";
-      const auto read_hit = *(metadata_it++);
-      const auto read_miss = *(metadata_it++);
-      const auto write_hit = *(metadata_it++);
-      const auto write_miss = *(metadata_it++);
-      VLOG(3) << "    read hit: " << std::fixed << std::setprecision(1)
-              << 100. * read_hit / (read_hit + read_miss) << "%";
-      VLOG(3) << "    write hit: " << std::fixed << std::setprecision(1)
-              << 100. * write_hit / (write_hit + write_miss) << "%";
+      for (int siid = 0; siid < kSubIntervalCount / kIntervalCount; ++siid) {
+        VLOG(3) << "  interval[" << iid << "][" << siid << "]:";
+        const auto read_hit = *(metadata_it++);
+        const auto read_miss = *(metadata_it++);
+        const auto write_hit = *(metadata_it++);
+        const auto write_miss = *(metadata_it++);
+        VLOG(3) << "    read hit: " << std::fixed << std::setprecision(1)
+                << 100. * read_hit / (read_hit + read_miss) << "%";
+        VLOG(3) << "    write hit: " << std::fixed << std::setprecision(1)
+                << 100. * write_hit / (write_hit + write_miss) << "%";
+      }
     }
     for (int qid = 0; qid < kQueueCount; ++qid) {
       VLOG(3) << "  queue[" << qid << "]:";

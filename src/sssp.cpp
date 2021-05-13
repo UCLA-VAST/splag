@@ -1165,7 +1165,7 @@ spin:
 
 void Switch(
     //
-    ap_uint<log2(kIntervalCount)> b,
+    ap_uint<log2(kShardCount)> b,
     //
     istream<TaskOnChip>& in_q0, istream<TaskOnChip>& in_q1,
     //
@@ -1246,10 +1246,10 @@ spin:
 }
 
 void UpdateReqArbiter(tapa::istreams<TaskOnChip, kShardCount>& in_q,
-                      tapa::ostreams<TaskOnChip, kIntervalCount>& out_q) {
-  static_assert(kIntervalCount % kShardCount == 0,
-                "current implementation requires that queue count is a "
-                "multiple of interval count");
+                      tapa::ostreams<TaskOnChip, kSubIntervalCount>& out_q) {
+  static_assert(kSubIntervalCount % kShardCount == 0,
+                "current implementation requires that sub-interval count is a "
+                "multiple of shard count");
   DECL_ARRAY(TaskOnChip, update, kShardCount, TaskOnChip());
   DECL_ARRAY(bool, update_valid, kShardCount, false);
 
@@ -1259,7 +1259,8 @@ spin:
     RANGE(sid, kShardCount, {
       UNUSED SET(update_valid[sid], in_q[sid].try_read(update[sid]));
       const auto iid =
-          update[sid].vid() % kIntervalCount / kShardCount * kShardCount + sid;
+          update[sid].vid() % kSubIntervalCount / kShardCount * kShardCount +
+          sid;
       UNUSED RESET(update_valid[sid], out_q[iid].try_write(update[sid]));
     });
   }
@@ -1416,18 +1417,18 @@ spin:
     if (!write_resp_q.empty() && !write_vid_in_q.empty()) {
       write_resp_q.read(nullptr);
       const auto vid = write_vid_in_q.read(nullptr);
-      const auto entry = cache[vid / kIntervalCount % kVertexCacheSize];
+      const auto entry = cache[vid / kSubIntervalCount % kVertexCacheSize];
       CHECK(entry.is_valid);
       CHECK_NE(entry.task.vid(), vid);
       CHECK(entry.is_writing);
-      cache[vid / kIntervalCount % kVertexCacheSize].is_writing = false;
+      cache[vid / kSubIntervalCount % kVertexCacheSize].is_writing = false;
       CHECK_GT(active_write_count, 0);
       --active_write_count;
     } else if (!read_data_q.empty() && !read_vid_in_q.empty()) {
       const auto vertex = read_data_q.read(nullptr);
       const auto vid = read_vid_in_q.read(nullptr);
       VLOG(5) << "vmem[" << vid << "] -> " << vertex;
-      auto entry = cache[vid / kIntervalCount % kVertexCacheSize];
+      auto entry = cache[vid / kSubIntervalCount % kVertexCacheSize];
       CHECK(entry.is_valid);
       CHECK_EQ(entry.task.vid(), vid);
       CHECK(entry.is_reading);
@@ -1444,11 +1445,11 @@ spin:
         GenPush(entry);
         ++write_hit;
       }
-      cache[vid / kIntervalCount % kVertexCacheSize] = entry;
+      cache[vid / kSubIntervalCount % kVertexCacheSize] = entry;
     } else if (!req_q.empty()) {
       const auto task = req_q.peek(nullptr);
       const auto vid = task.vid();
-      auto entry = cache[vid / kIntervalCount % kVertexCacheSize];
+      auto entry = cache[vid / kSubIntervalCount % kVertexCacheSize];
       bool is_entry_updated = false;
       if (entry.is_valid && entry.task.vid() == task.vid()) {  // Hit.
         req_q.read(nullptr);
@@ -1506,44 +1507,45 @@ spin:
       }  // Otherwise, wait until entry is not reading.
 
       if (is_entry_updated) {
-        cache[vid / kIntervalCount % kVertexCacheSize] = entry;
+        cache[vid / kSubIntervalCount % kVertexCacheSize] = entry;
         VLOG(5) << "v$$$[" << vid << "] <- " << entry.task;
       }
     }
   }
 }
 
-using uint_noop_t = ap_uint<bit_length(kIntervalCount * 2)>;
+using uint_noop_t = ap_uint<bit_length(kSubIntervalCount)>;
 
-void NoopMerger(tapa::istreams<bool, kIntervalCount>& pkt_in_q,
+void NoopMerger(tapa::istreams<bool, kSubIntervalCount>& pkt_in_q,
                 ostream<uint_noop_t>& pkt_out_q) {
 spin:
   for (;;) {
 #pragma HLS pipeline II = 1
     uint_noop_t count = 0;
     bool buf;
-    RANGE(iid, kIntervalCount, pkt_in_q[iid].try_read(buf) && ++count);
+    RANGE(iid, kSubIntervalCount, pkt_in_q[iid].try_read(buf) && ++count);
     if (count) {
       pkt_out_q.write(count);
     }
   }
 }
 
-void PushReqArbiter(tapa::istreams<TaskOnChip, kIntervalCount>& in_q,
+void PushReqArbiter(tapa::istreams<TaskOnChip, kSubIntervalCount>& in_q,
                     tapa::ostreams<TaskOnChip, kQueueCount>& out_q) {
-  static_assert(kQueueCount % kIntervalCount == 0,
+  static_assert(kQueueCount % kSubIntervalCount == 0,
                 "current implementation requires that queue count is a "
                 "multiple of interval count");
-  DECL_ARRAY(TaskOnChip, task, kIntervalCount, TaskOnChip());
-  DECL_ARRAY(bool, task_valid, kIntervalCount, false);
+  DECL_ARRAY(TaskOnChip, task, kSubIntervalCount, TaskOnChip());
+  DECL_ARRAY(bool, task_valid, kSubIntervalCount, false);
 
 spin:
   for (;;) {
 #pragma HLS pipeline II = 1
-    RANGE(iid, kIntervalCount, {
+    RANGE(iid, kSubIntervalCount, {
       UNUSED SET(task_valid[iid], in_q[iid].try_read(task[iid]));
-      const auto qid =
-          task[iid].vid() % kQueueCount / kIntervalCount * kIntervalCount + iid;
+      const auto qid = task[iid].vid() % kQueueCount / kSubIntervalCount *
+                           kSubIntervalCount +
+                       iid;
       UNUSED RESET(task_valid[iid], out_q[qid].try_write(task[iid]));
     });
   }
@@ -1607,8 +1609,8 @@ void Dispatcher(
     // Metadata.
     tapa::mmap<int64_t> metadata,
     // Vertex cache control.
-    ostreams<bool, kIntervalCount>& vertex_cache_done_q,
-    istreams<int32_t, kIntervalCount>& vertex_cache_stat_q,
+    ostreams<bool, kSubIntervalCount>& vertex_cache_done_q,
+    istreams<int32_t, kSubIntervalCount>& vertex_cache_stat_q,
     ostreams<bool, kQueueCount>& queue_done_q,
     istreams<PiHeapStat, kQueueCount>& queue_stat_q,
     // Task and queue requests.
@@ -1774,7 +1776,7 @@ spin:
   CHECK_EQ(active_task_count, 0);
 #endif  // __SYNTHESIS__
 
-  RANGE(iid, kIntervalCount, vertex_cache_done_q[iid].write(false));
+  RANGE(iid, kSubIntervalCount, vertex_cache_done_q[iid].write(false));
   RANGE(qid, kQueueCount, queue_done_q[qid].write(false));
 
   metadata[0] = visited_edge_count;
@@ -1793,15 +1795,15 @@ meta:
   }
 
 vertex_cache_stat:
-  for (int i = 0; i < kIntervalCount * 4; ++i) {
+  for (int i = 0; i < kSubIntervalCount * 4; ++i) {
     metadata[9 + kPeCount + i] = vertex_cache_stat_q[i / 4].read();
   }
 
 queue_stat:
   for (int i = 0; i < kQueueCount; ++i) {
     for (int j = 0; j < kPiHeapStatTotalCount; ++j) {
-      metadata[9 + kPeCount + kIntervalCount * 4 + i * kPiHeapStatTotalCount +
-               j] = queue_stat_q[i].read();
+      metadata[9 + kPeCount + kSubIntervalCount * 4 +
+               i * kPiHeapStatTotalCount + j] = queue_stat_q[i].read();
     }
   }
 }
@@ -1812,7 +1814,7 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
           // For queues.
           tapa::mmap<HeapElemPacked> heap_array,
           tapa::mmap<HeapIndexEntry> heap_index) {
-  streams<TaskOnChip, kIntervalCount, 2> push_req_q;
+  streams<TaskOnChip, kSubIntervalCount, 2> push_req_q;
   streams<TaskOnChip, kQueueCount, 512> push_req_qi;
   stream<uint_qid_t, 2> pop_req_q("pop_req");
   streams<bool, kQueueCount, 2> pop_req_qi("pop_req_i");
@@ -1847,18 +1849,18 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   //   Connect PEs to the update request network.
   streams<TaskOnChip, kShardCount, 2> update_req_q;
   //   Compose the update request network.
-  streams<TaskOnChip, kIntervalCount, 8> update_req_qi1;
-  streams<TaskOnChip, kIntervalCount, 8> update_req_qi0;
+  streams<TaskOnChip, kShardCount, 8> update_req_qi1;
+  streams<TaskOnChip, kSubIntervalCount, 8> update_req_qi0;
   //   Connect the vertex readers and updaters.
-  streams<bool, kIntervalCount, 2> update_noop_qi1;
-  streams<Vid, kIntervalCount, 2> vertex_read_addr_q;
-  streams<Vertex, kIntervalCount, 2> vertex_read_data_q;
-  streams<packet<Vid, Vertex>, kIntervalCount, 2> vertex_write_req_q;
-  streams<bool, kIntervalCount, 2> vertex_write_resp_q;
-  streams<Vid, kIntervalCount, 16> read_vid_q;
-  streams<Vid, kIntervalCount, 16> write_vid_q;
-  streams<bool, kIntervalCount, 2> vertex_cache_done_q;
-  streams<int32_t, kIntervalCount, 2> vertex_cache_stat_q;
+  streams<bool, kSubIntervalCount, 2> update_noop_qi1;
+  streams<Vid, kSubIntervalCount, 2> vertex_read_addr_q;
+  streams<Vertex, kSubIntervalCount, 2> vertex_read_data_q;
+  streams<packet<Vid, Vertex>, kSubIntervalCount, 2> vertex_write_req_q;
+  streams<bool, kSubIntervalCount, 2> vertex_write_resp_q;
+  streams<Vid, kSubIntervalCount, 16> read_vid_q;
+  streams<Vid, kSubIntervalCount, 16> write_vid_q;
+  streams<bool, kSubIntervalCount, 2> vertex_cache_done_q;
+  streams<int32_t, kSubIntervalCount, 2> vertex_cache_stat_q;
 
   stream<uint_noop_t, 2> update_noop_q;
 
@@ -1892,16 +1894,18 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
       .invoke<detach>(EdgeReqArbiter, edge_req_q, src_q, edge_read_addr_q)
 
       // For vertices.
-      .invoke<detach>(UpdateReqArbiter, update_req_q, update_req_qi1)
-
+      // Route updates via a kShardCount x kShardCount network.
       // clang-format off
-      .invoke<detach>(Switch, 0, update_req_qi1[0], update_req_qi1[1], update_req_qi0[0], update_req_qi0[1])
+      .invoke<detach>(Switch, 0, update_req_q[0], update_req_q[1], update_req_qi1[0], update_req_qi1[1])
       // clang-format on
 
-      .invoke<detach, kIntervalCount>(VertexMem, vertex_read_addr_q,
-                                      vertex_read_data_q, vertex_write_req_q,
-                                      vertex_write_resp_q, vertices)
-      .invoke<detach, kIntervalCount>(
+      // Distribute updates amount sub-intervals.
+      .invoke<detach>(UpdateReqArbiter, update_req_qi1, update_req_qi0)
+
+      .invoke<detach, kSubIntervalCount>(VertexMem, vertex_read_addr_q,
+                                         vertex_read_data_q, vertex_write_req_q,
+                                         vertex_write_resp_q, vertices)
+      .invoke<detach, kSubIntervalCount>(
           VertexCache, vertex_cache_done_q, vertex_cache_stat_q, update_req_qi0,
           push_req_q, update_noop_qi1, read_vid_q, read_vid_q, write_vid_q,
           write_vid_q, vertex_read_addr_q, vertex_read_data_q,
