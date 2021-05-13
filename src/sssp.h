@@ -382,7 +382,7 @@ static_assert(
     "current implementation assumes PE count is a multiple of shard count");
 
 constexpr int kIntervalCount = 2;  // #vertex partitions.
-constexpr int kSubIntervalCount = kIntervalCount * 2;
+constexpr int kSubIntervalCount = kIntervalCount * 4;
 
 constexpr int kHeapOnChipWidth = 8;  // #children per on-heap element.
 
