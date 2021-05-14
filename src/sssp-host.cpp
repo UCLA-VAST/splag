@@ -416,8 +416,11 @@ int main(int argc, char* argv[]) {
   for (auto& interval : vertices) {
     interval.resize(tapa::round_up_div<kIntervalCount>(vertex_count));
   }
-  aligned_vector<HeapElemPacked> heap_array(GetAddrOfOffChipHeapElem(
-      kLevelCount - 1, GetCapOfLevel(kLevelCount - 1) - 1, kQueueCount - 1));
+  aligned_vector<HeapElemPacked> heap_array(
+      GetAddrOfOffChipHeapElem(kLevelCount - 1,
+                               GetCapOfLevel(kLevelCount - 1) - 1,
+                               kQueueCount - 1) +
+      1);
   aligned_vector<HeapIndexEntry> heap_index(vertex_count);
 
   // Statistics.
