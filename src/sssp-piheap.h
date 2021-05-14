@@ -30,6 +30,7 @@ inline bool IsUpdateNeeded(const HeapElemType(&elems), const HeapReq& elem,
 find_update:
   for (ap_uint<bit_length(kPiHeapWidth)> i = 0; i < kPiHeapWidth; ++i) {
 #pragma HLS pipeline II = 1
+#pragma HLS unroll factor = 2
     if (elems[i].valid &&
         (!is_max_task_valid || !(elems[i].task <= max_task))) {
       max_pos = i;
