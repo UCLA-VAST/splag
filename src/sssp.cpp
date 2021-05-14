@@ -857,10 +857,16 @@ void PiHeapDummyTail(
     istream<HeapReq>& req_in_q, ostream<HeapResp>& resp_out_q) {
 spin:
   for (;;) {
-    const auto is_empty = req_in_q.empty();
-    const auto is_full = resp_out_q.full();
-    CHECK(is_empty);
-    CHECK(!is_full);
+    if (!req_in_q.empty()) {
+      const auto req = req_in_q.read(nullptr);
+      CHECK_NE(req.op, QueueOp::PUSH);
+      const bool is_pushpop = req.op == QueueOp::PUSHPOP;
+      resp_out_q.write({
+          .op = req.op == is_pushpop ? NOCHANGE : EMPTY,
+          .child = 0,
+          .task = req.task,
+      });
+    }
   }
 }
 
