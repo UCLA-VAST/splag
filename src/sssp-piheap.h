@@ -12,6 +12,7 @@ inline ap_uint<log2(kPiHeapWidth)> FindMax(HeapElemType elem) {
 find_max:
   for (ap_uint<bit_length(kPiHeapWidth)> i = 1; i < kPiHeapWidth; ++i) {
 #pragma HLS pipeline II = 1
+#pragma HLS unroll factor = 2
     if (!(elem.cap[i] <= max)) {
       max = elem.cap[i];
       pos = i;
