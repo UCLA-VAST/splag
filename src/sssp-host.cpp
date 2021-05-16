@@ -362,6 +362,7 @@ int main(int argc, char* argv[]) {
   const int64_t vertex_count = degree.size();
   CHECK_EQ(degree_no_self_loop.size(), vertex_count);
   CHECK_EQ(indexed_weights.size(), vertex_count);
+  CHECK_LT(bit_length(vertex_count), kVidWidth);
 
   if (VLOG_IS_ON(3)) {
     vector<int64_t> bins(7);
