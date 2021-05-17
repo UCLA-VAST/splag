@@ -8,9 +8,11 @@
 
 #include "sssp.h"
 
-using PeId = uint8_t;
-
 using uint_vid_t = ap_uint<kVidWidth>;
+
+using uint_pe_t = ap_uint<bit_length(kPeCount - 1)>;
+
+using uint_noop_t = ap_uint<bit_length(kSubIntervalCount)>;
 
 struct SourceVertex {
   Vid parent;
@@ -18,6 +20,10 @@ struct SourceVertex {
 };
 
 using EdgeReq = tapa::packet<Eid, SourceVertex>;
+
+using TaskReq = tapa::packet<uint_pe_t, TaskOnChip>;
+
+using TaskResp = tapa::packet<uint_pe_t, Vid>;
 
 // Used in:
 //
@@ -104,91 +110,6 @@ struct VertexCacheEntry {
   bool is_reading;
   bool is_writing;
   bool is_dirty;
-  TaskOnChip task;
-};
-
-struct HeapStaleIndexEntry : public HeapIndexEntry {
-  Vid vid;
-  bool matches(Vid vid) const {
-    constexpr int kLsb = log(kQueueCount, 2);
-    constexpr int kMsb = kVidWidth - 1;
-    const bool result =
-        valid() && ap_uint<kVidWidth>(this->vid).range(kMsb, kLsb) ==
-                       ap_uint<kVidWidth>(vid).range(kMsb, kLsb);
-    if (result) {
-      CHECK_EQ(this->vid, vid);
-    }
-    return result;
-  }
-  using HeapIndexEntry::operator=;
-  void set(Vid vid, const HeapIndexEntry& entry) {
-    HeapIndexEntry::operator=(entry);
-    this->vid = vid;
-  }
-};
-
-enum HeapOp {
-  GET_STALE,
-  CLEAR_STALE,
-  ACQUIRE_INDEX,
-  UPDATE_INDEX,
-  CLEAR_FRESH,
-  GET = GET_STALE,
-  SET = UPDATE_INDEX,
-  CLEAR = CLEAR_STALE,
-};
-
-struct HeapIndexReq {
-  HeapOp op;
-  Vid vid;
-  HeapIndexEntry entry;
-};
-
-struct HeapAcquireIndexContext {
-  Vid vid;
-  HeapIndexEntry entry;
-};
-
-struct HeapIndexResp {
-  HeapIndexEntry entry;
-  bool yield;   // If true, requester should try again.
-  bool enable;  // If true, enable PUSH.
-};
-
-struct HeapArrayReq {
-  HeapOp op;
-  Vid i;
-  TaskOnChip task;
-};
-
-template <int level>
-struct HeapElem {
-  using Capacity = ap_uint<bit_length(GetChildCapOfLevel(level))>;
-
-  bool valid;
-  TaskOnChip task;
-  Capacity cap[kPiHeapWidth];
-};
-
-struct HeapReq {
-  LevelIndex index;
-  QueueOp::Op op;
-  TaskOnChip task;
-  bool replace;
-  Vid vid;
-};
-
-enum HeapRespOp {
-  EMPTY,     // No element returned.
-  CHILD,     // New element is from a child.
-  NOCHANGE,  // New element returned but children capacity not changed.
-};
-
-using uint_pi_child_t = ap_uint<log2(kPiHeapWidth)>;
-
-struct HeapResp {
-  HeapRespOp op;
-  uint_pi_child_t child;
   TaskOnChip task;
 };
 
