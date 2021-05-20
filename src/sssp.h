@@ -174,6 +174,8 @@ inline int GetAddrOfOffChipHeapElem(int level, int idx, int qid) {
          ap_uint<kQidWidth>(qid), ap_uint<kOffsetWidth>(idx);
 }
 
+constexpr int kVertexUniStatCount = 10;
+
 constexpr int kPiHeapStatCount[] = {
     1,  // PiHeapHead
     9,  // PiHeapIndex

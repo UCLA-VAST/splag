@@ -411,7 +411,8 @@ int main(int argc, char* argv[]) {
   }
 
   // Other kernel arguments.
-  aligned_vector<int64_t> metadata(9 + kPeCount + kSubIntervalCount * 4 +
+  aligned_vector<int64_t> metadata(9 + kPeCount +
+                                   kSubIntervalCount * kVertexUniStatCount +
                                    kQueueCount * kPiHeapStatTotalCount);
   array<aligned_vector<Vertex>, kIntervalCount> vertices;
   for (auto& interval : vertices) {
@@ -579,10 +580,31 @@ int main(int argc, char* argv[]) {
         const auto read_miss = *(metadata_it++);
         const auto write_hit = *(metadata_it++);
         const auto write_miss = *(metadata_it++);
-        VLOG(3) << "    read hit: " << std::fixed << std::setprecision(1)
+        const auto write_resp_count = *(metadata_it++);
+        const auto read_resp_count = *(metadata_it++);
+        const auto req_hit_count = *(metadata_it++);
+        const auto req_miss_count = *(metadata_it++);
+        const auto req_busy_count = *(metadata_it++);
+        const auto idle_count = *(metadata_it++);
+        const auto total_count = write_resp_count + read_resp_count +
+                                 req_hit_count + req_miss_count +
+                                 req_busy_count + idle_count;
+        VLOG(3) << "    read hit   : " << std::fixed << std::setprecision(1)
                 << 100. * read_hit / (read_hit + read_miss) << "%";
-        VLOG(3) << "    write hit: " << std::fixed << std::setprecision(1)
+        VLOG(3) << "    write hit  : " << std::fixed << std::setprecision(1)
                 << 100. * write_hit / (write_hit + write_miss) << "%";
+        VLOG(3) << "    #write resp: " << std::fixed << std::setprecision(1)
+                << 100. * write_resp_count / total_count << "%";
+        VLOG(3) << "    #read resp : " << std::fixed << std::setprecision(1)
+                << 100. * read_resp_count / total_count << "%";
+        VLOG(3) << "    #req hit   : " << std::fixed << std::setprecision(1)
+                << 100. * req_hit_count / total_count << "%";
+        VLOG(3) << "    #req miss  : " << std::fixed << std::setprecision(1)
+                << 100. * req_miss_count / total_count << "%";
+        VLOG(3) << "    #req busy  : " << std::fixed << std::setprecision(1)
+                << 100. * req_busy_count / total_count << "%";
+        VLOG(3) << "    #idle      : " << std::fixed << std::setprecision(1)
+                << 100. * idle_count / total_count << "%";
       }
     }
     for (int qid = 0; qid < kQueueCount; ++qid) {

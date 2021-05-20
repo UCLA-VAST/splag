@@ -1038,18 +1038,29 @@ exec:
   for (;;) {
 #pragma HLS pipeline off
 
-    int32_t read_hit = 0;
-    int32_t read_miss = 0;
-    int32_t write_hit = 0;
-    int32_t write_miss = 0;
+    DECL_ARRAY(int32_t, perf_counters, kVertexUniStatCount, 0);
+    auto& read_hit = perf_counters[0];
+    auto& read_miss = perf_counters[1];
+    auto& write_hit = perf_counters[2];
+    auto& write_miss = perf_counters[3];
+    auto& write_resp_count = perf_counters[4];
+    auto& read_resp_count = perf_counters[5];
+    auto& req_hit_count = perf_counters[6];
+    auto& req_miss_count = perf_counters[7];
+    auto& req_busy_count = perf_counters[8];
+    auto& idle_count = perf_counters[9];
 
     const int kMaxActiveWriteCount = 63;
     int8_t active_write_count = 0;
+
+    bool is_started = false;
 
   spin:
     for (; done_q.empty();) {
 #pragma HLS pipeline
       if (!write_resp_q.empty() && !write_vid_in_q.empty()) {
+        ++write_resp_count;
+
         write_resp_q.read(nullptr);
         const auto vid = write_vid_in_q.read(nullptr);
         const auto entry = cache[vid / kSubIntervalCount % kVertexCacheSize];
@@ -1060,6 +1071,8 @@ exec:
         CHECK_GT(active_write_count, 0);
         --active_write_count;
       } else if (!read_data_q.empty() && !read_vid_in_q.empty()) {
+        ++read_resp_count;
+
         const auto vertex = read_data_q.read(nullptr);
         const auto vid = read_vid_in_q.read(nullptr);
         VLOG(5) << "vmem[" << vid << "] -> " << vertex;
@@ -1082,11 +1095,15 @@ exec:
         }
         cache[vid / kSubIntervalCount % kVertexCacheSize] = entry;
       } else if (!req_q.empty()) {
+        is_started = true;
+
         const auto task = req_q.peek(nullptr);
         const auto vid = task.vid();
         auto entry = cache[vid / kSubIntervalCount % kVertexCacheSize];
         bool is_entry_updated = false;
         if (entry.is_valid && entry.task.vid() == task.vid()) {  // Hit.
+          ++req_hit_count;
+
           req_q.read(nullptr);
           VLOG(5) << "task     <- " << task;
 
@@ -1112,6 +1129,8 @@ exec:
                    !(entry.is_valid && entry.is_dirty &&
                      (write_req_q.full() ||
                       write_vid_out_q.full()))) {  // Miss.
+          ++req_miss_count;
+
           req_q.read(nullptr);
           VLOG(5) << "task     <- " << task;
 
@@ -1143,12 +1162,16 @@ exec:
           is_entry_updated = true;
 
           ++read_miss;
-        }  // Otherwise, wait until entry is not reading.
+        } else {  // Otherwise, wait until entry is not reading.
+          ++req_busy_count;
+        }
 
         if (is_entry_updated) {
           cache[vid / kSubIntervalCount % kVertexCacheSize] = entry;
           VLOG(5) << "v$$$[" << vid << "] <- " << entry.task;
         }
+      } else if (is_started) {
+        ++idle_count;
       }
     }
 
@@ -1189,10 +1212,11 @@ exec:
     }
 
     done_q.read(nullptr);
-    stat_q.write(read_hit);
-    stat_q.write(read_miss);
-    stat_q.write(write_hit);
-    stat_q.write(write_miss);
+  stat:
+    for (ap_uint<bit_length(kVertexUniStatCount)> i = 0;
+         i < kVertexUniStatCount; ++i) {
+      stat_q.write(perf_counters[i]);
+    }
   }
 }
 
@@ -1465,14 +1489,17 @@ meta:
   }
 
 vertex_cache_stat:
-  for (int i = 0; i < kSubIntervalCount * 4; ++i) {
-    metadata[9 + kPeCount + i] = vertex_cache_stat_q[i / 4].read();
+  for (int i = 0; i < kSubIntervalCount; ++i) {
+    for (int j = 0; j < kVertexUniStatCount; ++j) {
+      metadata[9 + kPeCount + i * kVertexUniStatCount + j] =
+          vertex_cache_stat_q[i].read();
+    }
   }
 
 queue_stat:
   for (int i = 0; i < kQueueCount; ++i) {
     for (int j = 0; j < kPiHeapStatTotalCount; ++j) {
-      metadata[9 + kPeCount + kSubIntervalCount * 4 +
+      metadata[9 + kPeCount + kSubIntervalCount * kVertexUniStatCount +
                i * kPiHeapStatTotalCount + j] = queue_stat_q[i].read();
     }
   }
