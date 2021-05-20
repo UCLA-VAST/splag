@@ -1005,6 +1005,17 @@ void VertexCache(
 #pragma HLS bind_storage variable = cache type = RAM_S2P impl = URAM
 #pragma HLS aggregate variable = cache bit
 
+init:
+  for (int i = 0; i < kVertexCacheSize; ++i) {
+#pragma HLS dependence variable = cache inter false
+    cache[i] = {
+        .is_valid = false,
+        .is_reading = false,
+        .is_writing = false,
+        .is_dirty = false,
+    };
+  }
+
   CLEAN_UP(clean_up, [&] {
     for (int i = 0; i < kVertexCacheSize; ++i) {
       CHECK(!cache[i].is_valid);
@@ -1023,160 +1034,165 @@ void VertexCache(
     VLOG(5) << "task     -> NOOP";
   };
 
-  int32_t read_hit = 0;
-  int32_t read_miss = 0;
-  int32_t write_hit = 0;
-  int32_t write_miss = 0;
-
-  bool is_first_iteration = true;
-
-  int8_t active_write_count = 0;
-
-spin:
+exec:
   for (;;) {
 #pragma HLS pipeline off
-    if (is_first_iteration || (active_write_count == 0 && !done_q.empty())) {
-    init:
-      for (int i = 0; i < kVertexCacheSize;) {
-#pragma HLS dependence variable = cache inter false
-        // Limit number of outstanding write requests to 64.
-        if (!is_first_iteration && active_write_count >= 64) {
-          if (!write_resp_q.empty()) {
-            write_resp_q.read(nullptr);
-            --active_write_count;
-          }
+
+    int32_t read_hit = 0;
+    int32_t read_miss = 0;
+    int32_t write_hit = 0;
+    int32_t write_miss = 0;
+
+    const int kMaxActiveWriteCount = 63;
+    int8_t active_write_count = 0;
+
+  spin:
+    for (; done_q.empty();) {
+#pragma HLS pipeline off
+      if (!write_resp_q.empty() && !write_vid_in_q.empty()) {
+        write_resp_q.read(nullptr);
+        const auto vid = write_vid_in_q.read(nullptr);
+        const auto entry = cache[vid / kSubIntervalCount % kVertexCacheSize];
+        CHECK(entry.is_valid);
+        CHECK_NE(entry.task.vid(), vid);
+        CHECK(entry.is_writing);
+        cache[vid / kSubIntervalCount % kVertexCacheSize].is_writing = false;
+        CHECK_GT(active_write_count, 0);
+        --active_write_count;
+      } else if (!read_data_q.empty() && !read_vid_in_q.empty()) {
+        const auto vertex = read_data_q.read(nullptr);
+        const auto vid = read_vid_in_q.read(nullptr);
+        VLOG(5) << "vmem[" << vid << "] -> " << vertex;
+        auto entry = cache[vid / kSubIntervalCount % kVertexCacheSize];
+        CHECK(entry.is_valid);
+        CHECK_EQ(entry.task.vid(), vid);
+        CHECK(entry.is_reading);
+        entry.is_reading = false;
+        // Vertex updates do not have metadata of the destination vertex, so
+        // update cache using metadata from DRAM.
+        entry.task.set_metadata(vertex);
+        if (vertex <= entry.task.vertex()) {
+          // Distance in DRAM is closer; generate NOOP and update cache.
+          GenNoop();
+          entry.task.set_value(vertex);
         } else {
-          if (!is_first_iteration) {
-            const auto entry = cache[i];
-            if (entry.is_valid && entry.is_dirty) {
-              write_req_q.write(
-                  {entry.task.vid() / kIntervalCount, entry.task.vertex()});
-              ++active_write_count;
-              ++write_miss;
-              VLOG(5) << "vmem[" << entry.task.vid() << "] <- " << entry.task;
-            }
-          }
-
-          cache[i].is_valid = false;
-          ++i;
-        }
-      }
-
-    clean:
-      while (active_write_count > 0) {
-        if (!write_resp_q.empty()) {
-          write_resp_q.read(nullptr);
-          --active_write_count;
-        }
-      }
-
-      if (!is_first_iteration) {
-        done_q.read(nullptr);
-        stat_q.write(read_hit);
-        stat_q.write(read_miss);
-        stat_q.write(write_hit);
-        stat_q.write(write_miss);
-      }
-      is_first_iteration = false;
-    }
-
-    if (!write_resp_q.empty() && !write_vid_in_q.empty()) {
-      write_resp_q.read(nullptr);
-      const auto vid = write_vid_in_q.read(nullptr);
-      const auto entry = cache[vid / kSubIntervalCount % kVertexCacheSize];
-      CHECK(entry.is_valid);
-      CHECK_NE(entry.task.vid(), vid);
-      CHECK(entry.is_writing);
-      cache[vid / kSubIntervalCount % kVertexCacheSize].is_writing = false;
-      CHECK_GT(active_write_count, 0);
-      --active_write_count;
-    } else if (!read_data_q.empty() && !read_vid_in_q.empty()) {
-      const auto vertex = read_data_q.read(nullptr);
-      const auto vid = read_vid_in_q.read(nullptr);
-      VLOG(5) << "vmem[" << vid << "] -> " << vertex;
-      auto entry = cache[vid / kSubIntervalCount % kVertexCacheSize];
-      CHECK(entry.is_valid);
-      CHECK_EQ(entry.task.vid(), vid);
-      CHECK(entry.is_reading);
-      entry.is_reading = false;
-      // Vertex updates do not have metadata of the destination vertex, so
-      // update cache using metadata from DRAM.
-      entry.task.set_metadata(vertex);
-      if (vertex <= entry.task.vertex()) {
-        // Distance in DRAM is closer; generate NOOP and update cache.
-        GenNoop();
-        entry.task.set_value(vertex);
-      } else {
-        // Distance in cache is closer; generate PUSH.
-        GenPush(entry);
-        ++write_hit;
-      }
-      cache[vid / kSubIntervalCount % kVertexCacheSize] = entry;
-    } else if (!req_q.empty()) {
-      const auto task = req_q.peek(nullptr);
-      const auto vid = task.vid();
-      auto entry = cache[vid / kSubIntervalCount % kVertexCacheSize];
-      bool is_entry_updated = false;
-      if (entry.is_valid && entry.task.vid() == task.vid()) {  // Hit.
-        req_q.read(nullptr);
-        VLOG(5) << "task     <- " << task;
-
-        // Update cache if new task has higher priority.
-        if ((is_entry_updated = !(task <= entry.task))) {
-          entry.task.set_value(task.vertex());
-        }
-
-        // Generate PUSH if and only if cache is updated and not reading.
-        // If reading, PUSH will be generated when read finishes, if necessary.
-        if (is_entry_updated && !entry.is_reading) {
+          // Distance in cache is closer; generate PUSH.
           GenPush(entry);
           ++write_hit;
-        } else {
-          GenNoop();
         }
+        cache[vid / kSubIntervalCount % kVertexCacheSize] = entry;
+      } else if (!req_q.empty()) {
+        const auto task = req_q.peek(nullptr);
+        const auto vid = task.vid();
+        auto entry = cache[vid / kSubIntervalCount % kVertexCacheSize];
+        bool is_entry_updated = false;
+        if (entry.is_valid && entry.task.vid() == task.vid()) {  // Hit.
+          req_q.read(nullptr);
+          VLOG(5) << "task     <- " << task;
 
-        ++read_hit;
-      } else if (!(entry.is_valid && (entry.is_reading || entry.is_writing)) &&
-                 !read_addr_q.full() && !read_vid_out_q.full() &&
-                 !(entry.is_valid && entry.is_dirty &&
-                   (write_req_q.full() || write_vid_out_q.full()))) {  // Miss.
-        req_q.read(nullptr);
-        VLOG(5) << "task     <- " << task;
+          // Update cache if new task has higher priority.
+          if ((is_entry_updated = !(task <= entry.task))) {
+            entry.task.set_value(task.vertex());
+          }
 
-        // Issue DRAM read request.
-        read_addr_q.try_write(vid / kIntervalCount);
-        VLOG(5) << "vmem[" << vid << "] ?";
-        read_vid_out_q.try_write(vid);
+          // Generate PUSH if and only if cache is updated and not reading.
+          // If reading, PUSH will be generated when read finishes, if
+          // necessary.
+          if (is_entry_updated && !entry.is_reading) {
+            GenPush(entry);
+            ++write_hit;
+          } else {
+            GenNoop();
+          }
 
-        // Issue DRAM write request.
+          ++read_hit;
+        } else if (!(entry.is_valid &&
+                     (entry.is_reading || entry.is_writing)) &&
+                   !read_addr_q.full() && !read_vid_out_q.full() &&
+                   !(entry.is_valid && entry.is_dirty &&
+                     (write_req_q.full() ||
+                      write_vid_out_q.full()))) {  // Miss.
+          req_q.read(nullptr);
+          VLOG(5) << "task     <- " << task;
+
+          // Issue DRAM read request.
+          read_addr_q.try_write(vid / kIntervalCount);
+          VLOG(5) << "vmem[" << vid << "] ?";
+          read_vid_out_q.try_write(vid);
+
+          // Issue DRAM write request.
+          if (entry.is_valid && entry.is_dirty) {
+            entry.is_writing = true;
+            write_req_q.try_write(
+                {entry.task.vid() / kIntervalCount, entry.task.vertex()});
+            write_vid_out_q.try_write(entry.task.vid());
+            CHECK_LT(active_write_count, kMaxActiveWriteCount);
+            ++active_write_count;
+            ++write_miss;
+            VLOG(5) << "vmem[" << entry.task.vid() << "] <- " << entry.task;
+          } else {
+            entry.is_writing = false;
+          }
+
+          // Replace cache with new task.
+          entry.is_valid = true;
+          entry.is_reading = true;
+          entry.is_dirty = false;
+          entry.task.set_vid(vid);
+          entry.task.set_value(task.vertex());
+          is_entry_updated = true;
+
+          ++read_miss;
+        }  // Otherwise, wait until entry is not reading.
+
+        if (is_entry_updated) {
+          cache[vid / kSubIntervalCount % kVertexCacheSize] = entry;
+          VLOG(5) << "v$$$[" << vid << "] <- " << entry.task;
+        }
+      }
+    }
+
+  reset:
+    for (int i = 0; i < kVertexCacheSize;) {
+#pragma HLS dependence variable = cache inter false
+      // Limit number of outstanding write requests to kMaxActiveWriteCount.
+      const bool is_ready = active_write_count < kMaxActiveWriteCount;
+      if (!write_resp_q.empty()) {
+        write_resp_q.read(nullptr);
+        --active_write_count;
+      }
+      if (is_ready) {
+        auto entry = cache[i];
+        CHECK(!entry.is_reading);
+
         if (entry.is_valid && entry.is_dirty) {
-          entry.is_writing = true;
-          write_req_q.try_write(
+          write_req_q.write(
               {entry.task.vid() / kIntervalCount, entry.task.vertex()});
-          write_vid_out_q.try_write(entry.task.vid());
           ++active_write_count;
           ++write_miss;
           VLOG(5) << "vmem[" << entry.task.vid() << "] <- " << entry.task;
-        } else {
-          entry.is_writing = false;
         }
 
-        // Replace cache with new task.
-        entry.is_valid = true;
-        entry.is_reading = true;
-        entry.is_dirty = false;
-        entry.task.set_vid(vid);
-        entry.task.set_value(task.vertex());
-        is_entry_updated = true;
-
-        ++read_miss;
-      }  // Otherwise, wait until entry is not reading.
-
-      if (is_entry_updated) {
-        cache[vid / kSubIntervalCount % kVertexCacheSize] = entry;
-        VLOG(5) << "v$$$[" << vid << "] <- " << entry.task;
+        entry.is_valid = false;
+        entry.is_writing = false;
+        cache[i] = entry;
+        ++i;
       }
     }
+
+  clean:
+    while (active_write_count > 0) {
+      if (!write_resp_q.empty()) {
+        write_resp_q.read(nullptr);
+        --active_write_count;
+      }
+    }
+
+    done_q.read(nullptr);
+    stat_q.write(read_hit);
+    stat_q.write(read_miss);
+    stat_q.write(write_hit);
+    stat_q.write(write_miss);
   }
 }
 
