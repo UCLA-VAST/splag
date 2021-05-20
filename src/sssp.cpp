@@ -1048,7 +1048,7 @@ exec:
 
   spin:
     for (; done_q.empty();) {
-#pragma HLS pipeline off
+#pragma HLS pipeline
       if (!write_resp_q.empty() && !write_vid_in_q.empty()) {
         write_resp_q.read(nullptr);
         const auto vid = write_vid_in_q.read(nullptr);
