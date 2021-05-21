@@ -543,68 +543,82 @@ int main(int argc, char* argv[]) {
     VLOG(3) << "  #POP (valid):          " << pop_valid_count;
     VLOG(3) << "  #POP (noop):           " << pop_noop_count;
     VLOG(3) << "  cycle count:           " << cycle_count;
-    VLOG(3) << "    queue full:          " << queue_full_count << " ("
-            << std::fixed << std::setprecision(1)
-            << 100. * queue_full_count / cycle_count << "%)";
-    VLOG(3) << "    PE full:             " << pe_full_count << " ("
-            << std::fixed << std::setprecision(1)
-            << 100. * pe_full_count / cycle_count << "%)";
+    VLOG_IF(3, queue_full_count)
+        << "    queue full:          " << queue_full_count << " (" << std::fixed
+        << std::setprecision(1) << 100. * queue_full_count / cycle_count
+        << "%)";
+    VLOG_IF(3, pe_full_count)
+        << "    PE full:             " << pe_full_count << " (" << std::fixed
+        << std::setprecision(1) << 100. * pe_full_count / cycle_count << "%)";
     int64_t pe_active_total = 0;
     for (int pe = 0; pe < kPeCount; ++pe) {
       const auto count = *(metadata_it++);
-      VLOG(3) << "    PE[" << std::setfill(' ') << std::setw(3) << pe
-              << "] active:      " << count << " (" << std::fixed
-              << std::setprecision(1) << 100. * count / cycle_count << "%)";
+      VLOG_IF(3, count) << "    PE[" << std::setfill(' ') << std::setw(3) << pe
+                        << "] active:      " << count << " (" << std::fixed
+                        << std::setprecision(1) << 100. * count / cycle_count
+                        << "%)";
       pe_active_total += count;
     }
-    VLOG(3) << "    total active:        " << pe_active_total << " ("
-            << std::fixed << std::setprecision(1)
-            << 100. * pe_active_total / cycle_count << "%)";
-    VLOG(3) << "    per PE active:       " << pe_active_total / kPeCount << " ("
-            << std::fixed << std::setprecision(1)
-            << 100. * pe_active_total / cycle_count / kPeCount << "%) ("
-            << kPeCount << " PEs)";
-    VLOG(3) << "    per shard active:    " << pe_active_total / kShardCount
-            << " (" << std::fixed << std::setprecision(1)
-            << 100. * pe_active_total / cycle_count / kShardCount << "%) ("
-            << kShardCount << " shards)";
-    VLOG(3) << "    per interval active: " << pe_active_total / kIntervalCount
-            << " (" << std::fixed << std::setprecision(1)
-            << 100. * pe_active_total / cycle_count / kIntervalCount << "%) ("
-            << kIntervalCount << " intervals)";
+    VLOG_IF(3, pe_active_total)
+        << "    total active:        " << pe_active_total << " (" << std::fixed
+        << std::setprecision(1) << 100. * pe_active_total / cycle_count << "%)";
+    VLOG_IF(3, pe_active_total)
+        << "    per PE active:       " << pe_active_total / kPeCount << " ("
+        << std::fixed << std::setprecision(1)
+        << 100. * pe_active_total / cycle_count / kPeCount << "%) (" << kPeCount
+        << " PEs)";
+    VLOG_IF(3, pe_active_total)
+        << "    per shard active:    " << pe_active_total / kShardCount << " ("
+        << std::fixed << std::setprecision(1)
+        << 100. * pe_active_total / cycle_count / kShardCount << "%) ("
+        << kShardCount << " shards)";
+    VLOG_IF(3, pe_active_total)
+        << "    per interval active: " << pe_active_total / kIntervalCount
+        << " (" << std::fixed << std::setprecision(1)
+        << 100. * pe_active_total / cycle_count / kIntervalCount << "%) ("
+        << kIntervalCount << " intervals)";
 
     for (int iid = 0; iid < kIntervalCount; ++iid) {
       for (int siid = 0; siid < kSubIntervalCount / kIntervalCount; ++siid) {
         VLOG(3) << "  interval[" << iid << "][" << siid << "]:";
+
+        // Cache hit/miss.
         const auto read_hit = *(metadata_it++);
         const auto read_miss = *(metadata_it++);
         const auto write_hit = *(metadata_it++);
         const auto write_miss = *(metadata_it++);
-        const auto write_resp_count = *(metadata_it++);
-        const auto read_resp_count = *(metadata_it++);
-        const auto req_hit_count = *(metadata_it++);
-        const auto req_miss_count = *(metadata_it++);
-        const auto req_busy_count = *(metadata_it++);
-        const auto idle_count = *(metadata_it++);
-        const auto total_count = write_resp_count + read_resp_count +
-                                 req_hit_count + req_miss_count +
-                                 req_busy_count + idle_count;
-        VLOG(3) << "    read hit   : " << std::fixed << std::setprecision(1)
-                << 100. * read_hit / (read_hit + read_miss) << "%";
-        VLOG(3) << "    write hit  : " << std::fixed << std::setprecision(1)
-                << 100. * write_hit / (write_hit + write_miss) << "%";
-        VLOG(3) << "    #write resp: " << std::fixed << std::setprecision(1)
-                << 100. * write_resp_count / total_count << "%";
-        VLOG(3) << "    #read resp : " << std::fixed << std::setprecision(1)
-                << 100. * read_resp_count / total_count << "%";
-        VLOG(3) << "    #req hit   : " << std::fixed << std::setprecision(1)
-                << 100. * req_hit_count / total_count << "%";
-        VLOG(3) << "    #req miss  : " << std::fixed << std::setprecision(1)
-                << 100. * req_miss_count / total_count << "%";
-        VLOG(3) << "    #req busy  : " << std::fixed << std::setprecision(1)
-                << 100. * req_busy_count / total_count << "%";
-        VLOG(3) << "    #idle      : " << std::fixed << std::setprecision(1)
-                << 100. * idle_count / total_count << "%";
+        VLOG_IF(3, read_hit + read_miss)
+            << "    read hit   : " << std::setfill(' ') << std::setw(10)
+            << read_hit << " (" << std::fixed << std::setprecision(1)
+            << 100. * read_hit / (read_hit + read_miss) << "%)";
+        VLOG_IF(3, write_hit + write_miss)
+            << "    write hit  : " << std::setfill(' ') << std::setw(10)
+            << write_hit << " (" << std::fixed << std::setprecision(1)
+            << 100. * write_hit / (write_hit + write_miss) << "%)";
+
+        // Op counts.
+        constexpr const char* kVertexUnitOpNamesAligned[] = {
+            "#write_resp",  //
+            "#read_resp ",  //
+            "#req_hit   ",  //
+            "#req_miss  ",  //
+            "#req_busy  ",  //
+            "#idle      ",  //
+        };
+        int64_t op_counts[sizeof(kVertexUnitOpNamesAligned) /
+                          sizeof(kVertexUnitOpNamesAligned[0])];
+        int64_t total_op_count = 0;
+        for (int i = 0; i < sizeof(op_counts) / sizeof(op_counts[0]); ++i) {
+          op_counts[i] = *(metadata_it++);
+          total_op_count += op_counts[i];
+        }
+        for (int i = 0; i < sizeof(op_counts) / sizeof(op_counts[0]); ++i) {
+          VLOG_IF(3, total_op_count)
+              << "    " << kVertexUnitOpNamesAligned[i] << ": "
+              << std::setfill(' ') << std::setw(10) << op_counts[i] << " ("
+              << std::fixed << std::setprecision(1)
+              << 100. * op_counts[i] / total_op_count << "%)";
+        }
       }
     }
     for (int qid = 0; qid < kQueueCount; ++qid) {
@@ -627,20 +641,23 @@ int main(int argc, char* argv[]) {
       };
 
       for (int i = 0; i < sizeof(index_stats) / sizeof(index_stats[0]); ++i) {
-        VLOG(3) << "    " << kIndexOpNamesAligned[i] << ": "
-                << std::setfill(' ') << std::setw(10) << index_stats[i] << " ("
-                << std::fixed << std::setprecision(1)
-                << 100. * index_stats[i] / total_op_count << "%)";
+        VLOG_IF(3, total_op_count)
+            << "    " << kIndexOpNamesAligned[i] << ": " << std::setfill(' ')
+            << std::setw(10) << index_stats[i] << " (" << std::fixed
+            << std::setprecision(1) << 100. * index_stats[i] / total_op_count
+            << "%)";
       }
 
       const auto read_hit = *(metadata_it++);
       const auto read_miss = *(metadata_it++);
       const auto write_hit = *(metadata_it++);
       const auto write_miss = *(metadata_it++);
-      VLOG(3) << "    read hit: " << std::fixed << std::setprecision(1)
-              << 100. * read_hit / (read_hit + read_miss) << "%";
-      VLOG(3) << "    write hit: " << std::fixed << std::setprecision(1)
-              << 100. * write_hit / (write_hit + write_miss) << "%";
+      VLOG_IF(3, total_op_count)
+          << "    read hit: " << std::fixed << std::setprecision(1)
+          << 100. * read_hit / (read_hit + read_miss) << "%";
+      VLOG_IF(3, total_op_count)
+          << "    write hit: " << std::fixed << std::setprecision(1)
+          << 100. * write_hit / (write_hit + write_miss) << "%";
     }
 
     if (!IsValid(root, edges_view, weights_view, indexed_weights,
