@@ -627,10 +627,10 @@ int main(int argc, char* argv[]) {
       // Queue op counts.
       {
         constexpr const char* kQueueUnitOpNamesAligned[] = {
-            "#idle         ",  //
-            "#push         ",  //
-            "#pop          ",  //
-            "#pushpop/index",  //
+            "#idling  ",  //
+            "#pushing ",  //
+            "#popping ",  //
+            "#indexing",  //
         };
         int64_t op_counts[sizeof(kQueueUnitOpNamesAligned) /
                           sizeof(kQueueUnitOpNamesAligned[0])];
@@ -639,6 +639,9 @@ int main(int argc, char* argv[]) {
           op_counts[i] = *(metadata_it++);
           total_op_count += op_counts[i];
         }
+        const auto push_count = *(metadata_it++);
+        const auto pop_count = *(metadata_it++);
+        const auto pushpop_count = *(metadata_it++);
         const auto max_size = *(metadata_it++);
         auto total_size = *(metadata_it++) << 32;
         total_size += *(metadata_it++);
@@ -650,6 +653,17 @@ int main(int argc, char* argv[]) {
         VLOG_IF(3, total_op_count)
             << "    avg size: " << std::setfill(' ') << std::setw(10)
             << total_size / total_op_count;
+
+        VLOG_IF(3, op_counts[1])
+            << "    avg push    latency: " << std::setfill(' ') << std::setw(10)
+            << op_counts[1] / push_count;
+        VLOG_IF(3, op_counts[2])
+            << "    avg     pop latency: " << std::setfill(' ') << std::setw(10)
+            << op_counts[2] / pop_count;
+        VLOG_IF(3, op_counts[3])
+            << "    avg pushpop latency: " << std::setfill(' ') << std::setw(10)
+            << op_counts[3] / pushpop_count;
+
         for (int i = 0; i < sizeof(op_counts) / sizeof(op_counts[0]); ++i) {
           VLOG_IF(3, total_op_count)
               << "    " << kQueueUnitOpNamesAligned[i] << ": "

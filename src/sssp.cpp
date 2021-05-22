@@ -413,6 +413,7 @@ exec:
         const auto update = queue_state_q.read(nullptr);
         if (update.state != IDLE) {
           is_started = true;
+          ++stats[update.state + 3];
         }
         current_size = update.size;
 
@@ -433,14 +434,14 @@ exec:
           } break;
         }
 #else   // TAPA_SSSP_PHEAP_INDEX
-        state = queue_state;
+        state = update.state;
 #endif  // TAPA_SSSP_PHEAP_INDEX
       }
     }
 
-    stats[4] = max_size;
-    stats[5] = total_size.range(63, 32);
-    stats[6] = total_size.range(31, 0);
+    stats[7] = max_size;
+    stats[8] = total_size.range(63, 32);
+    stats[9] = total_size.range(31, 0);
 
     done_q.read(nullptr);
   stat:
