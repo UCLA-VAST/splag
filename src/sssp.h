@@ -144,6 +144,8 @@ inline constexpr int GetChildCapOfLevel(int level) {
   return (GetCapOfLevel(kLevelCount - level - 1) - 1) / (kPiHeapWidth - 1);
 }
 
+constexpr int kPiHeapCapacity = GetChildCapOfLevel(0) * kPiHeapWidth + 1;
+
 using OffChipLevelId = ap_uint<bit_length(kOffChipLevelCount - 1)>;
 using LevelId = ap_uint<bit_length(kLevelCount - 1)>;
 using LevelIndex = ap_uint<bit_length(GetCapOfLevel(kLevelCount - 1) - 1)>;
@@ -177,7 +179,7 @@ inline int GetAddrOfOffChipHeapElem(int level, int idx, int qid) {
 constexpr int kVertexUniStatCount = 10;
 
 constexpr int kPiHeapStatCount[] = {
-    4,  // PiHeapHead
+    7,  // PiHeapHead
     9,  // PiHeapIndex
 };
 constexpr int kPiHeapStatTotalCount = kPiHeapStatCount[0] + kPiHeapStatCount[1];

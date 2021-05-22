@@ -7,6 +7,8 @@
 
 using uint_qid_t = ap_uint<bit_length(kQueueCount - 1)>;
 
+using uint_piheap_size_t = ap_uint<bit_length(kPiHeapCapacity)>;
+
 enum HeapOp {
   GET_STALE,
   CLEAR_STALE,
@@ -28,6 +30,11 @@ enum QueueState {
 };
 }  // namespace queue_state
 using queue_state::QueueState;
+
+struct QueueStateUpdate {
+  QueueState state;
+  uint_piheap_size_t size;
+};
 
 struct HeapIndexReq {
   HeapOp op;

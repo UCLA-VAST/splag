@@ -639,6 +639,17 @@ int main(int argc, char* argv[]) {
           op_counts[i] = *(metadata_it++);
           total_op_count += op_counts[i];
         }
+        const auto max_size = *(metadata_it++);
+        auto total_size = *(metadata_it++) << 32;
+        total_size += *(metadata_it++);
+
+        VLOG_IF(3, max_size) << "    capacity: " << std::setfill(' ')
+                             << std::setw(10) << kPiHeapCapacity;
+        VLOG_IF(3, max_size) << "    max size: " << std::setfill(' ')
+                             << std::setw(10) << max_size;
+        VLOG_IF(3, total_op_count)
+            << "    avg size: " << std::setfill(' ') << std::setw(10)
+            << total_size / total_op_count;
         for (int i = 0; i < sizeof(op_counts) / sizeof(op_counts[0]); ++i) {
           VLOG_IF(3, total_op_count)
               << "    " << kQueueUnitOpNamesAligned[i] << ": "

@@ -341,7 +341,7 @@ void PiHeapPerf(
     //
     istream<bool>& done_q, ostream<PiHeapStat>& stat_q,
     //
-    istream<QueueState>& queue_state_q) {
+    istream<QueueStateUpdate>& queue_state_q) {
   /*
     States w/ index
       + IDLE: queue is idle
@@ -397,23 +397,31 @@ exec:
     using namespace queue_state;
     QueueState state = IDLE;
 
+    uint_piheap_size_t current_size = 0;
+    uint_piheap_size_t max_size = 0;
+    ap_uint<64> total_size = 0;
+
   spin:
     for (int64_t cycle_count = 0; done_q.empty(); ++cycle_count) {
 #pragma HLS pipeline II = 1
       if (is_started) {
         ++stats[state];
+        total_size += current_size;
+        max_size = std::max(max_size, current_size);
       }
       if (!queue_state_q.empty()) {
-        const auto queue_state = queue_state_q.read(nullptr);
-        if (queue_state != IDLE) {
+        const auto update = queue_state_q.read(nullptr);
+        if (update.state != IDLE) {
           is_started = true;
         }
+        current_size = update.size;
+
 #ifdef TAPA_SSSP_PHEAP_INDEX
-        switch (queue_state) {
+        switch (update.state) {
           case IDLE:
           case POP: {
             CHECK_NE(state, INDEX);
-            state = queue_state;
+            state = update.state;
           } break;
           case PUSH: {
             CHECK_NE(state, INDEX);
@@ -429,6 +437,10 @@ exec:
 #endif  // TAPA_SSSP_PHEAP_INDEX
       }
     }
+
+    stats[4] = max_size;
+    stats[5] = total_size.range(63, 32);
+    stats[6] = total_size.range(31, 0);
 
     done_q.read(nullptr);
   stat:
@@ -448,15 +460,17 @@ void PiHeapHead(
     // Internal
     ostream<HeapReq>& req_out_q, istream<HeapResp>& resp_in_q,
     // Statistics.
-    ostream<QueueState>& queue_state_q,
+    ostream<QueueStateUpdate>& queue_state_q,
     // Heap index
     ostream<HeapIndexReq>& index_req_q, istream<HeapIndexResp>& index_resp_q) {
 #pragma HLS inline recursive
   const auto cap = GetChildCapOfLevel(0);
   HeapElem<0> root{.valid = false};
   RANGE(i, kPiHeapWidth, root.cap[i] = cap);
+  uint_piheap_size_t size = 0;
 
   CLEAN_UP(clean_up, [&] {
+    CHECK_EQ(size, 0);
     CHECK_EQ(root.valid, false) << "q[" << qid << "]";
     RANGE(i, kPiHeapWidth, CHECK_EQ(root.cap[i], cap) << "q[" << qid << "]");
   });
@@ -476,13 +490,14 @@ spin:
     if (do_push) {
       req.task = push_req;
       req.op = do_pop ? QueueOp::PUSHPOP : QueueOp::PUSH;
-      queue_state_q.write(do_pop ? QueueState::PUSHPOP : QueueState::PUSH);
+      queue_state_q.write(
+          {do_pop ? QueueState::PUSHPOP : QueueState::PUSH, size});
     } else if (do_pop) {
       req.task.set_vid(qid);
       req.op = QueueOp::POP;
-      queue_state_q.write(QueueState::POP);
+      queue_state_q.write({QueueState::POP, size});
     } else {
-      queue_state_q.write(QueueState::IDLE);
+      queue_state_q.write({QueueState::IDLE, size});
       continue;
     }
 
@@ -523,7 +538,7 @@ spin:
           ap_wait();
           heap_index_resp = index_resp_q.read();
         } while (heap_index_resp.yield);
-        queue_state_q.write(QueueState::INDEX);
+        queue_state_q.write({QueueState::INDEX, size});
 #else   // TAPA_SSSP_PHEAP_INDEX
         heap_index_resp.entry.invalidate();
         heap_index_resp.enable = true;
@@ -538,6 +553,10 @@ spin:
                          .vid = req.task.vid(),
                      },
                      root, resp_in_q, req_out_q, index_req_q, index_resp_q);
+        }
+        if (heap_index_resp.enable && !heap_index_resp.entry.valid()) {
+          ++size;
+          CHECK_LT(size, kPiHeapCapacity);
         }
       } break;
 
@@ -554,6 +573,10 @@ spin:
 #endif  // TAPA_SSSP_PHEAP_INDEX
 
           PiHeapPop(req, 0, root, resp_in_q, req_out_q);
+          if (req.is_pop()) {
+            CHECK_GT(size, 0);
+            --size;
+          }
         } else if (req.is_pop()) {
           resp.task_op = TaskOp::NOOP;
         }
@@ -844,7 +867,7 @@ void TaskQueue(
 
   stream<HeapAcquireIndexContext, 64> acquire_index_ctx_q;
 
-  stream<QueueState, 2> queue_state_q;
+  stream<QueueStateUpdate, 2> queue_state_q;
 
   task()
       .invoke<detach>(PiHeapStatArbiter, done_q, stat_q, done_qi, stat_qi)
