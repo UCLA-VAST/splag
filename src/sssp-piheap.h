@@ -18,6 +18,17 @@ enum HeapOp {
   CLEAR = CLEAR_STALE,
 };
 
+namespace queue_state {
+enum QueueState {
+  IDLE = 0,
+  PUSH = 1,
+  POP = 2,
+  PUSHPOP = 3,
+  INDEX = 3,
+};
+}  // namespace queue_state
+using queue_state::QueueState;
+
 struct HeapIndexReq {
   HeapOp op;
   Vid vid;

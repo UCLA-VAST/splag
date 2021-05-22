@@ -337,9 +337,109 @@ spin:
   }
 }
 
-void PiHeapHead(
+void PiHeapPerf(
     //
     istream<bool>& done_q, ostream<PiHeapStat>& stat_q,
+    //
+    istream<QueueState>& queue_state_q) {
+  /*
+    States w/ index
+      + IDLE: queue is idle
+        - push_started -> INDEX
+        - pop_started -> POP
+        - index_acquired -> ERROR
+        - idle -> IDLE
+      + PUSH: queue is processing PUSH with index already acquired
+        - push_started -> INDEX
+        - pop_started -> POP
+        - index_acquired -> ERROR
+        - idle -> IDLE
+      + POP: queue is processing POP
+        - push_started -> INDEX
+        - pop_started -> POP
+        - index_acquired -> ERROR
+        - idle -> IDLE
+      + INDEX: queue is acquring index for PUSH
+        - push_started -> ERROR
+        - pop_started -> ERROR
+        - index_acquired -> PUSH
+        - idle -> ERROR
+
+    States w/o index
+      + IDLE: queue is idle
+        - push_started -> PUSH
+        - pop_started -> POP
+        - pushpop_started -> PUSHPOP
+        - idle -> IDLE
+      + PUSH: queue is processing PUSH with index already acquired
+        - push_started -> PUSH
+        - pop_started -> POP
+        - pushpop_started -> PUSHPOP
+        - idle -> IDLE
+      + POP: queue is processing POP
+        - push_started -> PUSH
+        - pop_started -> POP
+        - pushpop_started -> PUSHPOP
+        - idle -> IDLE
+      + PUSHPOP: queue is acquring index for PUSH
+        - push_started -> PUSH
+        - pop_started -> POP
+        - pushpop_started -> PUSHPOP
+        - idle -> IDLE
+  */
+
+exec:
+  for (;;) {
+    DECL_ARRAY(PiHeapStat, stats, kPiHeapStatCount[0], 0);
+
+    bool is_started = false;
+
+    using namespace queue_state;
+    QueueState state = IDLE;
+
+  spin:
+    for (int64_t cycle_count = 0; done_q.empty(); ++cycle_count) {
+#pragma HLS pipeline II = 1
+      if (is_started) {
+        ++stats[state];
+      }
+      if (!queue_state_q.empty()) {
+        const auto queue_state = queue_state_q.read(nullptr);
+        if (queue_state != IDLE) {
+          is_started = true;
+        }
+#ifdef TAPA_SSSP_PHEAP_INDEX
+        switch (queue_state) {
+          case IDLE:
+          case POP: {
+            CHECK_NE(state, INDEX);
+            state = queue_state;
+          } break;
+          case PUSH: {
+            CHECK_NE(state, INDEX);
+            state = INDEX;
+          } break;
+          case INDEX: {
+            CHECK_EQ(state, INDEX);
+            state = PUSH;
+          } break;
+        }
+#else   // TAPA_SSSP_PHEAP_INDEX
+        state = queue_state;
+#endif  // TAPA_SSSP_PHEAP_INDEX
+      }
+    }
+
+    done_q.read(nullptr);
+  stat:
+    for (ap_uint<bit_length(kPiHeapStatCount[0])> i = 0;
+         i < kPiHeapStatCount[0]; ++i) {
+      stat_q.write(stats[i]);
+    }
+  }
+}
+
+void PiHeapHead(
     // Scalar
     uint_qid_t qid,
     // Queue requests.
@@ -347,6 +447,8 @@ void PiHeapHead(
     ostream<QueueOpResp>& queue_resp_q,
     // Internal
     ostream<HeapReq>& req_out_q, istream<HeapResp>& resp_in_q,
+    // Statistics.
+    ostream<QueueState>& queue_state_q,
     // Heap index
     ostream<HeapIndexReq>& index_req_q, istream<HeapIndexResp>& index_resp_q) {
 #pragma HLS inline recursive
@@ -359,16 +461,9 @@ void PiHeapHead(
     RANGE(i, kPiHeapWidth, CHECK_EQ(root.cap[i], cap) << "q[" << qid << "]");
   });
 
-  PiHeapStat stall_iteration_count = 0;
-
 spin:
   for (;;) {
 #pragma HLS pipeline off
-    if (!done_q.empty()) {
-      done_q.read(nullptr);
-      stat_q.write(stall_iteration_count);
-      stall_iteration_count = 0;
-    }
     bool do_push = false;
     bool do_pop = false;
     const auto push_req = push_req_q.read(do_push);
@@ -381,10 +476,13 @@ spin:
     if (do_push) {
       req.task = push_req;
       req.op = do_pop ? QueueOp::PUSHPOP : QueueOp::PUSH;
+      queue_state_q.write(do_pop ? QueueState::PUSHPOP : QueueState::PUSH);
     } else if (do_pop) {
       req.task.set_vid(qid);
       req.op = QueueOp::POP;
+      queue_state_q.write(QueueState::POP);
     } else {
+      queue_state_q.write(QueueState::IDLE);
       continue;
     }
 
@@ -419,14 +517,13 @@ spin:
       acquire:
         do {
 #pragma HLS pipeline off
-          ++stall_iteration_count;
           index_req_q.write({.op = ACQUIRE_INDEX,
                              .vid = req.task.vid(),
                              .entry = {0, 0, req.task.vertex().distance}});
           ap_wait();
           heap_index_resp = index_resp_q.read();
         } while (heap_index_resp.yield);
-        --stall_iteration_count;
+        queue_state_q.write(QueueState::INDEX);
 #else   // TAPA_SSSP_PHEAP_INDEX
         heap_index_resp.entry.invalidate();
         heap_index_resp.enable = true;
@@ -747,11 +844,14 @@ void TaskQueue(
 
   stream<HeapAcquireIndexContext, 64> acquire_index_ctx_q;
 
+  stream<QueueState, 2> queue_state_q;
+
   task()
       .invoke<detach>(PiHeapStatArbiter, done_q, stat_q, done_qi, stat_qi)
-      .invoke<detach>(PiHeapHead, done_qi[0], stat_qi[0], qid, push_req_q,
-                      pop_req_q, queue_resp_q, req_q[0], resp_q[0],
-                      index_req_qs[0], index_resp_qs[0])
+      .invoke<detach>(PiHeapPerf, done_qi[0], stat_qi[0], queue_state_q)
+      .invoke<detach>(PiHeapHead, qid, push_req_q, pop_req_q, queue_resp_q,
+                      req_q[0], resp_q[0], queue_state_q, index_req_qs[0],
+                      index_resp_qs[0])
 #if TAPA_SSSP_PHEAP_WIDTH == 2
       // clang-format off
       .invoke<detach>(PiHeapBodyL1,  qid, req_q[ 0], resp_q[ 0], req_q[ 1], resp_q[ 1], index_req_qs[ 1], index_resp_qs[ 1])

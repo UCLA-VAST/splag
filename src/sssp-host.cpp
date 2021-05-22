@@ -623,8 +623,32 @@ int main(int argc, char* argv[]) {
     }
     for (int qid = 0; qid < kQueueCount; ++qid) {
       VLOG(3) << "  queue[" << qid << "]:";
-      VLOG(3) << "    stalled for " << *(metadata_it++) << " iterations";
 
+      // Queue op counts.
+      {
+        constexpr const char* kQueueUnitOpNamesAligned[] = {
+            "#idle         ",  //
+            "#push         ",  //
+            "#pop          ",  //
+            "#pushpop/index",  //
+        };
+        int64_t op_counts[sizeof(kQueueUnitOpNamesAligned) /
+                          sizeof(kQueueUnitOpNamesAligned[0])];
+        int64_t total_op_count = 0;
+        for (int i = 0; i < sizeof(op_counts) / sizeof(op_counts[0]); ++i) {
+          op_counts[i] = *(metadata_it++);
+          total_op_count += op_counts[i];
+        }
+        for (int i = 0; i < sizeof(op_counts) / sizeof(op_counts[0]); ++i) {
+          VLOG_IF(3, total_op_count)
+              << "    " << kQueueUnitOpNamesAligned[i] << ": "
+              << std::setfill(' ') << std::setw(10) << op_counts[i] << " ("
+              << std::fixed << std::setprecision(1)
+              << 100. * op_counts[i] / total_op_count << "%)";
+        }
+      }
+
+      // Index op counts;
       int64_t index_stats[5];
       int64_t total_op_count = 0;
       for (int i = 0; i < sizeof(index_stats) / sizeof(index_stats[0]); ++i) {
