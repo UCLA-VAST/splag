@@ -1360,17 +1360,17 @@ spin:
 
 void PushReqArbiter(tapa::istreams<TaskOnChip, kSubIntervalCount>& in_q,
                     tapa::ostreams<TaskOnChip, kQueueCount>& out_q) {
-  static_assert(kSubIntervalCount % kQueueCount == 0,
+  static_assert(kSubIntervalCount == kQueueCount,
                 "current implementation requires that interval count is a "
                 "multiple of queue count");
   DECL_ARRAY(TaskOnChip, task, kSubIntervalCount, TaskOnChip());
   DECL_ARRAY(bool, task_valid, kSubIntervalCount, false);
 
 spin:
-  for (ap_uint<log2(kSubIntervalCount / kQueueCount)> qid_iid;; ++qid_iid) {
+  for (;;) {
 #pragma HLS pipeline II = 1
     RANGE(qid, kQueueCount, {
-      const auto iid = qid_iid * kQueueCount + qid;
+      const auto iid = qid;
       UNUSED SET(task_valid[iid], in_q[iid].try_read(task[iid]));
       UNUSED RESET(task_valid[iid], out_q[qid].try_write(task[iid]));
     });
