@@ -109,7 +109,7 @@ inline std::ostream& operator<<(std::ostream& os, const Task& obj) {
   return os << "{vid: " << obj.vid << ", vertex: " << obj.vertex << "}";
 }
 
-constexpr int kQueueCount = 8;
+constexpr int kQueueCount = 16;
 
 #ifndef TAPA_SSSP_PHEAP_WIDTH
 #define TAPA_SSSP_PHEAP_WIDTH 16
