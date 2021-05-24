@@ -26,8 +26,8 @@ add_tapa_target(
   sssp-hw-xo
   INPUT src/sssp.cpp
   TOP SSSP
-  CONNECTIVITY ${CMAKE_CURRENT_SOURCE_DIR}/link_config.ini
-  CONSTRAINT ${CMAKE_CURRENT_BINARY_DIR}/constraint.tcl
+  # CONNECTIVITY ${CMAKE_CURRENT_SOURCE_DIR}/link_config.ini
+  # CONSTRAINT ${CMAKE_CURRENT_BINARY_DIR}/constraint.tcl
   CLOCK_PERIOD 5.000
   PLATFORM xilinx_u280_xdma_201920_3)
 
@@ -42,7 +42,7 @@ add_xocc_hw_link_targets(
   --jobs=${NPROC}
   --remote_ip_cache=$ENV{HOME}/.remote_ip_cache
   --config=${CMAKE_CURRENT_SOURCE_DIR}/link_config.ini
-  --vivado.prop=run.impl_1.STEPS.OPT_DESIGN.TCL.PRE=${CMAKE_CURRENT_BINARY_DIR}/constraint.tcl
+  # --vivado.prop=run.impl_1.STEPS.OPT_DESIGN.TCL.PRE=${CMAKE_CURRENT_BINARY_DIR}/constraint.tcl
   --kernel_frequency=200
   INPUT sssp-hw-xo
   HW_EMU_XCLBIN hw_emu_xclbin_target
