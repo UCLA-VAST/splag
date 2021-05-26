@@ -1677,8 +1677,8 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   //   Connect PEs to the update request network.
   streams<TaskOnChip, kShardCount, 2> update_req_q;
   //   Compose the update request network.
-  streams<TaskOnChip, kShardCount, 8> update_req_qi1;
-  streams<TaskOnChip, kSubIntervalCount, 8> update_req_qi0;
+  streams<TaskOnChip, kShardCount, 32> update_req_qi1;
+  streams<TaskOnChip, kSubIntervalCount, 32> update_req_qi0;
   //   Connect the vertex readers and updaters.
   streams<bool, kSubIntervalCount, 2> update_noop_qi1;
   streams<Vid, kSubIntervalCount, 2> vertex_read_addr_q;
