@@ -99,11 +99,14 @@ init:
   auto& read_miss = op_stats[6];
   auto& write_hit = op_stats[7];
   auto& write_miss = op_stats[8];
+  auto& idle_count = op_stats[9];
 
   ap_uint<bit_length(kPiHeapStatCount[1])> stat_idx = 0;
 
   shiftreg<uint_pifc_index_t, 16> reading_fresh_pos;
   shiftreg<uint_pifc_index_t, 16> writing_fresh_pos;
+
+  bool is_started = false;
 
 spin:
   for (;;) {
@@ -172,6 +175,7 @@ spin:
       } else {
         ++stat_idx;
       }
+      is_started = false;
     } else if (can_collect_write) {
       write_resp_q.read(nullptr);
       writing_fresh_pos.pop();
@@ -207,6 +211,7 @@ spin:
         fresh_entry.index = ctx.entry;
       }
     } else if (can_process_req) {
+      is_started = true;
       is_resp_written = true;
 
       req_q.read(nullptr);
@@ -315,6 +320,8 @@ spin:
           }
         } break;
       }
+    } else if (is_started) {
+      ++idle_count;
     }
 
     if (is_resp_written) {

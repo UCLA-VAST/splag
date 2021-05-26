@@ -701,12 +701,38 @@ int main(int argc, char* argv[]) {
       const auto read_miss = *(metadata_it++);
       const auto write_hit = *(metadata_it++);
       const auto write_miss = *(metadata_it++);
+      const auto idle_count = *(metadata_it++);
       VLOG_IF(3, total_op_count)
           << "    read hit: " << std::fixed << std::setprecision(1)
           << 100. * read_hit / (read_hit + read_miss) << "%";
       VLOG_IF(3, total_op_count)
           << "    write hit: " << std::fixed << std::setprecision(1)
           << 100. * write_hit / (write_hit + write_miss) << "%";
+
+      const auto collect_write_count = write_miss;
+      const auto acquire_index_count = read_miss;
+      // The `total_op_count` only counts the new requests; here the
+      // `total_cycle_count` further includes the read/write acknowledges and
+      // idle iteration. Note that II>1 so the real cycle count would be much
+      // larger.
+      const auto total_cycle_count = total_op_count + collect_write_count +
+                                     acquire_index_count + idle_count;
+      VLOG_IF(3, total_cycle_count)
+          << "    idle         : " << std::setfill(' ') << std::setw(10)
+          << idle_count << " (" << std::fixed << std::setprecision(1)
+          << 100. * idle_count / total_cycle_count << "%)";
+      VLOG_IF(3, total_cycle_count)
+          << "    collect write: " << std::setfill(' ') << std::setw(10)
+          << collect_write_count << " (" << std::fixed << std::setprecision(1)
+          << 100. * collect_write_count / total_cycle_count << "%)";
+      VLOG_IF(3, total_cycle_count)
+          << "    acquire index: " << std::setfill(' ') << std::setw(10)
+          << acquire_index_count << " (" << std::fixed << std::setprecision(1)
+          << 100. * acquire_index_count / total_cycle_count << "%)";
+      VLOG_IF(3, total_cycle_count)
+          << "    new requests : " << std::setfill(' ') << std::setw(10)
+          << total_op_count << " (" << std::fixed << std::setprecision(1)
+          << 100. * total_op_count / total_cycle_count << "%)";
     }
 
     if (!IsValid(root, edges_view, weights_view, indexed_weights,
