@@ -35,10 +35,10 @@ static_assert(kQueueCount % kShardCount == 0,
 void PiHeapIndexReqArbiter(istreams<HeapIndexReq, kLevelCount>& req_in_q,
                            ostream<packet<LevelId, HeapIndexReq>>& req_out_q) {
 spin:
-  for (;;) {
+  for (ap_uint<kLevelCount> priority = 1;; priority.lrotate(1)) {
 #pragma HLS pipeline II = 1
     LevelId level;
-    if (find_non_empty(req_in_q, level)) {
+    if (find_non_empty(req_in_q, priority, level)) {
       req_out_q.write({level, req_in_q[level].read(nullptr)});
     }
   }

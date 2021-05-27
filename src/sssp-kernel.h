@@ -264,18 +264,23 @@ inline bool none_of(const T (&array)[N]) {
 template <int begin, int len>
 struct arbiter {
   template <typename T, uint64_t S, typename index_t>
-  static bool find_non_empty(tapa::istreams<T, S>& in_qs, index_t& idx) {
+  static bool find_non_empty(tapa::istreams<T, S>& in_qs,
+                             const ap_uint<int(S)>& priority, index_t& idx) {
 #pragma HLS inline
     static_assert(begin >= 0, "begin must >= 0");
     static_assert(len > 1, "len must > 1");
     static_assert(begin + len <= S, "begin + len must <= S");
     index_t idx_left, idx_right;
     const auto is_left_non_empty =
-        arbiter<begin, len / 2>::find_non_empty(in_qs, idx_left);
+        arbiter<begin, len / 2>::find_non_empty(in_qs, priority, idx_left);
     const auto is_right_non_empty =
-        arbiter<begin + len / 2, len - len / 2>::find_non_empty(in_qs,
+        arbiter<begin + len / 2, len - len / 2>::find_non_empty(in_qs, priority,
                                                                 idx_right);
-    idx = is_left_non_empty ? idx_left : idx_right;
+    idx = is_left_non_empty ^ is_right_non_empty
+              ? is_left_non_empty ? idx_left : idx_right
+              : priority.range(begin + len / 2 - 1, begin).or_reduce()
+                    ? idx_left
+                    : idx_right;
     return is_left_non_empty || is_right_non_empty;
   }
 };
@@ -283,7 +288,8 @@ struct arbiter {
 template <int begin>
 struct arbiter<begin, 1> {
   template <typename T, uint64_t S, typename index_t>
-  static bool find_non_empty(tapa::istreams<T, S>& in_qs, index_t& idx) {
+  static bool find_non_empty(tapa::istreams<T, S>& in_qs,
+                             const ap_uint<int(S)>& priority, index_t& idx) {
 #pragma HLS inline
     static_assert(begin >= 0, "begin must >= 0");
     static_assert(begin < S, "begin must < S");
@@ -297,13 +303,15 @@ struct arbiter<begin, 1> {
 
 /// Find a non-empty istream.
 ///
-/// @param[in] in_qs  Input streams.
-/// @param[out] idx   Index of the non-empty istream, invalid if none found.
-/// @return           Whether a non-empty istream is found.
+/// @param[in] in_qs    Input streams.
+/// @param[in] priority One-hot encoding of the prioritzed input stream.
+/// @param[out] idx     Index of the non-empty istream, invalid if none found.
+/// @return             Whether a non-empty istream is found.
 template <typename T, uint64_t S, typename index_t>
-inline bool find_non_empty(tapa::istreams<T, S>& in_qs, index_t& idx) {
+inline bool find_non_empty(tapa::istreams<T, S>& in_qs,
+                           const ap_uint<int(S)>& priority, index_t& idx) {
 #pragma HLS inline
-  return arbiter<0, S>::find_non_empty(in_qs, idx);
+  return arbiter<0, S>::find_non_empty(in_qs, priority, idx);
 }
 
 template <typename T, int N>
