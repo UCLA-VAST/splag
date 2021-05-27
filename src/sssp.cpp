@@ -352,25 +352,25 @@ void PiHeapPerf(
   /*
     States w/ index
       + IDLE: queue is idle
-        - push_started -> INDEX
+        - push_started -> PUSH
         - pop_started -> POP
         - index_acquired -> ERROR
         - idle -> IDLE
-      + PUSH: queue is processing PUSH with index already acquired
-        - push_started -> INDEX
-        - pop_started -> POP
-        - index_acquired -> ERROR
-        - idle -> IDLE
-      + POP: queue is processing POP
-        - push_started -> INDEX
-        - pop_started -> POP
-        - index_acquired -> ERROR
-        - idle -> IDLE
-      + INDEX: queue is acquring index for PUSH
+      + PUSH: queue is acquring index for INDEX
         - push_started -> ERROR
         - pop_started -> ERROR
-        - index_acquired -> PUSH
+        - index_acquired -> INDEX
         - idle -> ERROR
+      + POP: queue is processing POP
+        - push_started -> PUSH
+        - pop_started -> POP
+        - index_acquired -> ERROR
+        - idle -> IDLE
+      + INDEX: queue is processing PUSH with index already acquired
+        - push_started -> PUSH
+        - pop_started -> POP
+        - index_acquired -> ERROR
+        - idle -> IDLE
 
     States w/o index
       + IDLE: queue is idle
@@ -395,9 +395,13 @@ void PiHeapPerf(
         - idle -> IDLE
   */
 
+  constexpr int kStateCountSize = 4;
+  constexpr int kOpCountSize = 3;
+
 exec:
   for (;;) {
-    DECL_ARRAY(PiHeapStat, stats, kPiHeapStatCount[0], 0);
+    DECL_ARRAY(PiHeapStat, state_count, kStateCountSize, 0);
+    DECL_ARRAY(PiHeapStat, op_count, kOpCountSize, 0);
 
     bool is_started = false;
 
@@ -412,7 +416,7 @@ exec:
     for (int64_t cycle_count = 0; done_q.empty(); ++cycle_count) {
 #pragma HLS pipeline II = 1
       if (is_started) {
-        ++stats[state];
+        ++state_count[state];
         total_size += current_size;
         max_size = std::max(max_size, current_size);
       }
@@ -420,42 +424,25 @@ exec:
         const auto update = queue_state_q.read(nullptr);
         if (update.state != IDLE) {
           is_started = true;
-          ++stats[update.state + 3];
+          ++op_count[update.state - 1];
         }
         current_size = update.size;
-
-#ifdef TAPA_SSSP_PHEAP_INDEX
-        switch (update.state) {
-          case IDLE:
-          case POP: {
-            CHECK_NE(state, INDEX);
-            state = update.state;
-          } break;
-          case PUSH: {
-            CHECK_NE(state, INDEX);
-            state = INDEX;
-          } break;
-          case INDEX: {
-            CHECK_EQ(state, INDEX);
-            state = PUSH;
-          } break;
-        }
-#else   // TAPA_SSSP_PHEAP_INDEX
         state = update.state;
-#endif  // TAPA_SSSP_PHEAP_INDEX
       }
     }
 
-    stats[7] = max_size;
-    stats[8] = total_size.range(63, 32);
-    stats[9] = total_size.range(31, 0);
-
     done_q.read(nullptr);
-  stat:
-    for (ap_uint<bit_length(kPiHeapStatCount[0])> i = 0;
-         i < kPiHeapStatCount[0]; ++i) {
-      stat_q.write(stats[i]);
+    for (int i = 0; i < kStateCountSize; ++i) {
+#pragma HLS unroll
+      stat_q.write(state_count[i]);
     }
+    for (int i = 0; i < kOpCountSize; ++i) {
+#pragma HLS unroll
+      stat_q.write(op_count[i]);
+    }
+    stat_q.write(max_size);
+    stat_q.write(total_size.range(63, 32));
+    stat_q.write(total_size.range(31, 0));
   }
 }
 
