@@ -10,9 +10,9 @@
 
 using uint_vid_t = ap_uint<kVidWidth>;
 
-using uint_pe_t = ap_uint<bit_length(kPeCount - 1)>;
+using uint_pe_qid_t = ap_uint<bit_length(kPeCount / kQueueCount - 1)>;
 
-using uint_noop_t = ap_uint<bit_length(kSubIntervalCount)>;
+using uint_noop_t = ap_uint<bit_length(kQueueCount)>;
 
 struct SourceVertex {
   Vid parent;
@@ -21,9 +21,9 @@ struct SourceVertex {
 
 using EdgeReq = tapa::packet<Eid, SourceVertex>;
 
-using TaskReq = tapa::packet<uint_pe_t, TaskOnChip>;
+using TaskReq = tapa::packet<uint_pe_qid_t, TaskOnChip>;
 
-using TaskResp = tapa::packet<uint_pe_t, Vid>;
+using TaskResp = tapa::packet<uint_pe_qid_t, Vid>;
 
 // Used in:
 //
