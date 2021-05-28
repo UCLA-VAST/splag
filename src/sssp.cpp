@@ -1367,16 +1367,48 @@ exec:
   }
 }
 
-void NoopMerger(tapa::istreams<bool, kSubIntervalCount>& pkt_in_q,
-                ostream<uint_noop_t>& pkt_out_q) {
+void VertexNoopMerger(istreams<bool, kSubIntervalCount>& pkt_in_q,
+                      ostream<uint_vertex_noop_t>& pkt_out_q) {
 spin:
   for (;;) {
 #pragma HLS pipeline II = 1
-    uint_noop_t count = 0;
+    uint_vertex_noop_t count = 0;
     bool buf;
     RANGE(iid, kSubIntervalCount, pkt_in_q[iid].try_read(buf) && ++count);
     if (count) {
       pkt_out_q.write(count);
+    }
+  }
+}
+
+void QueueNoopMerger(istreams<bool, kQueueCount>& in_q,
+                     ostream<uint_queue_noop_t>& out_q) {
+spin:
+  for (;;) {
+#pragma HLS pipeline II = 1
+    uint_queue_noop_t count = 0;
+    bool buf;
+    RANGE(qid, kQueueCount, in_q[qid].try_read(buf) && ++count);
+    if (count) {
+      out_q.write(count);
+    }
+  }
+}
+
+void TaskCountMerger(istreams<uint_vid_t, kPeCount>& in_q,
+                     ostream<TaskCount>& out_q) {
+spin:
+  for (;;) {
+#pragma HLS pipeline II = 1
+    TaskCount count = {0, 0};
+    RANGE(peid, kPeCount, {
+      if (!in_q[peid].empty()) {
+        ++count.old_task_count;
+        count.new_task_count += in_q[peid].read(nullptr);
+      }
+    });
+    if (count.old_task_count) {
+      out_q.write(count);
     }
   }
 }
@@ -1452,9 +1484,9 @@ void Dispatcher(
     // Task initialization.
     ostream<TaskOnChip>& task_init_q,
     // Task count.
-    istream<uint_noop_t>& vertex_noop_q,
-    istreams<bool, kQueueCount>& queue_noop_q,
-    istreams<uint_vid_t, kPeCount>& task_count_q) {
+    istream<uint_vertex_noop_t>& vertex_noop_q,
+    istream<uint_queue_noop_t>& queue_noop_q,
+    istream<TaskCount>& task_count_q) {
   task_init_q.write(root);
 
   // Statistics.
@@ -1474,29 +1506,22 @@ spin:
       VLOG(5) << "#task " << previous_task_count << " -> " << active_task_count;
     }
 
-    RANGE(peid, kPeCount, {
-      if (!task_count_q[peid].empty()) {
-        const auto previous_task_count = active_task_count;
-        const auto count = task_count_q[peid].read(nullptr);
-        active_task_count += count - 1;
-        visited_edge_count += count;
-        ++pop_valid_count;
-        VLOG(5) << "#task " << previous_task_count << " -> "
-                << active_task_count;
-      }
-    });
+    if (!queue_noop_q.empty()) {
+      const auto previous_task_count = active_task_count;
+      const auto count = queue_noop_q.read(nullptr);
+      active_task_count -= count;
+      push_count += count;
+      VLOG(5) << "#task " << previous_task_count << " -> " << active_task_count;
+    }
 
-    RANGE(qid, kQueueCount, {
-      if (!queue_noop_q[qid].empty()) {
-        const auto previous_task_count = active_task_count;
-        const auto count = queue_noop_q[qid].read(nullptr);
-        CHECK(!count);
-        --active_task_count;
-        ++push_count;
-        VLOG(5) << "#task " << previous_task_count << " -> "
-                << active_task_count;
-      }
-    });
+    if (!task_count_q.empty()) {
+      const auto previous_task_count = active_task_count;
+      const auto count = task_count_q.read(nullptr);
+      active_task_count += count.new_task_count - count.old_task_count;
+      visited_edge_count += count.new_task_count;
+      pop_valid_count += count.old_task_count;
+      VLOG(5) << "#task " << previous_task_count << " -> " << active_task_count;
+    }
   }
 
   push_count += pop_valid_count;
@@ -1578,11 +1603,13 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   streams<bool, kSubIntervalCount, 2> vertex_cache_done_q;
   streams<int32_t, kSubIntervalCount, 2> vertex_cache_stat_q;
 
-  stream<uint_noop_t, 2> vertex_noop_q;
+  stream<uint_vertex_noop_t, 2> vertex_noop_q;
 
-  streams<bool, kQueueCount, 2> queue_noop_q;
+  streams<bool, kQueueCount, 2> queue_noop_qi;
+  stream<uint_queue_noop_t, 2> queue_noop_q;
 
-  streams<uint_vid_t, kPeCount, 2> task_count_q;
+  streams<uint_vid_t, kPeCount, 2> task_count_qi;
+  stream<TaskCount, 2> task_count_q;
 
   tapa::task()
       .invoke<join>(Dispatcher, root, metadata, vertex_cache_done_q,
@@ -1591,11 +1618,12 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
       .invoke<detach>(TaskRespArbiter, task_resp_qi, task_resp_q)
       .invoke<detach, kQueueCount>(
           TaskQueue, queue_done_q, queue_stat_q, seq(), push_req_qi,
-          queue_noop_q, task_req_q, task_resp_q, piheap_array_read_addr_q,
+          queue_noop_qi, task_req_q, task_resp_q, piheap_array_read_addr_q,
           piheap_array_read_data_q, piheap_array_write_req_q,
           piheap_array_write_resp_q, piheap_index_read_addr_q,
           piheap_index_read_data_q, piheap_index_write_req_q,
           piheap_index_write_resp_q)
+      .invoke<detach>(QueueNoopMerger, queue_noop_qi, queue_noop_q)
       .invoke<detach>(PushReqArbiter, push_req_q, push_req_qi)
       .invoke<detach>(TaskReqArbiter, task_init_q, task_req_q, task_req_qi)
 
@@ -1629,11 +1657,12 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
           push_req_q, update_noop_qi1, read_vid_q, read_vid_q, write_vid_q,
           write_vid_q, vertex_read_addr_q, vertex_read_data_q,
           vertex_write_req_q, vertex_write_resp_q)
-      .invoke<detach>(NoopMerger, update_noop_qi1, vertex_noop_q)
+      .invoke<detach>(VertexNoopMerger, update_noop_qi1, vertex_noop_q)
 
       // PEs.
       .invoke<detach, kPeCount>(ProcElemS0, task_req_qi, task_resp_qi,
-                                task_count_q, edge_req_q)
+                                task_count_qi, edge_req_q)
+      .invoke<detach>(TaskCountMerger, task_count_qi, task_count_q)
       .invoke<detach, kShardCount>(ProcElemS1, src_q, edge_read_data_q,
                                    update_req_q);
 }
