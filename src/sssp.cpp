@@ -1607,10 +1607,10 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   streams<SourceVertex, kShardCount, 64> src_q("source_vertices");
 
   // For vertices.
-  //   Connect PEs to the update request network.
-  streams<TaskOnChip, kShardCount, 2> update_req_q;
-  //   Compose the update request network.
-  streams<TaskOnChip, kShardCount, 32> update_req_qi1;
+  // Route updates via a kShardCount x kShardCount network.
+  streams<TaskOnChip, kShardCount, 2> xbar_q0;
+  streams<TaskOnChip, kShardCount, 32> xbar_q1;
+
   streams<TaskOnChip, kSubIntervalCount, 32> update_req_qi0;
   //   Connect the vertex readers and updaters.
   streams<bool, kSubIntervalCount, 2> update_noop_qi1;
@@ -1663,11 +1663,11 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
       // For vertices.
       // Route updates via a kShardCount x kShardCount network.
       // clang-format off
-      .invoke<detach>(Switch, 0, update_req_q[0], update_req_q[1], update_req_qi1[0], update_req_qi1[1])
+      .invoke<detach>(Switch, 0, xbar_q0[0], xbar_q0[1], xbar_q1[0], xbar_q1[1])
       // clang-format on
 
       // Distribute updates amount sub-intervals.
-      .invoke<detach>(UpdateReqArbiter, update_req_qi1, update_req_qi0)
+      .invoke<detach>(UpdateReqArbiter, xbar_q1, update_req_qi0)
 
       .invoke<detach, kSubIntervalCount>(VertexMem, vertex_read_addr_q,
                                          vertex_read_data_q, vertex_write_req_q,
@@ -1684,5 +1684,5 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
                                 task_count_qi, edge_req_q)
       .invoke<detach>(TaskCountMerger, task_count_qi, task_count_q)
       .invoke<detach, kShardCount>(ProcElemS1, src_q, edge_read_data_q,
-                                   update_req_q);
+                                   xbar_q0);
 }
