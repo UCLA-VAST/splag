@@ -380,7 +380,11 @@ inline std::ostream& operator<<(std::ostream& os, const HeapIndexEntry& obj) {
 // Platform-specific constants and types.
 constexpr int kPeCount = 32;
 
-constexpr int kShardCount = 2;  // #edge partitions.
+#ifndef TAPA_SSSP_SHARD_COUNT
+#define TAPA_SSSP_SHARD_COUNT 4
+#endif
+
+constexpr int kShardCount = TAPA_SSSP_SHARD_COUNT;  // #edge partitions.
 static_assert(
     kPeCount % kShardCount == 0,
     "current implementation assumes PE count is a multiple of shard count");

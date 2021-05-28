@@ -1610,6 +1610,9 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   // Route updates via a kShardCount x kShardCount network.
   streams<TaskOnChip, kShardCount, 2> xbar_q0;
   streams<TaskOnChip, kShardCount, 32> xbar_q1;
+#if TAPA_SSSP_SHARD_COUNT >= 4
+  streams<TaskOnChip, kShardCount, 32> xbar_q2;
+#endif  // TAPA_SSSP_SHARD_COUNT
 
   streams<TaskOnChip, kSubIntervalCount, 32> update_req_qi0;
   //   Connect the vertex readers and updaters.
@@ -1664,10 +1667,24 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
       // Route updates via a kShardCount x kShardCount network.
       // clang-format off
       .invoke<detach>(Switch, 0, xbar_q0[0], xbar_q0[1], xbar_q1[0], xbar_q1[1])
+#if TAPA_SSSP_SHARD_COUNT >= 4
+      .invoke<detach>(Switch, 0, xbar_q0[2], xbar_q0[3], xbar_q1[2], xbar_q1[3])
+      .invoke<detach>(Switch, 1, xbar_q1[0], xbar_q1[2], xbar_q2[0], xbar_q2[2])
+      .invoke<detach>(Switch, 1, xbar_q1[1], xbar_q1[3], xbar_q2[1], xbar_q2[3])
+#endif // TAPA_SSSP_SHARD_COUNT
       // clang-format on
 
       // Distribute updates amount sub-intervals.
-      .invoke<detach>(UpdateReqArbiter, xbar_q1, update_req_qi0)
+      .invoke<detach>(UpdateReqArbiter,
+#if TAPA_SSSP_SHARD_COUNT == 2
+                      xbar_q1
+#elif TAPA_SSSP_SHARD_COUNT == 4
+                      xbar_q2
+#else  // TAPA_SSSP_SHARD_COUNT
+#error "invalid TAPA_SSSP_SHARD_COUNT"
+#endif  // TAPA_SSSP_SHARD_COUNT
+                      ,
+                      update_req_qi0)
 
       .invoke<detach, kSubIntervalCount>(VertexMem, vertex_read_addr_q,
                                          vertex_read_data_q, vertex_write_req_q,
