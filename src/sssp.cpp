@@ -665,7 +665,8 @@ spin:
     }
 
     HeapElemAxi elem;  // Output from IsPiHeapElemUpdated.
-    if (IsPiHeapElemUpdated(qid, level, req, elems, idx, elem, req_in_q,
+#pragma HLS array_partition variable = elem.cap complete
+    if (IsPiHeapElemUpdated(qid, level, req, 0, elems, idx, elem, req_in_q,
                             resp_out_q, req_out_q, resp_in_q, index_req_q,
                             index_resp_q)) {
       write_req_q.write(
