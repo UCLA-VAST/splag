@@ -354,7 +354,7 @@ class HeapIndexEntry {
   }
 
  private:
-  ap_uint<64> data_;
+  ap_uint<256> data_;
   // bool valid;
   // LevelId level;
   // LevelIndex index;
