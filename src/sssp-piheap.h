@@ -287,13 +287,13 @@ inline bool IsPiHeapElemUpdated(  //
     //
     tapa::ostream<HeapIndexReq>& index_req_q,
     tapa::istream<HeapIndexResp>& index_resp_q) {
-  elem = elems[idx % kPiHeapWidth];
   bool is_elem_written = false;
   switch (req.op) {
     case QueueOp::PUSH: {
 #ifdef TAPA_SSSP_PHEAP_PUSH_ACK
       resp_out_q.write({});
 #endif  // TAPA_SSSP_PHEAP_PUSH_ACK
+      elem = elems[idx % kPiHeapWidth];
       PiHeapPush(qid, level, req, elem, resp_in_q, req_out_q, index_req_q,
                  index_resp_q);
       is_elem_written = true;
