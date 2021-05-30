@@ -546,6 +546,7 @@ spin:
       acquire:
         do {
 #pragma HLS pipeline off
+#pragma HLS loop_tripcount max = 1
           index_req_q.write({.op = ACQUIRE_INDEX,
                              .vid = req.task.vid(),
                              .entry = {0, 0, req.task.vertex().distance}});
@@ -648,6 +649,7 @@ spin:
   read_elems:
     for (auto i_req = begin, i_resp = begin; i_resp < end;) {
 #pragma HLS pipeline II = 1
+#pragma HLS loop_tripcount min = 1 max = kPiHeapWidth
       if (i_req < end && read_addr_q.try_write(GetAddrOfOffChipHeapElem(
                              level, idx_base + i_req, qid))) {
         if (req.op == QueueOp::PUSH) {
