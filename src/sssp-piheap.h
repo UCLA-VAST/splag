@@ -95,23 +95,24 @@ struct HeapResp {
 
 using PiHeapStat = int32_t;
 
-template <typename HeapElemType>
+template <typename HeapElemType, int N>
 inline bool IsUpdateNeeded(uint_on_chip_level_index_t base,
-                           const HeapElemType(&elems), const HeapReq& elem,
-                           bool is_pushpop, uint_heap_child_t& max_pos) {
+                           const HeapElemType (&elems)[N], const HeapReq& req,
+                           bool is_pushpop, uint_heap_child_t& max_pos,
+                           HeapElemType& elem) {
 #pragma HLS inline
   bool is_max_pos_valid = false;
   bool is_max_task_valid = is_pushpop;
-  TaskOnChip max_task = elem.task;
+  elem.valid = is_pushpop;
+  elem.task = req.task;
 find_update:
   for (ap_uint<bit_length(kPiHeapWidth)> i = 0; i < kPiHeapWidth; ++i) {
 #pragma HLS pipeline II = 1
     if (elems[base + i].valid &&
-        (!is_max_task_valid || !(elems[base + i].task <= max_task))) {
+        (!elem.valid || !(elems[base + i].task <= elem.task))) {
       max_pos = i;
-      max_task = elems[base + i].task;
+      elem = elems[base + i];
       is_max_pos_valid |= true;
-      is_max_task_valid |= true;
     }
   }
   return is_max_pos_valid;
@@ -307,9 +308,8 @@ inline bool IsPiHeapElemUpdated(  //
       CHECK_EQ(idx % kPiHeapWidth, 0);
       const bool is_pushpop = req.op == QueueOp::PUSHPOP;
       uint_heap_child_t child;
-      if (IsUpdateNeeded(base, elems, req, is_pushpop, child)) {
+      if (IsUpdateNeeded(base, elems, req, is_pushpop, child, elem)) {
         idx += child;
-        elem = elems[base + child];
 #ifdef TAPA_SSSP_PHEAP_INDEX
         index_req_q.write({
             .op = UPDATE_INDEX,
