@@ -93,22 +93,6 @@ struct HeapResp {
 using PiHeapStat = int32_t;
 
 template <typename HeapElemType>
-inline ap_uint<log2(kPiHeapWidth)> FindMax(HeapElemType elem) {
-  ap_uint<log2(kPiHeapWidth)> pos = 0;
-  auto max = elem.cap[0];
-find_max:
-  for (ap_uint<bit_length(kPiHeapWidth)> i = 1; i < kPiHeapWidth; ++i) {
-#pragma HLS pipeline II = 1
-#pragma HLS unroll factor = 2
-    if (!(elem.cap[i] <= max)) {
-      max = elem.cap[i];
-      pos = i;
-    }
-  }
-  return pos;
-}
-
-template <typename HeapElemType>
 inline bool IsUpdateNeeded(const HeapElemType(&elems), const HeapReq& elem,
                            bool is_pushpop, uint_heap_child_t& max_pos) {
 #pragma HLS inline
@@ -213,7 +197,18 @@ inline void PiHeapPush(uint_qid_t qid, int level, HeapReq req,
       RANGE(i, kPiHeapWidth, has_slot |= elem.cap[i] > 0);
       CHECK(has_slot) << "level " << level;
 
-      const auto max = FindMax(elem);
+      ap_uint<log2(kPiHeapWidth)> max = 0;
+      auto max_cap = elem.cap[0];
+    find_max:
+      for (ap_uint<bit_length(kPiHeapWidth)> i = 1; i < kPiHeapWidth; ++i) {
+#pragma HLS pipeline II = 1
+#pragma HLS unroll factor = 2
+        if (!(elem.cap[i] <= max_cap)) {
+          max_cap = elem.cap[i];
+          max = i;
+        }
+      }
+
       CHECK_GT(elem.cap[max], 0);
       --elem.cap[max];
       idx = idx * kPiHeapWidth + max;
