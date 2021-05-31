@@ -738,13 +738,17 @@ void PiHeapArrayReadAddrArbiter(  //
     istreams<Vid, kOffChipLevelCount>& req_in_q,
     ostream<OffChipLevelId>& req_id_q, ostream<Vid>& req_out_q) {
 spin:
-  for (OffChipLevelId level = 0;; level = level == kOffChipLevelCount - 1
-                                              ? OffChipLevelId(0)
-                                              : OffChipLevelId(level + 1)) {
+  for (ap_uint<kLevelCount> priority = 1;;) {
 #pragma HLS pipeline II = 1
-    if (!req_in_q[level].empty() && !req_id_q.full() && !req_out_q.full()) {
+    LevelId level;
+    if (find_non_empty(req_in_q, priority, level) && !req_id_q.full() &&
+        !req_out_q.full()) {
       req_id_q.try_write(level);
       req_out_q.try_write(req_in_q[level].read(nullptr));
+      priority = 0;
+      priority.set(level);  // Make long burst.
+    } else {
+      priority.lrotate(1);
     }
   }
 }
