@@ -100,6 +100,7 @@ init:
   auto& write_hit = op_stats[7];
   auto& write_miss = op_stats[8];
   auto& idle_count = op_stats[9];
+  auto& busy_count = op_stats[10];
 
   ap_uint<bit_length(kPiHeapStatCount[1])> stat_idx = 0;
 
@@ -320,6 +321,8 @@ spin:
           }
         } break;
       }
+    } else if (is_req_valid) {
+      ++busy_count;
     } else if (is_started) {
       ++idle_count;
     }

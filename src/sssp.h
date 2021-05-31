@@ -180,7 +180,7 @@ constexpr int kVertexUniStatCount = 10;
 
 constexpr int kPiHeapStatCount[] = {
     10,  // PiHeapHead
-    10,  // PiHeapIndex
+    11,  // PiHeapIndex
 };
 constexpr int kPiHeapStatTotalCount = kPiHeapStatCount[0] + kPiHeapStatCount[1];
 constexpr int kPiHeapStatTaskCount =
