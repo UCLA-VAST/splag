@@ -664,9 +664,8 @@ spin:
     if (!req_in_q.empty()) {
       const auto req = req_in_q.read(nullptr);
       CHECK_NE(req.op, QueueOp::PUSH);
-      const bool is_pushpop = req.op == QueueOp::PUSHPOP;
       resp_out_q.write({
-          .op = req.op == is_pushpop ? NOCHANGE : EMPTY,
+          .op = EMPTY,
           .child = 0,
           .task = req.task,
       });

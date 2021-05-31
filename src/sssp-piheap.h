@@ -80,9 +80,8 @@ struct HeapReq {
 };
 
 enum HeapRespOp {
-  EMPTY,     // No element returned.
-  CHILD,     // New element is from a child.
-  NOCHANGE,  // New element returned but children capacity not changed.
+  EMPTY,  // No element returned.
+  CHILD,  // New element is from a child.
 };
 
 using uint_heap_child_t = ap_uint<log2(kPiHeapWidth)>;
@@ -273,6 +272,9 @@ inline void PiHeapPop(QueueOp req, int idx, HeapElemType& elem,
   ap_wait();
   const auto resp = resp_in_q.read();
   elem.task = resp.task;
+  if (req.op == QueueOp::PUSHPOP) {
+    return;
+  }
   switch (resp.op) {
     case EMPTY: {
       elem.valid = false;
@@ -280,8 +282,6 @@ inline void PiHeapPop(QueueOp req, int idx, HeapElemType& elem,
     case CHILD: {
       ++elem.cap[resp.child];
       CHECK_GT(elem.cap[resp.child], 0);
-    } break;
-    case NOCHANGE: {
     } break;
   }
 }
@@ -317,7 +317,6 @@ inline bool IsPiHeapElemUpdated(  //
 
     case QueueOp::PUSHPOP:
     case QueueOp::POP: {
-      const bool is_pushpop = req.op == QueueOp::PUSHPOP;
       if (IsUpdateNeeded(elems, req, idx, elem)) {
 #ifdef TAPA_SSSP_PHEAP_INDEX
         CHECK_EQ(req.index % kPiHeapWidth, 0);
@@ -331,7 +330,7 @@ inline bool IsPiHeapElemUpdated(  //
         index_resp_q.read();
 #endif  // TAPA_SSSP_PHEAP_INDEX
         resp_out_q.write({
-            .op = is_pushpop ? NOCHANGE : CHILD,
+            .op = CHILD,
             .child = idx % kPiHeapWidth,
             .task = elem.task,
         });
@@ -340,7 +339,7 @@ inline bool IsPiHeapElemUpdated(  //
         is_elem_written = true;
       } else {
         resp_out_q.write({
-            .op = is_pushpop ? NOCHANGE : EMPTY,
+            .op = EMPTY,
             .child = 0,
             .task = req.task,
         });
