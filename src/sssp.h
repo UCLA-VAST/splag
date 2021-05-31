@@ -109,7 +109,7 @@ inline std::ostream& operator<<(std::ostream& os, const Task& obj) {
   return os << "{vid: " << obj.vid << ", vertex: " << obj.vertex << "}";
 }
 
-constexpr int kQueueCount = 16;
+constexpr int kQueueCount = 4;
 
 #ifndef TAPA_SSSP_PHEAP_WIDTH
 #define TAPA_SSSP_PHEAP_WIDTH 16
@@ -381,7 +381,7 @@ inline std::ostream& operator<<(std::ostream& os, const HeapIndexEntry& obj) {
 constexpr int kPeCount = 32;
 
 #ifndef TAPA_SSSP_SHARD_COUNT
-#define TAPA_SSSP_SHARD_COUNT 4
+#define TAPA_SSSP_SHARD_COUNT 2
 #endif
 
 constexpr int kShardCount = TAPA_SSSP_SHARD_COUNT;  // #edge partitions.
@@ -390,7 +390,7 @@ static_assert(
     "current implementation assumes PE count is a multiple of shard count");
 
 constexpr int kIntervalCount = 2;  // #vertex partitions.
-constexpr int kSubIntervalCount = kIntervalCount * 4;
+constexpr int kSubIntervalCount = kIntervalCount * 2;
 
 constexpr int kHeapOnChipWidth = 8;  // #children per on-heap element.
 
