@@ -96,22 +96,31 @@ struct HeapResp {
 using PiHeapStat = int32_t;
 
 template <typename HeapElemType, int N>
-inline bool IsUpdateNeeded(uint_on_chip_level_index_t base,
-                           const HeapElemType (&elems)[N], const HeapReq& req,
-                           bool is_pushpop, uint_heap_child_t& max_pos,
-                           HeapElemType& elem) {
+inline HeapElemType ReadElem(const HeapElemType (&elems)[N],
+                             uint_on_chip_level_index_t pos) {
+  return elems[pos];
+}
+
+inline HeapElemAxi ReadElem(tapa::istream<HeapElemPacked>& read_data_q,
+                            uint_on_chip_level_index_t) {
+  return HeapElemAxi::Unpack(read_data_q.read());
+}
+
+template <typename HeapElemType, typename HeapElemSource>
+inline bool IsUpdateNeeded(HeapElemSource& elems, const HeapReq& req,
+                           LevelIndex& idx, HeapElemType& elem) {
 #pragma HLS inline
+  CHECK_EQ(req.index % kPiHeapWidth, 0);
   bool is_max_pos_valid = false;
-  bool is_max_task_valid = is_pushpop;
-  elem.valid = is_pushpop;
+  elem.valid = req.op == QueueOp::PUSHPOP;
   elem.task = req.task;
 find_update:
   for (ap_uint<bit_length(kPiHeapWidth)> i = 0; i < kPiHeapWidth; ++i) {
 #pragma HLS pipeline II = 1
-    if (elems[base + i].valid &&
-        (!elem.valid || !(elems[base + i].task <= elem.task))) {
-      max_pos = i;
-      elem = elems[base + i];
+    const auto elem_i = ReadElem(elems, req.index + i);
+    if (elem_i.valid && (!elem.valid || !(elem_i.task <= elem.task))) {
+      idx = req.index + i;
+      elem = elem_i;
       is_max_pos_valid |= true;
     }
   }
@@ -277,12 +286,12 @@ inline void PiHeapPop(QueueOp req, int idx, HeapElemType& elem,
   }
 }
 
-template <typename HeapElemType, int N>
+template <typename HeapElemType, typename HeapElemSource>
 inline bool IsPiHeapElemUpdated(  //
     uint_qid_t qid, int level, const HeapReq& req,
     //
-    uint_on_chip_level_index_t base, const HeapElemType (&elems)[N],
-    LevelIndex& idx,     // In/out
+    HeapElemSource& elems,
+    LevelIndex& idx,     // Output
     HeapElemType& elem,  // Output
                          // Parent level
     tapa::istream<HeapReq>& req_in_q, tapa::ostream<HeapResp>& resp_out_q,
@@ -291,13 +300,16 @@ inline bool IsPiHeapElemUpdated(  //
     //
     tapa::ostream<HeapIndexReq>& index_req_q,
     tapa::istream<HeapIndexResp>& index_resp_q) {
+  CHECK_GE(req.index, 0);
+  CHECK_LT(req.index, GetCapOfLevel(level));
   bool is_elem_written = false;
   switch (req.op) {
     case QueueOp::PUSH: {
 #ifdef TAPA_SSSP_PHEAP_PUSH_ACK
       resp_out_q.write({});
 #endif  // TAPA_SSSP_PHEAP_PUSH_ACK
-      elem = elems[base + idx % kPiHeapWidth];
+      elem = ReadElem(elems, req.index);
+      idx = req.index;
       PiHeapPush(qid, level, req, elem, resp_in_q, req_out_q, index_req_q,
                  index_resp_q);
       is_elem_written = true;
@@ -305,16 +317,14 @@ inline bool IsPiHeapElemUpdated(  //
 
     case QueueOp::PUSHPOP:
     case QueueOp::POP: {
-      CHECK_EQ(idx % kPiHeapWidth, 0);
       const bool is_pushpop = req.op == QueueOp::PUSHPOP;
-      uint_heap_child_t child;
-      if (IsUpdateNeeded(base, elems, req, is_pushpop, child, elem)) {
-        idx += child;
+      if (IsUpdateNeeded(elems, req, idx, elem)) {
 #ifdef TAPA_SSSP_PHEAP_INDEX
+        CHECK_EQ(req.index % kPiHeapWidth, 0);
         index_req_q.write({
             .op = UPDATE_INDEX,
             .vid = elem.task.vid(),
-            .entry = {level - 1, idx / kPiHeapWidth,
+            .entry = {level - 1, req.index / kPiHeapWidth,
                       elem.task.vertex().distance},
         });
         ap_wait();
@@ -322,7 +332,7 @@ inline bool IsPiHeapElemUpdated(  //
 #endif  // TAPA_SSSP_PHEAP_INDEX
         resp_out_q.write({
             .op = is_pushpop ? NOCHANGE : CHILD,
-            .child = child,
+            .child = idx % kPiHeapWidth,
             .task = elem.task,
         });
         PiHeapPop({.op = req.op, .task = req.task}, idx, elem, resp_in_q,
@@ -331,7 +341,7 @@ inline bool IsPiHeapElemUpdated(  //
       } else {
         resp_out_q.write({
             .op = is_pushpop ? NOCHANGE : EMPTY,
-            .child = child,
+            .child = 0,
             .task = req.task,
         });
       }
@@ -374,15 +384,14 @@ spin:
   for (;;) {
 #pragma HLS pipeline off
     const auto req = req_in_q.read();
-    auto idx = req.index;
-    CHECK_GE(idx, 0);
-    CHECK_LT(idx, GetCapOfLevel(level));
 
-    HeapElem<level> elem;  // Output from IsPiHeapElemUpdated.
+    // Outputs from IsPiHeapElemUpdated.
+    LevelIndex idx;
+    HeapElem<level> elem;
 #pragma HLS array_partition variable = elem.cap complete
-    if (IsPiHeapElemUpdated(qid, level, req, idx / kPiHeapWidth * kPiHeapWidth,
-                            heap_array, idx, elem, req_in_q, resp_out_q,
-                            req_out_q, resp_in_q, index_req_q, index_resp_q)) {
+    if (IsPiHeapElemUpdated(qid, level, req, heap_array, idx, elem, req_in_q,
+                            resp_out_q, req_out_q, resp_in_q, index_req_q,
+                            index_resp_q)) {
       heap_array[idx] = elem;
     }
   }

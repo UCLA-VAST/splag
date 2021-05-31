@@ -630,43 +630,20 @@ spin:
     const auto req = req_in_q.read();
     LOG_IF(INFO, is_first_time)
         << "q[" << qid << "]: off-chip level " << level << " accessed";
-    auto idx = req.index;
-    CHECK_GE(idx, 0);
-    CHECK_LT(idx, GetCapOfLevel(level));
 
-    HeapElemAxi elems[kPiHeapWidth];
-#pragma HLS aggregate variable = elems bit
-
-    // Read [idx_base + begin : idx_base + end] to elems[begin : end].
-    const LevelIndex idx_base = idx / kPiHeapWidth * kPiHeapWidth;
-    const ap_uint<bit_length(kPiHeapWidth)> begin = idx % kPiHeapWidth;
-    ap_uint<bit_length(kPiHeapWidth)> end = kPiHeapWidth;
-    if (req.op == QueueOp::PUSH) {  // Only need to read one element.
-      end = begin + 1;
-    } else {
-      CHECK_EQ(begin, 0);
-    }
+    const ap_uint<bit_length(kPiHeapWidth)> elem_count =
+        req.op == QueueOp::PUSH ? 1 : kPiHeapWidth;
   read_elems:
-    for (auto i_req = begin, i_resp = begin; i_resp < end;) {
+    for (ap_uint<bit_length(kPiHeapWidth)> i = 0; i < elem_count; ++i) {
 #pragma HLS pipeline II = 1
-#pragma HLS loop_tripcount min = 1 max = kPiHeapWidth
-      if (i_req < end && read_addr_q.try_write(GetAddrOfOffChipHeapElem(
-                             level, idx_base + i_req, qid))) {
-        if (req.op == QueueOp::PUSH) {
-          CHECK_EQ(idx, idx_base + i_req);
-          CHECK_EQ(i_req + 1, end);
-        }
-        ++i_req;
-      }
-      if (!read_data_q.empty()) {
-        elems[i_resp] = HeapElemAxi::Unpack(read_data_q.read(nullptr));
-        ++i_resp;
-      }
+      read_addr_q.write(GetAddrOfOffChipHeapElem(level, req.index + i, qid));
     }
 
-    HeapElemAxi elem;  // Output from IsPiHeapElemUpdated.
+    // Outputs from IsPiHeapElemUpdated.
+    LevelIndex idx;
+    HeapElemAxi elem;
 #pragma HLS array_partition variable = elem.cap complete
-    if (IsPiHeapElemUpdated(qid, level, req, 0, elems, idx, elem, req_in_q,
+    if (IsPiHeapElemUpdated(qid, level, req, read_data_q, idx, elem, req_in_q,
                             resp_out_q, req_out_q, resp_in_q, index_req_q,
                             index_resp_q)) {
       write_req_q.write(
@@ -880,7 +857,7 @@ void TaskQueue(
   stream<packet<LevelId, HeapIndexResp>, 2> index_resp_q;
 
   stream<OffChipLevelId, 64> array_read_id_q;
-  streams<Vid, kOffChipLevelCount, 2> array_read_addr_q;
+  streams<Vid, kOffChipLevelCount, kPiHeapWidth> array_read_addr_q;
   streams<HeapElemPacked, kOffChipLevelCount, 2> array_read_data_q;
 
   stream<OffChipLevelId, 64> array_write_id_q;
