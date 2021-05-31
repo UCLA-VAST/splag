@@ -143,7 +143,7 @@ spin:
                 // Outstanding writes must not be accessed.
                 writing_fresh_pos.contains(req_pos) ||
                 // Memory write must not block.
-                writing_fresh_pos.full() ||
+                writing_fresh_pos.full() || write_req_q.full() ||
                 // If acquire index is requested...
                 (req.op == ACQUIRE_INDEX &&
                  // memory read must not block.
@@ -250,7 +250,7 @@ spin:
 
             // Write cache entry to memory if necessary.
             if (fresh_entry.is_dirty) {
-              write_req_q.write(
+              write_req_q.try_write(
                   {fresh_entry.GetVid(pifc_index, qid), fresh_entry.index});
               writing_fresh_pos.push(pifc_index);
 
@@ -293,7 +293,7 @@ spin:
           } else {
             // Write cache entry to memory if necessary.
             if (!is_fresh_entry_hit && fresh_entry.is_dirty) {
-              write_req_q.write(
+              write_req_q.try_write(
                   {fresh_entry.GetVid(pifc_index, qid), fresh_entry.index});
               writing_fresh_pos.push(pifc_index);
 
@@ -314,7 +314,7 @@ spin:
 
             ++write_hit;
           } else {
-            write_req_q.write({req.vid, nullptr});
+            write_req_q.try_write({req.vid, nullptr});
             writing_fresh_pos.push(pifc_index);
 
             ++write_miss;
