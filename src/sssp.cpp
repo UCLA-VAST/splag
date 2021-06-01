@@ -627,10 +627,25 @@ void PiHeapBodyOffChip(
 #pragma HLS inline recursive
   const auto cap = GetChildCapOfLevel(level);
 
+  // Store outstanding indices (divided by kPiHeapWidth).
+  shiftreg<LevelIndex, 16> writing_index;
+
 spin:
   for (bool is_first_time = true;; is_first_time = false) {
 #pragma HLS pipeline off
-    const auto req = req_in_q.read();
+    if (!write_resp_q.empty()) {
+      write_resp_q.read(nullptr);
+      writing_index.pop();
+    }
+
+    bool is_req_valid = false;
+    const auto req = req_in_q.peek(is_req_valid);
+    if (!is_req_valid || writing_index.contains(req.index / kPiHeapWidth) ||
+        writing_index.full() || write_req_q.full()) {
+      continue;
+    }
+
+    req_in_q.read(nullptr);
     LOG_IF(INFO, is_first_time)
         << "q[" << qid << "]: off-chip level " << level << " accessed";
 
@@ -649,10 +664,9 @@ spin:
     if (IsPiHeapElemUpdated(qid, level, req, read_data_q, idx, elem, req_in_q,
                             resp_out_q, req_out_q, resp_in_q, index_req_q,
                             index_resp_q)) {
-      write_req_q.write(
+      write_req_q.try_write(
           {GetAddrOfOffChipHeapElem(level, idx, qid), elem.Pack()});
-      ap_wait();
-      write_resp_q.read();
+      writing_index.push(idx / kPiHeapWidth);
     }
   }
 }
