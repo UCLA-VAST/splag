@@ -5,6 +5,8 @@
 
 #define TAPA_SSSP_PHEAP_INDEX
 
+#define TAPA_SSSP_PHEAP_PUSH_ACK
+
 using uint_qid_t = ap_uint<bit_length(kQueueCount - 1)>;
 
 using uint_piheap_size_t = ap_uint<bit_length(kPiHeapCapacity)>;
