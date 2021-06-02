@@ -536,12 +536,6 @@ spin:
       } break;
     }
 
-    QueueOpResp resp{
-        .queue_op = req.op,
-        .task_op = TaskOp::NEW,
-        .task = req.task,
-    };
-
     switch (req.op) {
       case QueueOp::PUSH: {
         HeapIndexResp heap_index_resp;
@@ -572,17 +566,17 @@ spin:
                      },
                      root, resp_in_q, req_out_q, index_req_q, index_resp_q);
         }
-        if (heap_index_resp.enable && !heap_index_resp.entry.valid()) {
-        } else {
+        if (!heap_index_resp.enable || heap_index_resp.entry.valid()) {
           noop_q.write(false);
         }
       } break;
 
       case QueueOp::PUSHPOP:
       case QueueOp::POP: {
+        auto resp_task = req.task;
         if (root.valid && !(req.is_pushpop() && root.task <= req.task)) {
-          resp.task = root.task;
-          CHECK_EQ(resp.task.vid() % kQueueCount, qid);
+          resp_task = root.task;
+          CHECK_EQ(resp_task.vid() % kQueueCount, qid);
 
 #ifdef TAPA_SSSP_PHEAP_INDEX
           index_req_q.write({.op = CLEAR_FRESH, .vid = root.task.vid()});
@@ -591,14 +585,9 @@ spin:
 #endif  // TAPA_SSSP_PHEAP_INDEX
 
           PiHeapPop(req, 0, root, resp_in_q, req_out_q);
-        } else if (req.is_pop()) {
-          resp.task_op = TaskOp::NOOP;
         }
+        task_req_q.write({pe_qid, resp_task});
       } break;
-    }
-
-    if (do_pop) {
-      task_req_q.write({pe_qid, resp.task});
     }
   }
 }
