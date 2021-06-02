@@ -146,8 +146,11 @@ spin:
                 writing_fresh_pos.full() || write_req_q.full() ||
                 // If acquire index is requested...
                 (req.op == ACQUIRE_INDEX &&
-                 // memory read must not block.
-                 reading_fresh_pos.full())));
+                 (
+                     // memory read must not block; and
+                     reading_fresh_pos.full() || read_addr_q.full() ||
+                     // context write must not block.
+                     acquire_index_ctx_out_q.full()))));
 
     // Determine which vertex to work on.
     const auto vid = can_acquire_index ? ctx.vid : req.vid;
@@ -260,9 +263,12 @@ spin:
             }
 
             // Issue read request and save context.
-            read_addr_q.write(req.vid);
+            read_addr_q.try_write(req.vid);
             reading_fresh_pos.push(pifc_index);
-            acquire_index_ctx_out_q.write({.vid = req.vid, .entry = req.entry});
+            acquire_index_ctx_out_q.try_write({
+                .vid = req.vid,
+                .entry = req.entry,
+            });
 
             ++read_miss;
           } else {  // Read hit.
