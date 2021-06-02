@@ -470,14 +470,14 @@ void PiHeapHead(
   const auto cap = GetChildCapOfLevel(0);
   HeapElem<0> root{.valid = false};
   RANGE(i, kPiHeapWidth, root.cap[i] = cap);
-  uint_piheap_size_t size = 0;
+  root.size = 0;
 
   static_assert(kPeCount % kQueueCount == 0, "");
   static_assert(is_power_of(kPeCount / kQueueCount, 2), "");
   DECL_ARRAY(bool, is_pe_active, kPeCount / kQueueCount, false);
 
   CLEAN_UP(clean_up, [&] {
-    CHECK_EQ(size, 0);
+    CHECK_EQ(root.size, 0);
     CHECK_EQ(root.valid, false) << "q[" << qid << "]";
     RANGE(i, kPiHeapWidth, CHECK_EQ(root.cap[i], cap) << "q[" << qid << "]");
     RANGE(i, kPeCount / kQueueCount, CHECK(!is_pe_active[i]));
@@ -508,13 +508,13 @@ spin:
       req.task = push_req;
       req.op = do_pop ? QueueOp::PUSHPOP : QueueOp::PUSH;
       queue_state_q.write(
-          {do_pop ? QueueState::PUSHPOP : QueueState::PUSH, size});
+          {do_pop ? QueueState::PUSHPOP : QueueState::PUSH, root.size});
     } else if (do_pop) {
       req.task.set_vid(qid);
       req.op = QueueOp::POP;
-      queue_state_q.write({QueueState::POP, size});
+      queue_state_q.write({QueueState::POP, root.size});
     } else {
-      queue_state_q.write({QueueState::IDLE, size});
+      queue_state_q.write({QueueState::IDLE, root.size});
       continue;
     }
 
@@ -556,7 +556,7 @@ spin:
           ap_wait();
           heap_index_resp = index_resp_q.read();
         } while (heap_index_resp.yield);
-        queue_state_q.write({QueueState::INDEX, size});
+        queue_state_q.write({QueueState::INDEX, root.size});
 #else   // TAPA_SSSP_PHEAP_INDEX
         heap_index_resp.entry.invalidate();
         heap_index_resp.enable = true;
@@ -573,8 +573,6 @@ spin:
                      root, resp_in_q, req_out_q, index_req_q, index_resp_q);
         }
         if (heap_index_resp.enable && !heap_index_resp.entry.valid()) {
-          ++size;
-          CHECK_LT(size, kPiHeapCapacity);
         } else {
           noop_q.write(false);
         }
@@ -593,10 +591,6 @@ spin:
 #endif  // TAPA_SSSP_PHEAP_INDEX
 
           PiHeapPop(req, 0, root, resp_in_q, req_out_q);
-          if (req.is_pop()) {
-            CHECK_GT(size, 0);
-            --size;
-          }
         } else if (req.is_pop()) {
           resp.task_op = TaskOp::NOOP;
         }
@@ -678,15 +672,10 @@ void PiHeapDummyTail(
     istream<HeapReq>& req_in_q, ostream<HeapResp>& resp_out_q) {
 spin:
   for (;;) {
-    if (!req_in_q.empty()) {
-      const auto req = req_in_q.read(nullptr);
-      CHECK_NE(req.op, QueueOp::PUSH);
-      resp_out_q.write({
-          .op = EMPTY,
-          .child = 0,
-          .task = req.task,
-      });
-    }
+    const bool is_empty = req_in_q.empty();
+    const bool is_full = resp_out_q.full();
+    CHECK(is_empty);
+    CHECK(!is_full);
   }
 }
 

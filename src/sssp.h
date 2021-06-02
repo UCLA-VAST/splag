@@ -262,6 +262,7 @@ struct HeapElemAxi {
   bool valid;
   TaskOnChip task;
   Capacity cap[kPiHeapWidth];
+  ap_uint<Capacity::width + log2(kPiHeapWidth)> size;  // Size of all children.
 
   static HeapElemAxi Unpack(const HeapElemPacked& packed) {
     HeapElemAxi elem;
@@ -272,6 +273,7 @@ struct HeapElemAxi {
       elem.cap[i] = packed.range(kCapLsb + kCapWidth * (i + 1) - 1,
                                  kCapLsb + kCapWidth * i);
     }
+    elem.size = packed.range(kSizeMsb, kSizeLsb);
     return elem;
   }
 
@@ -284,6 +286,7 @@ struct HeapElemAxi {
       packed.range(kCapLsb + kCapWidth * (i + 1) - 1, kCapLsb + kCapWidth * i) =
           cap[i];
     }
+    packed.range(kSizeMsb, kSizeLsb) = size;
     return packed;
   }
 
@@ -292,8 +295,10 @@ struct HeapElemAxi {
   static constexpr int kTaskLsb = kValidBit + 1;
   static constexpr int kTaskMsb = kTaskLsb + TaskOnChip::length - 1;
   static constexpr int kCapLsb = kTaskMsb + 1;
+  static constexpr int kSizeLsb = kCapLsb + kCapWidth * kPiHeapWidth;
+  static constexpr int kSizeMsb = kSizeLsb + decltype(size)::width;
 
-  static_assert(kCapLsb + kCapWidth * kPiHeapWidth <= HeapElemPacked::width,
+  static_assert(kSizeMsb < HeapElemPacked::width,
                 "HeapElemPacked has insufficient width");
 };
 

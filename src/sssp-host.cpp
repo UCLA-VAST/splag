@@ -448,6 +448,7 @@ int main(int argc, char* argv[]) {
     for (int i = 0; i < kPiHeapWidth; ++i) {
       init_elem.cap[i] = cap;
     }
+    init_elem.size = 0;
     const auto init_elem_packed = init_elem.Pack();
 
     for (int qid = 0; qid < kQueueCount; ++qid) {

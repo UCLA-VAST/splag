@@ -69,6 +69,7 @@ struct HeapElem {
   bool valid;
   TaskOnChip task;
   Capacity cap[kPiHeapWidth];
+  ap_uint<Capacity::width + log2(kPiHeapWidth)> size;  // Size of all children.
 };
 
 struct HeapReq {
@@ -79,15 +80,9 @@ struct HeapReq {
   Vid vid;
 };
 
-enum HeapRespOp {
-  EMPTY,  // No element returned.
-  CHILD,  // New element is from a child.
-};
-
 using uint_heap_child_t = ap_uint<log2(kPiHeapWidth)>;
 
 struct HeapResp {
-  HeapRespOp op;
   uint_heap_child_t child;
   TaskOnChip task;
 };
@@ -223,6 +218,7 @@ inline void PiHeapPush(uint_qid_t qid, int level, HeapReq req,
 
       CHECK_GT(elem.cap[max], 0);
       --elem.cap[max];
+      ++elem.size;
       idx = idx * kPiHeapWidth + max;
 
       if (!(req.task <= elem.task)) {
@@ -263,6 +259,16 @@ inline void PiHeapPop(QueueOp req, int idx, HeapElemType& elem,
                       tapa::ostream<HeapReq>& req_out_q) {
 #pragma HLS inline
   CHECK(elem.valid);
+  const bool is_pushpop = req.op == QueueOp::PUSHPOP;
+
+  // If no child is valid, PUSHPOP will return the current element and POP will
+  // return invalid. No need to send request to the next level.
+  if (elem.size == 0) {
+    elem.valid = is_pushpop;
+    elem.task = req.task;
+    return;
+  }
+
   req_out_q.write({
       .index = idx * kPiHeapWidth,
       .op = req.op,
@@ -272,17 +278,10 @@ inline void PiHeapPop(QueueOp req, int idx, HeapElemType& elem,
   ap_wait();
   const auto resp = resp_in_q.read();
   elem.task = resp.task;
-  if (req.op == QueueOp::PUSHPOP) {
-    return;
-  }
-  switch (resp.op) {
-    case EMPTY: {
-      elem.valid = false;
-    } break;
-    case CHILD: {
-      ++elem.cap[resp.child];
-      CHECK_GT(elem.cap[resp.child], 0);
-    } break;
+  if (!is_pushpop) {
+    ++elem.cap[resp.child];
+    --elem.size;
+    CHECK_GT(elem.cap[resp.child], 0);
   }
 }
 
@@ -317,8 +316,9 @@ inline bool IsPiHeapElemUpdated(  //
 
     case QueueOp::PUSHPOP:
     case QueueOp::POP: {
-      if (IsUpdateNeeded(elems, req, idx, elem)) {
+      const bool is_updated_needed = IsUpdateNeeded(elems, req, idx, elem);
 #ifdef TAPA_SSSP_PHEAP_INDEX
+      if (is_updated_needed) {
         CHECK_EQ(req.index % kPiHeapWidth, 0);
         index_req_q.write({
             .op = UPDATE_INDEX,
@@ -328,21 +328,15 @@ inline bool IsPiHeapElemUpdated(  //
         });
         ap_wait();
         index_resp_q.read();
+      }
 #endif  // TAPA_SSSP_PHEAP_INDEX
-        resp_out_q.write({
-            .op = CHILD,
-            .child = idx % kPiHeapWidth,
-            .task = elem.task,
-        });
+
+      resp_out_q.write({.child = idx % kPiHeapWidth, .task = elem.task});
+
+      if (is_updated_needed) {
         PiHeapPop({.op = req.op, .task = req.task}, idx, elem, resp_in_q,
                   req_out_q);
         is_elem_written = true;
-      } else {
-        resp_out_q.write({
-            .op = EMPTY,
-            .child = 0,
-            .task = req.task,
-        });
       }
     } break;
   }
@@ -370,12 +364,14 @@ init:
 #pragma HLS pipeline II = 1
     heap_array[i].valid = false;
     RANGE(j, kPiHeapWidth, heap_array[i].cap[j] = cap);
+    heap_array[i].size = 0;
   }
 
   CLEAN_UP(clean_up, [&] {
     for (int i = 0; i < GetCapOfLevel(level); ++i) {
       CHECK_EQ(heap_array[i].valid, false);
       RANGE(j, kPiHeapWidth, CHECK_EQ(heap_array[i].cap[j], cap));
+      CHECK_EQ(heap_array[i].size, 0);
     }
   });
 
