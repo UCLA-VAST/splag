@@ -1410,7 +1410,12 @@ spin:
 #pragma HLS pipeline II = 1
     RANGE(iid, kSubIntervalCount, {
       UNUSED SET(task_valid[iid], in_q[iid].try_read(task[iid]));
-      const auto qid = task[iid].vid() % kQueueCount;
+      const auto vid = task[iid].vid();
+      if (task_valid[iid]) {
+        CHECK_EQ(vid % kSubIntervalCount, iid);
+      }
+      const auto qid =
+          vid % kQueueCount / kSubIntervalCount * kSubIntervalCount + iid;
       UNUSED RESET(task_valid[iid], out_q[qid].try_write(task[iid]));
     });
   }
