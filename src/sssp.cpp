@@ -567,18 +567,20 @@ spin:
         is_pe_active[pe_qid] = true;
       }
 
+    queue_state_q.write({
+        .state = do_push ? (do_pop ? QueueState::PUSHPOP : QueueState::PUSH)
+                         : (do_pop ? QueueState::POP : QueueState::IDLE),
+        .size = root.size,
+    });
+
     QueueOp req;
     if (do_push) {
       req.task = push_req;
       req.op = do_pop ? QueueOp::PUSHPOP : QueueOp::PUSH;
-      queue_state_q.write(
-          {do_pop ? QueueState::PUSHPOP : QueueState::PUSH, root.size});
     } else if (do_pop) {
       req.task.set_vid(qid);
       req.op = QueueOp::POP;
-      queue_state_q.write({QueueState::POP, root.size});
     } else {
-      queue_state_q.write({QueueState::IDLE, root.size});
       continue;
     }
 
