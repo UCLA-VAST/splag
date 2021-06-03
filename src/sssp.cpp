@@ -560,12 +560,13 @@ spin:
     bool do_pop = false;
     const auto push_req = push_req_q.read(do_push);
 #ifdef TAPA_SSSP_PHEAP_INDEX
-    if (!do_push)
+    if (!do_push && root.valid) {
+#else   // TAPA_SSSP_PHEAP_INDEX
+    if (do_push || root.valid) {
 #endif  // TAPA_SSSP_PHEAP_INDEX
-      if (root.valid) {
-        do_pop = !is_pe_active[pe_qid];
-        is_pe_active[pe_qid] = true;
-      }
+      do_pop = !is_pe_active[pe_qid];
+      is_pe_active[pe_qid] = true;
+    }
 
     queue_state_q.write({
         .state = do_push ? (do_pop ? QueueState::PUSHPOP : QueueState::PUSH)
@@ -575,8 +576,9 @@ spin:
 
     VLOG_IF(5, do_push) << "PUSH q[" << qid << "] <-  " << push_req;
     VLOG_IF(5, do_pop) << "POP  q[" << qid << "]  -> "
-                       << (do_push && root.task <= push_req ? push_req
-                                                            : root.task);
+                       << (!root.valid || (do_push && root.task <= push_req)
+                               ? push_req
+                               : root.task);
 
     {
       if (do_push && !do_pop) {
