@@ -268,6 +268,7 @@ struct HeapElemAxi {
 
   static HeapElemAxi Unpack(const HeapElemPacked& packed) {
     HeapElemAxi elem;
+#pragma HLS array_partition variable = elem.cap complete
     elem.valid = packed.get_bit(kValidBit);
     elem.task.data = packed.range(kTaskMsb, kTaskLsb);
     for (int i = 0; i < kPiHeapWidth; ++i) {

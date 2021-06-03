@@ -532,6 +532,7 @@ void PiHeapHead(
 #pragma HLS inline recursive
   const auto cap = GetChildCapOfLevel(0);
   HeapElem<0> root{.valid = false};
+#pragma HLS array_partition variable = root.cap complete
   RANGE(i, kPiHeapWidth, root.cap[i] = cap);
   root.size = 0;
 
