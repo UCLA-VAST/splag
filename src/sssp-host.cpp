@@ -20,7 +20,12 @@
 
 using std::array;
 using std::deque;
+using std::fixed;
 using std::make_unique;
+using std::setfill;
+using std::setprecision;
+using std::setw;
+using std::tuple;
 using std::unordered_map;
 using std::unordered_set;
 using std::vector;
@@ -674,72 +679,86 @@ int main(int argc, char* argv[]) {
         }
       }
 
-      // Index op counts;
-      int64_t index_stats[5];
-      int64_t total_op_count = 0;
-      for (int i = 0; i < sizeof(index_stats) / sizeof(index_stats[0]); ++i) {
-        index_stats[i] = *(metadata_it++);
-        total_op_count += index_stats[i];
+      // Index op counts.
+      {
+        int64_t state_counts[kPiHeapIndexOpTypeCount] = {};
+        int64_t op_counts[kPiHeapIndexOpTypeCount] = {};
+        int64_t total_op_count = 0;
+        const char* kIndexOpNamesAligned[kPiHeapIndexOpTypeCount] = {
+            "GET_STALE    ",  //
+            "CLEAR_STALE  ",  //
+            "ACQUIRE_INDEX",  //
+            "UPDATE_INDEX ",  //
+            "CLEAR_FRESH  ",  //
+        };
+        for (int level = 0; level < kLevelCount; ++level) {
+          int64_t level_state_counts[kPiHeapIndexOpTypeCount];
+          int64_t level_op_counts[kPiHeapIndexOpTypeCount];
+          int64_t total_level_op_count = 0;
+          for (int i = 0; i < kPiHeapIndexOpTypeCount; ++i) {
+            level_state_counts[i] = *(metadata_it++);
+            level_op_counts[i] = *(metadata_it++);
+            total_level_op_count += level_op_counts[i];
+
+            state_counts[i] += level_state_counts[i];
+            op_counts[i] += level_op_counts[i];
+            total_op_count += level_op_counts[i];
+          }
+
+          VLOG_IF(3, total_level_op_count) << "    level[" << level << "]:";
+          for (int i = 0; i < kPiHeapIndexOpTypeCount; ++i) {
+            VLOG_IF(3, total_level_op_count)
+                << "      " << kIndexOpNamesAligned[i] << " : " << setfill(' ')
+                << setw(10) << level_op_counts[i] << " ( " << fixed
+                << setprecision(1) << setw(5)
+                << 100. * level_op_counts[i] / total_level_op_count << "%) / "
+                << setw(5) << 1. * level_state_counts[i] / level_op_counts[i];
+          }
+        }
+
+        VLOG_IF(3, total_op_count) << "    total:";
+        for (int i = 0; i < kPiHeapIndexOpTypeCount; ++i) {
+          VLOG_IF(3, total_op_count)
+              << "      " << kIndexOpNamesAligned[i] << " : " << setfill(' ')
+              << setw(10) << op_counts[i] << " ( " << fixed << setprecision(1)
+              << setw(5) << 100. * op_counts[i] / total_op_count << "%) / "
+              << setw(5) << 1. * state_counts[i] / op_counts[i];
+        }
+
+        const auto read_hit = *(metadata_it++);
+        const auto read_miss = *(metadata_it++);
+        const auto write_hit = *(metadata_it++);
+        const auto write_miss = *(metadata_it++);
+        const auto idle_count = *(metadata_it++);
+        const auto busy_count = *(metadata_it++);
+        const auto collect_write_count = write_miss;
+        const auto acquire_index_count = read_miss;
+
+        // The `total_op_count` only counts the new requests; here the
+        // `total_cycle_count` further includes the read/write acknowledges and
+        // idle iteration. Note that II>1 so the real cycle count would be much
+        // larger.
+        const auto total_cycle_count = total_op_count + collect_write_count +
+                                       acquire_index_count + idle_count +
+                                       busy_count;
+
+        VLOG(3) << "  index[" << qid << "]:";
+        for (auto [name, item, total] :
+             vector<tuple<const char*, int64_t, int64_t>>{
+                 {"read hit ", read_hit, read_hit + read_miss},
+                 {"write hit", write_hit, write_hit + write_miss},
+                 {"idle         ", idle_count, total_cycle_count},
+                 {"busy         ", busy_count, total_cycle_count},
+                 {"collect write", collect_write_count, total_cycle_count},
+                 {"acquire index", acquire_index_count, total_cycle_count},
+                 {"new requests ", total_op_count, total_cycle_count},
+             }) {
+          VLOG_IF(3, total_cycle_count)
+              << "    " << name << " : " << setfill(' ') << setw(10) << item
+              << " ( " << fixed << setprecision(1) << setw(5)
+              << 100. * item / total << "%)";
+        }
       }
-
-      const char* kIndexOpNamesAligned[] = {
-          "#GET_STALE    ",  //
-          "#CLEAR_STALE  ",  //
-          "#ACQUIRE_INDEX",  //
-          "#UPDATE_INDEX ",  //
-          "#CLEAR_FRESH  ",  //
-      };
-
-      for (int i = 0; i < sizeof(index_stats) / sizeof(index_stats[0]); ++i) {
-        VLOG_IF(3, total_op_count)
-            << "    " << kIndexOpNamesAligned[i] << ": " << std::setfill(' ')
-            << std::setw(10) << index_stats[i] << " (" << std::fixed
-            << std::setprecision(1) << 100. * index_stats[i] / total_op_count
-            << "%)";
-      }
-
-      const auto read_hit = *(metadata_it++);
-      const auto read_miss = *(metadata_it++);
-      const auto write_hit = *(metadata_it++);
-      const auto write_miss = *(metadata_it++);
-      const auto idle_count = *(metadata_it++);
-      const auto busy_count = *(metadata_it++);
-      VLOG_IF(3, total_op_count)
-          << "    read hit: " << std::fixed << std::setprecision(1)
-          << 100. * read_hit / (read_hit + read_miss) << "%";
-      VLOG_IF(3, total_op_count)
-          << "    write hit: " << std::fixed << std::setprecision(1)
-          << 100. * write_hit / (write_hit + write_miss) << "%";
-
-      const auto collect_write_count = write_miss;
-      const auto acquire_index_count = read_miss;
-      // The `total_op_count` only counts the new requests; here the
-      // `total_cycle_count` further includes the read/write acknowledges and
-      // idle iteration. Note that II>1 so the real cycle count would be much
-      // larger.
-      const auto total_cycle_count = total_op_count + collect_write_count +
-                                     acquire_index_count + idle_count +
-                                     busy_count;
-      VLOG_IF(3, total_cycle_count)
-          << "    idle         : " << std::setfill(' ') << std::setw(10)
-          << idle_count << " (" << std::fixed << std::setprecision(1)
-          << 100. * idle_count / total_cycle_count << "%)";
-      VLOG_IF(3, total_cycle_count)
-          << "    busy         : " << std::setfill(' ') << std::setw(10)
-          << busy_count << " (" << std::fixed << std::setprecision(1)
-          << 100. * busy_count / total_cycle_count << "%)";
-      VLOG_IF(3, total_cycle_count)
-          << "    collect write: " << std::setfill(' ') << std::setw(10)
-          << collect_write_count << " (" << std::fixed << std::setprecision(1)
-          << 100. * collect_write_count / total_cycle_count << "%)";
-      VLOG_IF(3, total_cycle_count)
-          << "    acquire index: " << std::setfill(' ') << std::setw(10)
-          << acquire_index_count << " (" << std::fixed << std::setprecision(1)
-          << 100. * acquire_index_count / total_cycle_count << "%)";
-      VLOG_IF(3, total_cycle_count)
-          << "    new requests : " << std::setfill(' ') << std::setw(10)
-          << total_op_count << " (" << std::fixed << std::setprecision(1)
-          << 100. * total_op_count / total_cycle_count << "%)";
     }
 
     if (!IsValid(root, edges_view, weights_view, indexed_weights,

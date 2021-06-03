@@ -33,13 +33,16 @@ static_assert(kQueueCount % kShardCount == 0,
 //   v=9: O(#edge)
 
 void PiHeapIndexReqArbiter(istreams<HeapIndexReq, kLevelCount>& req_in_q,
+                           ostream<IndexStateUpdate>& state_q,
                            ostream<packet<LevelId, HeapIndexReq>>& req_out_q) {
 spin:
   for (ap_uint<kLevelCount> priority = 1;; priority.lrotate(1)) {
 #pragma HLS pipeline II = 1
     LevelId level;
     if (find_non_empty(req_in_q, priority, level)) {
-      req_out_q.write({level, req_in_q[level].read(nullptr)});
+      const auto req = req_in_q[level].read(nullptr);
+      req_out_q.write({level, req});
+      state_q.write({.level = level, .op = req.op});
     }
   }
 }
@@ -58,6 +61,8 @@ spin:
 void PiHeapIndex(
     //
     istream<bool>& done_q, ostream<PiHeapStat>& stat_q,
+    //
+    ostream<IndexStateUpdate>& state_q,
     //
     uint_qid_t qid,
     //
@@ -95,12 +100,12 @@ init:
   };
 
   DECL_ARRAY(PiHeapStat, op_stats, kPiHeapStatCount[1], 0);
-  auto& read_hit = op_stats[5];
-  auto& read_miss = op_stats[6];
-  auto& write_hit = op_stats[7];
-  auto& write_miss = op_stats[8];
-  auto& idle_count = op_stats[9];
-  auto& busy_count = op_stats[10];
+  auto& read_hit = op_stats[0];
+  auto& read_miss = op_stats[1];
+  auto& write_hit = op_stats[2];
+  auto& write_miss = op_stats[3];
+  auto& idle_count = op_stats[4];
+  auto& busy_count = op_stats[5];
 
   ap_uint<bit_length(kPiHeapStatCount[1])> stat_idx = 0;
 
@@ -222,8 +227,6 @@ spin:
 
       const bool is_fresh_entry_hit = fresh_entry.IsHit(req.vid);
 
-      ++op_stats[req.op];
-
       switch (req.op) {
         case GET_STALE: {
           CHECK(is_stale_entry_pos_valid);
@@ -340,6 +343,10 @@ spin:
                       : pkt.addr,
           .payload = resp,
       });
+      state_q.write({
+          .level = can_acquire_index ? LevelId(0) : pkt.addr,
+          .op = can_acquire_index ? ACQUIRE_INDEX : req.op,
+      });
     }
 
     if (!can_send_stat && !can_collect_write &&
@@ -355,9 +362,13 @@ spin:
 
 void PiHeapPerf(
     //
+    uint_qid_t qid,
+    //
     istream<bool>& done_q, ostream<PiHeapStat>& stat_q,
     //
-    istream<QueueStateUpdate>& queue_state_q) {
+    istream<QueueStateUpdate>& queue_state_q,
+    istream<IndexStateUpdate>& index_req_state_q,
+    istream<IndexStateUpdate>& index_resp_state_q) {
   /*
     States w/ index
       + IDLE: queue is idle
@@ -404,28 +415,52 @@ void PiHeapPerf(
         - idle -> IDLE
   */
 
-  constexpr int kStateCountSize = 4;
-  constexpr int kOpCountSize = 3;
+  /*
+    Each level sends an IndexStateUpdate whenever a request is started.
+    The index sends an IndexStateUpdate when the response is sent.
+    The state of index is maintained per-level, since different levels may have
+    outstanding requests at the same time.
+   */
+
+  constexpr int kQueueStateCountSize = 4;
+  constexpr int kQueueOpCountSize = kQueueStateCountSize - 1;
 
 exec:
   for (;;) {
-    DECL_ARRAY(PiHeapStat, state_count, kStateCountSize, 0);
-    DECL_ARRAY(PiHeapStat, op_count, kOpCountSize, 0);
+    DECL_ARRAY(PiHeapStat, queue_state_count, kQueueStateCountSize, 0);
+    DECL_ARRAY(PiHeapStat, queue_op_count, kQueueOpCountSize, 0);
+
+    PiHeapStat index_state_count[kLevelCount][kPiHeapIndexOpTypeCount];
+    PiHeapStat index_op_count[kLevelCount][kPiHeapIndexOpTypeCount];
+#pragma HLS array_partition complete variable = index_state_count dim = 0
+#pragma HLS array_partition complete variable = index_op_count dim = 0
+    RANGE(i, kLevelCount, RANGE(j, kPiHeapIndexOpTypeCount, {
+            index_state_count[i][j] = 0;
+            index_op_count[i][j] = 0;
+          }));
 
     bool is_started = false;
 
     using namespace queue_state;
-    QueueState state = IDLE;
+    QueueState queue_state = IDLE;
 
     uint_piheap_size_t current_size = 0;
     uint_piheap_size_t max_size = 0;
     ap_uint<64> total_size = 0;
 
+    DECL_ARRAY(bool, is_index_busy, kLevelCount, false);
+    DECL_ARRAY(HeapOp, index_state, kLevelCount, HeapOp());
+
   spin:
     for (int64_t cycle_count = 0; done_q.empty(); ++cycle_count) {
 #pragma HLS pipeline II = 1
       if (is_started) {
-        ++state_count[state];
+        ++queue_state_count[queue_state];
+        RANGE(level, kLevelCount, {
+          if (is_index_busy[level]) {
+            ++index_state_count[level][index_state[level]];
+          }
+        });
         total_size += current_size;
         max_size = std::max(max_size, current_size);
       }
@@ -433,25 +468,47 @@ exec:
         const auto update = queue_state_q.read(nullptr);
         if (update.state != IDLE) {
           is_started = true;
-          ++op_count[update.state - 1];
+          ++queue_op_count[update.state - 1];
         }
         current_size = update.size;
-        state = update.state;
+        queue_state = update.state;
+      }
+      if (!index_req_state_q.empty() &&
+          !is_index_busy[index_req_state_q.peek(nullptr).level]) {
+        const auto update = index_req_state_q.read(nullptr);
+        is_index_busy[update.level] = true;
+        index_state[update.level] = update.op;
+        ++index_op_count[update.level][update.op];
+      }
+      if (!index_resp_state_q.empty() &&
+          is_index_busy[index_resp_state_q.peek(nullptr).level]) {
+        const auto update = index_resp_state_q.read(nullptr);
+        CHECK_EQ(index_state[update.level], update.op);
+        is_index_busy[update.level] = false;
       }
     }
 
     done_q.read(nullptr);
-    for (int i = 0; i < kStateCountSize; ++i) {
+    for (int i = 0; i < kQueueStateCountSize; ++i) {
 #pragma HLS unroll
-      stat_q.write(state_count[i]);
+      stat_q.write(queue_state_count[i]);
     }
-    for (int i = 0; i < kOpCountSize; ++i) {
+    for (int i = 0; i < kQueueOpCountSize; ++i) {
 #pragma HLS unroll
-      stat_q.write(op_count[i]);
+      stat_q.write(queue_op_count[i]);
     }
     stat_q.write(max_size);
     stat_q.write(total_size.range(63, 32));
     stat_q.write(total_size.range(31, 0));
+
+    for (int level = 0; level < kLevelCount; ++level) {
+#pragma HLS unroll
+      for (int op = 0; op < kPiHeapIndexOpTypeCount; ++op) {
+#pragma HLS unroll
+        stat_q.write(index_state_count[level][op]);
+        stat_q.write(index_op_count[level][op]);
+      }
+    }
   }
 }
 
@@ -875,9 +932,13 @@ void TaskQueue(
 
   stream<QueueStateUpdate, 2> queue_state_q;
 
+  stream<IndexStateUpdate, 2> index_req_state_q;
+  stream<IndexStateUpdate, 2> index_resp_state_q;
+
   task()
       .invoke<detach>(PiHeapStatArbiter, done_q, stat_q, done_qi, stat_qi)
-      .invoke<detach>(PiHeapPerf, done_qi[0], stat_qi[0], queue_state_q)
+      .invoke<detach>(PiHeapPerf, qid, done_qi[0], stat_qi[0], queue_state_q,
+                      index_req_state_q, index_resp_state_q)
       .invoke<detach>(PiHeapHead, qid, push_req_q, noop_q, task_req_q,
                       task_resp_q, req_q[0], resp_q[0], queue_state_q,
                       index_req_qs[0], index_resp_qs[0])
@@ -949,9 +1010,10 @@ void TaskQueue(
       .invoke<detach>(PiHeapArrayWriteRespArbiter, array_write_id_q,
                       piheap_array_write_resp_q, array_write_resp_q)
 
-      .invoke<detach>(PiHeapIndexReqArbiter, index_req_qs, index_req_q)
-      .invoke<detach>(PiHeapIndex, done_qi[1], stat_qi[1], qid, index_req_q,
-                      index_resp_q, piheap_index_read_addr_q,
+      .invoke<detach>(PiHeapIndexReqArbiter, index_req_qs, index_req_state_q,
+                      index_req_q)
+      .invoke<detach>(PiHeapIndex, done_qi[1], stat_qi[1], index_resp_state_q,
+                      qid, index_req_q, index_resp_q, piheap_index_read_addr_q,
                       piheap_index_read_data_q, piheap_index_write_req_q,
                       piheap_index_write_resp_q, acquire_index_ctx_q,
                       acquire_index_ctx_q)

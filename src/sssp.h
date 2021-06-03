@@ -178,9 +178,11 @@ inline int GetAddrOfOffChipHeapElem(int level, int idx, int qid) {
 
 constexpr int kVertexUniStatCount = 10;
 
+constexpr int kPiHeapIndexOpTypeCount = 5;
+
 constexpr int kPiHeapStatCount[] = {
-    10,  // PiHeapHead
-    11,  // PiHeapIndex
+    10 + kPiHeapIndexOpTypeCount * kLevelCount * 2,  // PiHeapHead
+    6,                                               // PiHeapIndex
 };
 constexpr int kPiHeapStatTotalCount = kPiHeapStatCount[0] + kPiHeapStatCount[1];
 constexpr int kPiHeapStatTaskCount =

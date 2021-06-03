@@ -39,6 +39,11 @@ struct QueueStateUpdate {
   uint_piheap_size_t size;
 };
 
+struct IndexStateUpdate {
+  LevelId level;
+  HeapOp op;
+};
+
 struct HeapIndexReq {
   HeapOp op;
   Vid vid;
