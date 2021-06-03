@@ -615,11 +615,14 @@ spin:
         }
 
       } else if (do_pop) {
-        auto resp_task = push_req;
-        if (root.valid && !(do_push && root.task <= push_req)) {
-          resp_task = root.task;
-          CHECK_EQ(resp_task.vid() % kQueueCount, qid);
+        const bool is_update_needed =
+            root.valid && !(do_push && root.task <= push_req);
 
+        const auto resp_task = is_update_needed ? root.task : push_req;
+        CHECK_EQ(resp_task.vid() % kQueueCount, qid);
+        task_req_q.write({pe_qid, resp_task});
+
+        if (is_update_needed) {
 #ifdef TAPA_SSSP_PHEAP_INDEX
           index_req_q.write({.op = CLEAR_FRESH, .vid = root.task.vid()});
           ap_wait();
@@ -633,7 +636,6 @@ spin:
               },
               0, root, resp_in_q, req_out_q);
         }
-        task_req_q.write({pe_qid, resp_task});
       }
     }
   }
