@@ -573,46 +573,24 @@ spin:
         .size = root.size,
     });
 
-    QueueOp req;
-    if (do_push) {
-      req.task = push_req;
-      req.op = do_pop ? QueueOp::PUSHPOP : QueueOp::PUSH;
-    } else if (do_pop) {
-      req.task.set_vid(qid);
-      req.op = QueueOp::POP;
-    } else {
-      continue;
-    }
+    VLOG_IF(5, do_push) << "PUSH q[" << qid << "] <-  " << push_req;
+    VLOG_IF(5, do_pop) << "POP  q[" << qid << "]  -> "
+                       << (do_push && root.task <= push_req ? push_req
+                                                            : root.task);
 
-    switch (req.op) {
-      case QueueOp::PUSH: {
-        VLOG(5) << "PUSH q[" << qid << "] <-  " << req.task;
-      } break;
-      case QueueOp::POP: {
-        if (root.valid) {
-          VLOG(5) << "POP  q[" << qid << "]  -> " << root.task;
-        } else {
-          VLOG(5) << "POP  q[" << qid << "]  -> {}";
-        }
-      } break;
-      case QueueOp::PUSHPOP: {
-        VLOG(5) << "PUSH q[" << qid << "] <-  " << req.task;
-        VLOG(5) << "POP  q[" << qid << "]  -> "
-                << (root.task <= req.task ? req.task : root.task);
-      } break;
-    }
-
-    switch (req.op) {
-      case QueueOp::PUSH: {
+    {
+      if (do_push && !do_pop) {
         HeapIndexResp heap_index_resp;
 #ifdef TAPA_SSSP_PHEAP_INDEX
       acquire:
         do {
 #pragma HLS pipeline off
 #pragma HLS loop_tripcount max = 1
-          index_req_q.write({.op = ACQUIRE_INDEX,
-                             .vid = req.task.vid(),
-                             .entry = {0, 0, req.task.vertex().distance}});
+          index_req_q.write({
+              .op = ACQUIRE_INDEX,
+              .vid = push_req.vid(),
+              .entry = {/*level=*/0, /*index=*/0, push_req.vertex().distance},
+          });
           ap_wait();
           heap_index_resp = index_resp_q.read();
         } while (heap_index_resp.yield);
@@ -625,22 +603,20 @@ spin:
           PiHeapPush(qid, /*level=*/0,
                      {
                          .index = 0,
-                         .op = req.op,
-                         .task = req.task,
+                         .op = QueueOp::PUSH,
+                         .task = push_req,
                          .replace = heap_index_resp.entry.valid(),
-                         .vid = req.task.vid(),
+                         .vid = push_req.vid(),
                      },
                      root, resp_in_q, req_out_q, index_req_q, index_resp_q);
         }
         if (!heap_index_resp.enable || heap_index_resp.entry.valid()) {
           noop_q.write(false);
         }
-      } break;
 
-      case QueueOp::PUSHPOP:
-      case QueueOp::POP: {
-        auto resp_task = req.task;
-        if (root.valid && !(req.is_pushpop() && root.task <= req.task)) {
+      } else if (do_pop) {
+        auto resp_task = push_req;
+        if (root.valid && !(do_push && root.task <= push_req)) {
           resp_task = root.task;
           CHECK_EQ(resp_task.vid() % kQueueCount, qid);
 
@@ -650,10 +626,15 @@ spin:
           index_resp_q.read();
 #endif  // TAPA_SSSP_PHEAP_INDEX
 
-          PiHeapPop(req, 0, root, resp_in_q, req_out_q);
+          PiHeapPop(
+              {
+                  .op = do_push ? QueueOp::PUSHPOP : QueueOp::POP,
+                  .task = push_req,
+              },
+              0, root, resp_in_q, req_out_q);
         }
         task_req_q.write({pe_qid, resp_task});
-      } break;
+      }
     }
   }
 }
