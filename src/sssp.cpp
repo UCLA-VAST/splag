@@ -38,6 +38,7 @@ void PiHeapIndexReqArbiter(istreams<HeapIndexReq, kLevelCount>& req_in_q,
 spin:
   for (ap_uint<kLevelCount> priority = 1;; priority.lrotate(1)) {
 #pragma HLS pipeline II = 1
+#pragma HLS latency max = 0
     LevelId level;
     if (find_non_empty(req_in_q, priority, level)) {
       const auto req = req_in_q[level].read(nullptr);
@@ -52,6 +53,7 @@ void PiHeapIndexRespArbiter(istream<packet<LevelId, HeapIndexResp>>& req_in_q,
 spin:
   for (;;) {
 #pragma HLS pipeline II = 1
+#pragma HLS latency max = 0
     if (req_in_q.empty()) continue;
     const auto resp = req_in_q.read(nullptr);
     req_out_q[resp.addr].write(resp.payload);
@@ -786,6 +788,7 @@ void PiHeapArrayReadAddrArbiter(  //
 spin:
   for (ap_uint<kLevelCount> priority = 1;;) {
 #pragma HLS pipeline II = 1
+#pragma HLS latency max = 0
     LevelId level;
     if (find_non_empty(req_in_q, priority, level) && !req_id_q.full() &&
         !req_out_q.full()) {
@@ -805,6 +808,7 @@ void PiHeapArrayReadDataArbiter(  //
 spin:
   for (;;) {
 #pragma HLS pipeline II = 1
+#pragma HLS latency max = 0
     if (!req_id_q.empty() && !req_in_q.empty()) {
       req_out_q[req_id_q.read(nullptr)].write(req_in_q.read(nullptr));
     }
@@ -820,6 +824,7 @@ spin:
                                               ? OffChipLevelId(0)
                                               : OffChipLevelId(level + 1)) {
 #pragma HLS pipeline II = 1
+#pragma HLS latency max = 0
     if (!req_in_q[level].empty() && !req_id_q.full() && !req_out_q.full()) {
       req_id_q.try_write(level);
       req_out_q.try_write(req_in_q[level].read(nullptr));
@@ -833,6 +838,7 @@ void PiHeapArrayWriteRespArbiter(  //
 spin:
   for (;;) {
 #pragma HLS pipeline II = 1
+#pragma HLS latency max = 0
     if (!req_id_q.empty() && !req_in_q.empty()) {
       req_out_q[req_id_q.read(nullptr)].write(req_in_q.read(nullptr));
     }
