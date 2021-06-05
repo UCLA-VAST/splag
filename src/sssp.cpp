@@ -667,7 +667,7 @@ void PiHeapBodyOffChip(
   shiftreg<LevelIndex, 16> writing_index;
 
 spin:
-  for (bool is_first_time = true;; is_first_time = false) {
+  for (bool is_first_time = true;;) {
 #pragma HLS pipeline off
     if (!write_resp_q.empty()) {
       write_resp_q.read(nullptr);
@@ -684,6 +684,7 @@ spin:
     req_in_q.read(nullptr);
     LOG_IF(INFO, is_first_time)
         << "q[" << qid << "]: off-chip level " << level << " accessed";
+    is_first_time = false;
 
     const ap_uint<bit_length(kPiHeapWidth)> elem_count =
         req.op == QueueOp::PUSH ? 1 : kPiHeapWidth;
