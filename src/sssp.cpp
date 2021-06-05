@@ -1654,7 +1654,7 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
 
   // For vertices.
   // Route updates via a kShardCount x kShardCount network.
-  streams<TaskOnChip, kShardCount, 2> xbar_q0;
+  streams<TaskOnChip, kShardCount, 32> xbar_q0;
   streams<TaskOnChip, kShardCount, 32> xbar_q1;
 #if TAPA_SSSP_SHARD_COUNT >= 4
   streams<TaskOnChip, kShardCount, 32> xbar_q2;
