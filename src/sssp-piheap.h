@@ -234,8 +234,7 @@ inline void PiHeapPush(uint_qid_t qid, int level, HeapReq req,
       auto max_cap = elem.cap[0];
     find_max:
       for (ap_uint<bit_length(kPiHeapWidth)> i = 1; i < kPiHeapWidth; ++i) {
-#pragma HLS pipeline II = 1
-#pragma HLS unroll factor = 2
+#pragma HLS unroll
         if (!(elem.cap[i] <= max_cap)) {
           max_cap = elem.cap[i];
           max = i;
