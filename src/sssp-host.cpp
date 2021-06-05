@@ -454,10 +454,10 @@ int main(int argc, char* argv[]) {
       init_elem.cap[i] = cap;
     }
     init_elem.size = 0;
-    const auto init_elem_packed = init_elem.Pack();
+    const auto init_elem_packed = HeapElemAxi::Pack({init_elem, init_elem});
 
     for (int qid = 0; qid < kQueueCount; ++qid) {
-      for (int idx = 0; idx < GetCapOfLevel(level); ++idx) {
+      for (int idx = 0; idx < GetCapOfLevel(level); idx += 2) {
         const auto addr = GetAddrOfOffChipHeapElem(level, idx, qid);
         CHECK_NE(heap_array[addr], init_elem_packed);
         heap_array[addr] = init_elem_packed;

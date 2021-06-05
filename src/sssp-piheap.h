@@ -95,50 +95,50 @@ struct HeapResp {
 using PiHeapStat = int32_t;
 
 template <typename HeapElemType, int N>
-inline HeapElemType ReadElem(const HeapElemType (&elems)[N],
-                             uint_on_chip_level_index_t pos) {
-  return elems[pos];
-}
-
-inline HeapElemAxi ReadElem(tapa::istream<HeapElemPacked>& read_data_q,
-                            uint_on_chip_level_index_t) {
-  return HeapElemAxi::Unpack(read_data_q.read());
-}
-
-template <typename HeapElemType, int N>
-inline void ReadElemPair(const HeapElemType (&elems)[N],
+inline void ReadElemPair(const HeapElemType (&elems_in)[N],
                          uint_on_chip_level_index_t pos,
-                         HeapElemType (&elem_pair)[2]) {
-  elem_pair[0] = elems[pos];
-  elem_pair[1] = elems[pos + 1];
+                         HeapElemType (&elem_pair_out)[2]) {
+  elem_pair_out[0] = elems_in[pos / 2 * 2];
+  elem_pair_out[1] = elems_in[pos / 2 * 2 + 1];
 }
 
 inline void ReadElemPair(tapa::istream<HeapElemPacked>& read_data_q,
                          uint_on_chip_level_index_t,
-                         HeapElemAxi (&elem_pair)[2]) {
-  elem_pair[0] = HeapElemAxi::Unpack(read_data_q.read());
-  elem_pair[1] = HeapElemAxi::Unpack(read_data_q.read());
+                         HeapElemAxi (&elem_pair_out)[2]) {
+  HeapElemAxi::Unpack(read_data_q.read(), elem_pair_out);
 }
 
 template <typename HeapElemType, typename HeapElemSource>
-inline bool IsUpdateNeeded(HeapElemSource& elems, const HeapReq& req,
-                           LevelIndex& idx, HeapElemType& elem) {
+inline bool IsUpdateNeeded(HeapElemSource& elems_in, const HeapReq& req,
+                           LevelIndex& idx, HeapElemType (&elem_pair_out)[2]) {
 #pragma HLS inline
   CHECK_EQ(req.index % kPiHeapWidth, 0);
   bool is_max_pos_valid = false;
-  elem.valid = req.op == QueueOp::PUSHPOP;
-  elem.task = req.task;
+  HeapElemType max_elem;
+  max_elem.valid = req.op == QueueOp::PUSHPOP;
+  max_elem.task = req.task;
 find_update:
   for (ap_uint<bit_length(kPiHeapWidth)> i = 0; i < kPiHeapWidth; i += 2) {
 #pragma HLS pipeline II = 1 rewind
     DECL_ARRAY(HeapElemType, elem_pair, 2, HeapElemType());
-    ReadElemPair(elems, req.index + i, elem_pair);
-    for (ap_uint<2> j = 0; j < 2; ++j) {
-      if (elem_pair[j].valid &&
-          (!elem.valid || !(elem_pair[j].task <= elem.task))) {
-        idx = req.index + i + j;
-        elem = elem_pair[j];
-        is_max_pos_valid |= true;
+    ReadElemPair(elems_in, req.index + i, elem_pair);
+    const bool is_update_needed_0 =
+        elem_pair[0].valid &&
+        (!max_elem.valid || !(elem_pair[0].task <= max_elem.task));
+    const bool is_update_needed_1 =
+        elem_pair[1].valid &&
+        (!max_elem.valid || !(elem_pair[1].task <= max_elem.task));
+    if (is_update_needed_0 || is_update_needed_1) {
+      elem_pair_out[0] = elem_pair[0];
+      elem_pair_out[1] = elem_pair[1];
+      is_max_pos_valid |= true;
+      if (!elem_pair[0].valid ||
+          (elem_pair[1].valid && elem_pair[0].task <= elem_pair[1].task)) {
+        idx = req.index + i + 1;
+        max_elem = elem_pair[1];
+      } else {
+        idx = req.index + i + 0;
+        max_elem = elem_pair[0];
       }
     }
   }
@@ -313,10 +313,11 @@ template <typename HeapElemType, typename HeapElemSource>
 inline bool IsPiHeapElemUpdated(  //
     uint_qid_t qid, int level, const HeapReq& req,
     //
-    HeapElemSource& elems,
-    LevelIndex& idx,     // Output
-    HeapElemType& elem,  // Output
-                         // Parent level
+    HeapElemSource& elems_in,          // Input
+    LevelIndex& idx,                   // Output
+    HeapElemType (&elem_pair_out)[2],  // Output
+
+    // Parent level
     tapa::istream<HeapReq>& req_in_q, tapa::ostream<HeapResp>& resp_out_q,
     // Child level
     tapa::ostream<HeapReq>& req_out_q, tapa::istream<HeapResp>& resp_in_q,
@@ -331,35 +332,37 @@ inline bool IsPiHeapElemUpdated(  //
 #ifdef TAPA_SSSP_PHEAP_PUSH_ACK
       resp_out_q.write({});
 #endif  // TAPA_SSSP_PHEAP_PUSH_ACK
-      elem = ReadElem(elems, req.index);
+      ReadElemPair(elems_in, req.index, elem_pair_out);
       idx = req.index;
-      PiHeapPush(qid, level, req, elem, resp_in_q, req_out_q, index_req_q,
-                 index_resp_q);
+      PiHeapPush(qid, level, req, elem_pair_out[idx % 2], resp_in_q, req_out_q,
+                 index_req_q, index_resp_q);
       is_elem_written = true;
     } break;
 
     case QueueOp::PUSHPOP:
     case QueueOp::POP: {
-      const bool is_updated_needed = IsUpdateNeeded(elems, req, idx, elem);
+      const bool is_updated_needed =
+          IsUpdateNeeded(elems_in, req, idx, elem_pair_out);
 #ifdef TAPA_SSSP_PHEAP_INDEX
       if (is_updated_needed) {
         CHECK_EQ(req.index % kPiHeapWidth, 0);
         index_req_q.write({
             .op = UPDATE_INDEX,
-            .vid = elem.task.vid(),
+            .vid = elem_pair_out[idx % 2].task.vid(),
             .entry = {level - 1, req.index / kPiHeapWidth,
-                      elem.task.vertex().distance},
+                      elem_pair_out[idx % 2].task.vertex().distance},
         });
         ap_wait();
         index_resp_q.read();
       }
 #endif  // TAPA_SSSP_PHEAP_INDEX
 
-      resp_out_q.write({.child = idx % kPiHeapWidth, .task = elem.task});
+      resp_out_q.write(
+          {.child = idx % kPiHeapWidth, .task = elem_pair_out[idx % 2].task});
 
       if (is_updated_needed) {
-        PiHeapPop({.op = req.op, .task = req.task}, idx, elem, resp_in_q,
-                  req_out_q);
+        PiHeapPop({.op = req.op, .task = req.task}, idx, elem_pair_out[idx % 2],
+                  resp_in_q, req_out_q);
         is_elem_written = true;
       }
     } break;
@@ -406,12 +409,14 @@ spin:
 
     // Outputs from IsPiHeapElemUpdated.
     LevelIndex idx;
-    HeapElem<level> elem;
-#pragma HLS array_partition variable = elem.cap complete
-    if (IsPiHeapElemUpdated(qid, level, req, heap_array, idx, elem, req_in_q,
-                            resp_out_q, req_out_q, resp_in_q, index_req_q,
-                            index_resp_q)) {
-      heap_array[idx] = elem;
+    HeapElem<level> elem_pair[2];
+#pragma HLS array_partition variable = elem_pair complete
+#pragma HLS array_partition variable = elem_pair[0].cap complete
+#pragma HLS array_partition variable = elem_pair[1].cap complete
+    if (IsPiHeapElemUpdated(qid, level, req, heap_array, idx, elem_pair,
+                            req_in_q, resp_out_q, req_out_q, resp_in_q,
+                            index_req_q, index_resp_q)) {
+      heap_array[idx] = elem_pair[idx % 2];
     }
   }
 }

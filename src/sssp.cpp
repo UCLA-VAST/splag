@@ -689,20 +689,23 @@ spin:
     const ap_uint<bit_length(kPiHeapWidth)> elem_count =
         req.op == QueueOp::PUSH ? 1 : kPiHeapWidth;
   read_elems:
-    for (ap_uint<bit_length(kPiHeapWidth)> i = 0; i < elem_count; ++i) {
-#pragma HLS pipeline II = 1
+    for (ap_uint<bit_length(kPiHeapWidth)> i = 0; i < elem_count; i += 2) {
+#pragma HLS loop_tripcount min = 1 max = kPiHeapWidth / 2
+#pragma HLS pipeline II = 1 rewind
       read_addr_q.write(GetAddrOfOffChipHeapElem(level, req.index + i, qid));
     }
 
     // Outputs from IsPiHeapElemUpdated.
     LevelIndex idx;
-    HeapElemAxi elem;
-#pragma HLS array_partition variable = elem.cap complete
-    if (IsPiHeapElemUpdated(qid, level, req, read_data_q, idx, elem, req_in_q,
-                            resp_out_q, req_out_q, resp_in_q, index_req_q,
-                            index_resp_q)) {
-      write_req_q.try_write(
-          {GetAddrOfOffChipHeapElem(level, idx, qid), elem.Pack()});
+    HeapElemAxi elem_pair[2];
+#pragma HLS array_partition variable = elem_pair complete
+#pragma HLS array_partition variable = elem_pair[0].cap complete
+#pragma HLS array_partition variable = elem_pair[1].cap complete
+    if (IsPiHeapElemUpdated(qid, level, req, read_data_q, idx, elem_pair,
+                            req_in_q, resp_out_q, req_out_q, resp_in_q,
+                            index_req_q, index_resp_q)) {
+      write_req_q.try_write({GetAddrOfOffChipHeapElem(level, idx, qid),
+                             HeapElemAxi::Pack(elem_pair)});
       writing_index.push(idx / kPiHeapWidth);
     }
   }

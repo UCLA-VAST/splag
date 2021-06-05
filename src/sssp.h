@@ -159,21 +159,22 @@ inline int GetAddrOfOffChipHeapElem(int level, int idx, int qid) {
   CHECK_LT(qid, kQueueCount);
   CHECK_EQ(GetCapOfLevel(level) % kPiHeapWidth, 0);
 
-  // Raw index in queue: GetCapOfLevel(level) + idx.
+  // Raw index in queue: (GetCapOfLevel(level) + idx) / 2.
+  // Divided by 2 because each pack contains 2 elements.
   // Mapped index is concatenated by the following parts:
-  //  1. index;
+  //  1. index: bits excluding qid and offset;
   //  2. qid: log2(kQueueCount) bits;
-  //  3. offset: log2(kPiHeapWidth)  bits.
+  //  3. offset: log2(kPiHeapWidth) bits.
   constexpr int kQidWidth = log2(kQueueCount);
-  constexpr int kOffsetWidth = log2(kPiHeapWidth);
+  constexpr int kOffsetWidth = log2(kPiHeapWidth / 2);
   constexpr int kIndexWidth = LevelIndex::width + 1 - kOffsetWidth;
   static_assert(kIndexWidth + kQidWidth + kOffsetWidth < 32,
                 "need to change return value");
   const auto raw_index =
-      ap_uint<kIndexWidth + kOffsetWidth>(GetCapOfLevel(level) + idx);
+      ap_uint<kIndexWidth + kOffsetWidth>((GetCapOfLevel(level) + idx) / 2);
   return ap_uint<kIndexWidth>(
              raw_index.range(kIndexWidth + kOffsetWidth - 1, kOffsetWidth)),
-         ap_uint<kQidWidth>(qid), ap_uint<kOffsetWidth>(idx);
+         ap_uint<kQidWidth>(qid), ap_uint<kOffsetWidth>(idx / 2);
 }
 
 constexpr int kVertexUniStatCount = 10;
@@ -254,7 +255,7 @@ class TaskOnChip {
   friend struct HeapElemAxi;
 };
 
-using HeapElemPacked = ap_uint<256>;
+using HeapElemPacked = ap_uint<512>;
 
 struct HeapElemAxi {
   static constexpr int kCapWidth =
@@ -266,30 +267,37 @@ struct HeapElemAxi {
   Capacity cap[kPiHeapWidth];
   ap_uint<Capacity::width + log2(kPiHeapWidth)> size;  // Size of all children.
 
-  static HeapElemAxi Unpack(const HeapElemPacked& packed) {
-    HeapElemAxi elem;
-#pragma HLS array_partition variable = elem.cap complete
-    elem.valid = packed.get_bit(kValidBit);
-    elem.task.data = packed.range(kTaskMsb, kTaskLsb);
-    for (int i = 0; i < kPiHeapWidth; ++i) {
+  static void Unpack(const HeapElemPacked& packed, HeapElemAxi (&unpacked)[2]) {
+#pragma HLS inline
+    for (int i = 0; i < 2; ++i) {
 #pragma HLS unroll
-      elem.cap[i] = packed.range(kCapLsb + kCapWidth * (i + 1) - 1,
-                                 kCapLsb + kCapWidth * i);
+      const auto base = HeapElemPacked::width / 2 * i;
+      unpacked[i].valid = packed.get_bit(kValidBit + base);
+      unpacked[i].task.data = packed.range(kTaskMsb + base, kTaskLsb + base);
+      for (int j = 0; j < kPiHeapWidth; ++j) {
+#pragma HLS unroll
+        unpacked[i].cap[j] =
+            packed.range(kCapLsb + kCapWidth * (j + 1) - 1 + base,
+                         kCapLsb + kCapWidth * j + base);
+      }
+      unpacked[i].size = packed.range(kSizeMsb + base, kSizeLsb + base);
     }
-    elem.size = packed.range(kSizeMsb, kSizeLsb);
-    return elem;
   }
-
-  HeapElemPacked Pack() const {
+  static HeapElemPacked Pack(const HeapElemAxi (&unpacked)[2]) {
+#pragma HLS inline
     HeapElemPacked packed;
-    packed.set_bit(kValidBit, valid);
-    packed.range(kTaskMsb, kTaskLsb) = task.data;
-    for (int i = 0; i < kPiHeapWidth; ++i) {
+    for (int i = 0; i < 2; ++i) {
 #pragma HLS unroll
-      packed.range(kCapLsb + kCapWidth * (i + 1) - 1, kCapLsb + kCapWidth * i) =
-          cap[i];
+      const auto base = HeapElemPacked::width / 2 * i;
+      packed.set_bit(kValidBit + base, unpacked[i].valid);
+      packed.range(kTaskMsb + base, kTaskLsb + base) = unpacked[i].task.data;
+      for (int j = 0; j < kPiHeapWidth; ++j) {
+#pragma HLS unroll
+        packed.range(kCapLsb + kCapWidth * (j + 1) - 1 + base,
+                     kCapLsb + kCapWidth * j + base) = unpacked[i].cap[j];
+      }
+      packed.range(kSizeMsb + base, kSizeLsb + base) = unpacked[i].size;
     }
-    packed.range(kSizeMsb, kSizeLsb) = size;
     return packed;
   }
 
@@ -301,7 +309,7 @@ struct HeapElemAxi {
   static constexpr int kSizeLsb = kCapLsb + kCapWidth * kPiHeapWidth;
   static constexpr int kSizeMsb = kSizeLsb + decltype(size)::width;
 
-  static_assert(kSizeMsb < HeapElemPacked::width,
+  static_assert(kSizeMsb < HeapElemPacked::width / 2,
                 "HeapElemPacked has insufficient width");
 };
 
