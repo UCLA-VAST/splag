@@ -904,20 +904,20 @@ void TaskQueue(
     ostream<packet<Vid, HeapIndexEntry>>& piheap_index_write_req_q,
     istream<bool>& piheap_index_write_resp_q) {
   // Heap rule: child <= parent
-  streams<HeapReq, kLevelCount, 2> req_q;
-  streams<HeapResp, kLevelCount, 2> resp_q;
-  streams<HeapIndexReq, kLevelCount, 2> index_req_qs;
-  streams<HeapIndexResp, kLevelCount, 2> index_resp_qs;
-  stream<packet<LevelId, HeapIndexReq>, 2> index_req_q;
-  stream<packet<LevelId, HeapIndexResp>, 2> index_resp_q;
+  streams<HeapReq, kLevelCount, 1> req_q;
+  streams<HeapResp, kLevelCount, 1> resp_q;
+  streams<HeapIndexReq, kLevelCount, 1> index_req_qs;
+  streams<HeapIndexResp, kLevelCount, 1> index_resp_qs;
+  stream<packet<LevelId, HeapIndexReq>, 1> index_req_q;
+  stream<packet<LevelId, HeapIndexResp>, 1> index_resp_q;
 
   stream<OffChipLevelId, 64> array_read_id_q;
   streams<Vid, kOffChipLevelCount, kPiHeapWidth> array_read_addr_q;
-  streams<HeapElemPacked, kOffChipLevelCount, 2> array_read_data_q;
+  streams<HeapElemPacked, kOffChipLevelCount, 1> array_read_data_q;
 
   stream<OffChipLevelId, 64> array_write_id_q;
-  streams<packet<Vid, HeapElemPacked>, kOffChipLevelCount, 2> array_write_req_q;
-  streams<bool, kOffChipLevelCount, 2> array_write_resp_q;
+  streams<packet<Vid, HeapElemPacked>, kOffChipLevelCount, 1> array_write_req_q;
+  streams<bool, kOffChipLevelCount, 1> array_write_resp_q;
 
   streams<bool, kPiHeapStatTaskCount, 2> done_qi;
   streams<PiHeapStat, kPiHeapStatTaskCount, 2> stat_qi;
