@@ -231,18 +231,11 @@ inline void PiHeapPush(uint_qid_t qid, int level, HeapReq req,
       CHECK(has_slot) << "level " << level;
 
       ap_uint<log2(kPiHeapWidth)> max = 0;
-      auto max_cap = elem.cap[0];
-    find_max:
-      for (ap_uint<bit_length(kPiHeapWidth)> i = 1; i < kPiHeapWidth; ++i) {
-#pragma HLS unroll
-        if (!(elem.cap[i] <= max_cap)) {
-          max_cap = elem.cap[i];
-          max = i;
-        }
-      }
+      const auto max_cap = find_max(elem.cap, max);
 
       CHECK_GT(elem.cap[max], 0);
-      --elem.cap[max];
+      CHECK_EQ(elem.cap[max], max_cap);
+      elem.cap[max] = max_cap - 1;
       ++elem.size;
       idx = idx * kPiHeapWidth + max;
 

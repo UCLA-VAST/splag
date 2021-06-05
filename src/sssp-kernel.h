@@ -283,6 +283,24 @@ struct arbiter {
                     : idx_right;
     return is_left_non_empty || is_right_non_empty;
   }
+
+  template <typename T, int N, typename pos_t>
+  static T find_max(const T (&array)[N], pos_t& pos) {
+#pragma HLS inline
+    static_assert(begin >= 0, "begin must >= 0");
+    static_assert(len > 1, "len must > 1");
+    static_assert(begin + len <= N, "begin + len must <= N");
+    pos_t pos_left, pos_right;
+    const auto max_left = arbiter<begin, len / 2>::find_max(array, pos_left);
+    const auto max_right =
+        arbiter<begin + len / 2, len - len / 2>::find_max(array, pos_right);
+    if (!(max_left <= max_right)) {
+      pos = pos_left;
+      return max_left;
+    }
+    pos = pos_right;
+    return max_right;
+  }
 };
 
 template <int begin>
@@ -299,6 +317,15 @@ struct arbiter<begin, 1> {
     }
     return true;
   }
+
+  template <typename T, int N, typename pos_t>
+  static T find_max(const T (&array)[N], pos_t& pos) {
+#pragma HLS inline
+    static_assert(begin >= 0, "begin must >= 0");
+    static_assert(begin < N, "beginmust < N");
+    pos = begin;
+    return array[begin];
+  }
 };
 
 /// Find a non-empty istream.
@@ -312,6 +339,17 @@ inline bool find_non_empty(tapa::istreams<T, S>& in_qs,
                            const ap_uint<int(S)>& priority, index_t& idx) {
 #pragma HLS inline
   return arbiter<0, S>::find_non_empty(in_qs, priority, idx);
+}
+
+/// Find the maximum value in a **completely partitioned** array.
+///
+/// @param[in] array  A completely partitioned array.
+/// @param[out] pos   Position of the maximum value.
+/// @return           The maximum value.
+template <typename T, int N, typename pos_t>
+inline T find_max(const T (&array)[N], pos_t& pos) {
+#pragma HLS inline
+  return arbiter<0, N>::find_max(array, pos);
 }
 
 template <typename T, int N>
