@@ -130,7 +130,7 @@ inline bool IsUpdateNeeded(HeapElemSource& elems, const HeapReq& req,
   elem.task = req.task;
 find_update:
   for (ap_uint<bit_length(kPiHeapWidth)> i = 0; i < kPiHeapWidth; i += 2) {
-#pragma HLS pipeline II = 1
+#pragma HLS pipeline II = 1 rewind
     DECL_ARRAY(HeapElemType, elem_pair, 2, HeapElemType());
     ReadElemPair(elems, req.index + i, elem_pair);
     for (ap_uint<2> j = 0; j < 2; ++j) {
