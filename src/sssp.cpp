@@ -727,12 +727,12 @@ spin:
       ostream<HeapReq>&req_out_q, istream<HeapResp>&resp_in_q,             \
       ostream<HeapIndexReq>&index_req_out_q,                               \
       istream<HeapIndexResp>&index_resp_in_q
-#define HEAP_BODY(level, mem)                                                  \
-  _Pragma("HLS inline recursive");                                             \
-  HeapElem<level> heap_array[GetCapOfLevel(level)];                            \
-  _Pragma("HLS aggregate variable = heap_array bit");                          \
-  DO_PRAGMA(HLS bind_storage variable = heap_array type = RAM_S2P impl = mem); \
-  PiHeapBody<level>(qid, heap_array, req_in_q, resp_out_q, req_out_q,          \
+#define HEAP_BODY(level, mem)                                                 \
+  _Pragma("HLS inline recursive");                                            \
+  HeapElem<level> heap_array[GetCapOfLevel(level)];                           \
+  _Pragma("HLS aggregate variable = heap_array bit");                         \
+  DO_PRAGMA(HLS bind_storage variable = heap_array type = RAM_2P impl = mem); \
+  PiHeapBody<level>(qid, heap_array, req_in_q, resp_out_q, req_out_q,         \
                     resp_in_q, index_req_out_q, index_resp_in_q)
 
 #if TAPA_SSSP_PHEAP_WIDTH == 2

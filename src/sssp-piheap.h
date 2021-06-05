@@ -105,6 +105,21 @@ inline HeapElemAxi ReadElem(tapa::istream<HeapElemPacked>& read_data_q,
   return HeapElemAxi::Unpack(read_data_q.read());
 }
 
+template <typename HeapElemType, int N>
+inline void ReadElemPair(const HeapElemType (&elems)[N],
+                         uint_on_chip_level_index_t pos,
+                         HeapElemType (&elem_pair)[2]) {
+  elem_pair[0] = elems[pos];
+  elem_pair[1] = elems[pos + 1];
+}
+
+inline void ReadElemPair(tapa::istream<HeapElemPacked>& read_data_q,
+                         uint_on_chip_level_index_t,
+                         HeapElemAxi (&elem_pair)[2]) {
+  elem_pair[0] = HeapElemAxi::Unpack(read_data_q.read());
+  elem_pair[1] = HeapElemAxi::Unpack(read_data_q.read());
+}
+
 template <typename HeapElemType, typename HeapElemSource>
 inline bool IsUpdateNeeded(HeapElemSource& elems, const HeapReq& req,
                            LevelIndex& idx, HeapElemType& elem) {
@@ -114,13 +129,17 @@ inline bool IsUpdateNeeded(HeapElemSource& elems, const HeapReq& req,
   elem.valid = req.op == QueueOp::PUSHPOP;
   elem.task = req.task;
 find_update:
-  for (ap_uint<bit_length(kPiHeapWidth)> i = 0; i < kPiHeapWidth; ++i) {
+  for (ap_uint<bit_length(kPiHeapWidth)> i = 0; i < kPiHeapWidth; i += 2) {
 #pragma HLS pipeline II = 1
-    const auto elem_i = ReadElem(elems, req.index + i);
-    if (elem_i.valid && (!elem.valid || !(elem_i.task <= elem.task))) {
-      idx = req.index + i;
-      elem = elem_i;
-      is_max_pos_valid |= true;
+    DECL_ARRAY(HeapElemType, elem_pair, 2, HeapElemType());
+    ReadElemPair(elems, req.index + i, elem_pair);
+    for (ap_uint<2> j = 0; j < 2; ++j) {
+      if (elem_pair[j].valid &&
+          (!elem.valid || !(elem_pair[j].task <= elem.task))) {
+        idx = req.index + i + j;
+        elem = elem_pair[j];
+        is_max_pos_valid |= true;
+      }
     }
   }
   return is_max_pos_valid;
