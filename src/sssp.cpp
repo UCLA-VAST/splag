@@ -558,15 +558,16 @@ spin:
       is_pe_active[resp.addr] = false;
     }
 
-    bool do_push = false;
-    bool do_pop = false;
-    const auto push_req = push_req_q.read(do_push);
 #ifdef TAPA_SSSP_PHEAP_INDEX
-    if (!do_push && root.valid) {
+    const bool do_pop = !is_pe_active[pe_qid] && root.valid;
+    const bool do_push = !do_pop && !push_req_q.empty();
 #else   // TAPA_SSSP_PHEAP_INDEX
-    if (do_push || root.valid) {
+    const bool do_push = !push_req_q.empty();
+    const bool do_pop = !is_pe_active[pe_qid] && (do_push || root.valid);
 #endif  // TAPA_SSSP_PHEAP_INDEX
-      do_pop = !is_pe_active[pe_qid];
+
+    const auto push_req = do_push ? push_req_q.read(nullptr) : TaskOnChip();
+    if (do_pop) {
       is_pe_active[pe_qid] = true;
     }
 
