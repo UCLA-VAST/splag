@@ -1544,22 +1544,12 @@ void Dispatcher(
   int32_t pop_valid_count = 0;
   int64_t cycle_count = 0;
 
-  constexpr int kTerminationHold = 10;
+  constexpr int kTerminationHold = 500;
   ap_uint<bit_length(kTerminationHold)> termination = 0;
 
 spin:
   for (int32_t active_task_count = 1;
-       active_task_count
-#ifndef __SYNTHESIS__
-       // For on-board execution it is impossible that NOOPs arrive before
-       // tasks, for but software simulation that may lead to early termination.
-       // The termination hold here fix the problem by setting the minimum
-       // required number of consecutive iterations where the active task count
-       // is 0.
-       || termination < kTerminationHold
-#endif  // __SYNTHESIS__
-       ;
-       ++cycle_count) {
+       active_task_count || termination < kTerminationHold; ++cycle_count) {
 #pragma HLS pipeline II = 1
     if (active_task_count == 0) {
       ++termination;
