@@ -604,6 +604,9 @@ spin:
         heap_index_resp.entry.invalidate();
         heap_index_resp.enable = true;
 #endif  // TAPA_SSSP_PHEAP_INDEX
+        if (!heap_index_resp.enable || heap_index_resp.entry.valid()) {
+          noop_q.write(false);
+        }
         if (heap_index_resp.enable) {
           PiHeapPush(qid, /*level=*/0,
                      {
@@ -615,10 +618,6 @@ spin:
                      },
                      root, resp_in_q, req_out_q, index_req_q, index_resp_q);
         }
-        if (!heap_index_resp.enable || heap_index_resp.entry.valid()) {
-          noop_q.write(false);
-        }
-
       } else if (do_pop) {
         const bool is_update_needed =
             root.valid && !(do_push && root.task <= push_req);
