@@ -416,8 +416,8 @@ int main(int argc, char* argv[]) {
   }
 
   // Other kernel arguments.
-  aligned_vector<int64_t> metadata(9 + kPeCount +
-                                   kSubIntervalCount * kVertexUniStatCount +
+  aligned_vector<int64_t> metadata(9 + kSubIntervalCount * kVertexUniStatCount +
+                                   kShardCount * kEdgeUnitStatCount +
                                    kQueueCount * kPiHeapStatTotalCount);
   array<aligned_vector<Vertex>, kIntervalCount> vertices;
   for (auto& interval : vertices) {
@@ -556,33 +556,6 @@ int main(int argc, char* argv[]) {
     VLOG_IF(3, pe_full_count)
         << "    PE full:             " << pe_full_count << " (" << std::fixed
         << std::setprecision(1) << 100. * pe_full_count / cycle_count << "%)";
-    int64_t pe_active_total = 0;
-    for (int pe = 0; pe < kPeCount; ++pe) {
-      const auto count = *(metadata_it++);
-      VLOG_IF(3, count) << "    PE[" << std::setfill(' ') << std::setw(3) << pe
-                        << "] active:      " << count << " (" << std::fixed
-                        << std::setprecision(1) << 100. * count / cycle_count
-                        << "%)";
-      pe_active_total += count;
-    }
-    VLOG_IF(3, pe_active_total)
-        << "    total active:        " << pe_active_total << " (" << std::fixed
-        << std::setprecision(1) << 100. * pe_active_total / cycle_count << "%)";
-    VLOG_IF(3, pe_active_total)
-        << "    per PE active:       " << pe_active_total / kPeCount << " ("
-        << std::fixed << std::setprecision(1)
-        << 100. * pe_active_total / cycle_count / kPeCount << "%) (" << kPeCount
-        << " PEs)";
-    VLOG_IF(3, pe_active_total)
-        << "    per shard active:    " << pe_active_total / kShardCount << " ("
-        << std::fixed << std::setprecision(1)
-        << 100. * pe_active_total / cycle_count / kShardCount << "%) ("
-        << kShardCount << " shards)";
-    VLOG_IF(3, pe_active_total)
-        << "    per interval active: " << pe_active_total / kIntervalCount
-        << " (" << std::fixed << std::setprecision(1)
-        << 100. * pe_active_total / cycle_count / kIntervalCount << "%) ("
-        << kIntervalCount << " intervals)";
 
     for (int iid = 0; iid < kIntervalCount; ++iid) {
       for (int siid = 0; siid < kSubIntervalCount / kIntervalCount; ++siid) {
@@ -627,6 +600,24 @@ int main(int argc, char* argv[]) {
         }
       }
     }
+
+    for (int sid = 0; sid < kShardCount; ++sid) {
+      VLOG(3) << "  shard[" << sid << "]:";
+
+      constexpr const char* kEdgeUnitOpNamesAligned[] = {
+          "active   ",  //
+          "mem stall",  //
+          "PE stall ",  //
+      };
+      const auto cycle_count = *(metadata_it++);
+      for (int i = 0; i < kEdgeUnitStatCount - 1; ++i) {
+        const auto op_count = *(metadata_it++);
+        VLOG(3) << "    " << kEdgeUnitOpNamesAligned[i] << ": " << setfill(' ')
+                << setw(10) << op_count << " ( " << fixed << setprecision(1)
+                << setw(5) << 100. * op_count / cycle_count << "%)";
+      }
+    }
+
     for (int qid = 0; qid < kQueueCount; ++qid) {
       VLOG(3) << "  queue[" << qid << "]:";
 

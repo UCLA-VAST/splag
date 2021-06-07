@@ -1119,9 +1119,43 @@ spin:
   }
 }
 
-void EdgeMem(tapa::istream<Vid>& read_addr_q, tapa::ostream<Edge>& read_data_q,
+void EdgeMem(istream<bool>& done_q, ostream<int64_t>& stat_q,
+             tapa::istream<Vid>& read_addr_q, tapa::ostream<Edge>& read_data_q,
              tapa::async_mmap<Edge> mem) {
-  ReadOnlyMem(read_addr_q, read_data_q, mem);
+  int64_t total_cycle_count = 0;
+  int64_t active_cycle_count = 0;
+  int64_t mem_stall_cycle_count = 0;
+  int64_t pe_stall_cycle_count = 0;
+
+spin:
+  for (; done_q.empty();) {
+#pragma HLS pipeline II = 1
+
+    ++total_cycle_count;
+
+    if (!read_addr_q.empty()) {
+      if (mem.read_addr.full()) {
+        ++mem_stall_cycle_count;
+      } else {
+        ++active_cycle_count;
+        mem.read_addr.try_write(read_addr_q.read(nullptr));
+      }
+    }
+
+    if (!mem.read_data.empty()) {
+      if (read_data_q.full()) {
+        ++pe_stall_cycle_count;
+      } else {
+        read_data_q.try_write(mem.read_data.read(nullptr));
+      }
+    }
+  }
+
+  done_q.read(nullptr);
+  stat_q.write(total_cycle_count);
+  stat_q.write(active_cycle_count);
+  stat_q.write(mem_stall_cycle_count);
+  stat_q.write(pe_stall_cycle_count);
 }
 
 void ProcElemS0(istream<TaskOnChip>& task_in_q, ostream<Vid>& task_resp_q,
@@ -1526,6 +1560,8 @@ void Dispatcher(
     // Vertex cache control.
     ostreams<bool, kSubIntervalCount>& vertex_cache_done_q,
     istreams<int32_t, kSubIntervalCount>& vertex_cache_stat_q,
+    ostreams<bool, kShardCount>& edge_done_q,
+    istreams<int64_t, kShardCount>& edge_stat_q,
     ostreams<bool, kQueueCount>& queue_done_q,
     istreams<PiHeapStat, kQueueCount>& queue_stat_q,
     // Task initialization.
@@ -1584,6 +1620,7 @@ spin:
   push_count += pop_valid_count;
 
   RANGE(iid, kSubIntervalCount, vertex_cache_done_q[iid].write(false));
+  RANGE(sid, kShardCount, edge_done_q[sid].write(false));
   RANGE(qid, kQueueCount, queue_done_q[qid].write(false));
 
   metadata[0] = visited_edge_count;
@@ -1595,15 +1632,23 @@ spin:
 vertex_cache_stat:
   for (int i = 0; i < kSubIntervalCount; ++i) {
     for (int j = 0; j < kVertexUniStatCount; ++j) {
-      metadata[9 + kPeCount + i * kVertexUniStatCount + j] =
-          vertex_cache_stat_q[i].read();
+      metadata[9 + i * kVertexUniStatCount + j] = vertex_cache_stat_q[i].read();
+    }
+  }
+
+edge_stat:
+  for (int i = 0; i < kShardCount; ++i) {
+    for (int j = 0; j < kEdgeUnitStatCount; ++j) {
+      metadata[9 + kSubIntervalCount * kVertexUniStatCount +
+               i * kEdgeUnitStatCount + j] = edge_stat_q[i].read();
     }
   }
 
 queue_stat:
   for (int i = 0; i < kQueueCount; ++i) {
     for (int j = 0; j < kPiHeapStatTotalCount; ++j) {
-      metadata[9 + kPeCount + kSubIntervalCount * kVertexUniStatCount +
+      metadata[9 + kShardCount * kEdgeUnitStatCount +
+               kSubIntervalCount * kVertexUniStatCount +
                i * kPiHeapStatTotalCount + j] = queue_stat_q[i].read();
     }
   }
@@ -1663,6 +1708,9 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   streams<bool, kSubIntervalCount, 2> vertex_cache_done_q;
   streams<int32_t, kSubIntervalCount, 2> vertex_cache_stat_q;
 
+  streams<bool, kShardCount, 2> edge_done_q;
+  streams<int64_t, kShardCount, 2> edge_stat_q;
+
   stream<uint_vertex_noop_t, 2> vertex_noop_q;
 
   streams<bool, kQueueCount, 2> queue_noop_qi;
@@ -1673,8 +1721,9 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
 
   tapa::task()
       .invoke<join>(Dispatcher, root, metadata, vertex_cache_done_q,
-                    vertex_cache_stat_q, queue_done_q, queue_stat_q,
-                    task_init_q, vertex_noop_q, queue_noop_q, task_count_q)
+                    vertex_cache_stat_q, edge_done_q, edge_stat_q, queue_done_q,
+                    queue_stat_q, task_init_q, vertex_noop_q, queue_noop_q,
+                    task_count_q)
       .invoke<detach>(TaskRespArbiter, task_resp_qi, task_resp_q)
       .invoke<detach, kQueueCount>(
           TaskQueue, queue_done_q, queue_stat_q, seq(), push_req_qi,
@@ -1696,8 +1745,8 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
           piheap_index_write_req_q, piheap_index_write_resp_q, heap_index)
 
       // For edges.
-      .invoke<detach, kShardCount>(EdgeMem, edge_read_addr_q, edge_read_data_q,
-                                   edges)
+      .invoke<join, kShardCount>(EdgeMem, edge_done_q, edge_stat_q,
+                                 edge_read_addr_q, edge_read_data_q, edges)
       .invoke<detach>(EdgeReqArbiter, edge_req_q, src_q, edge_read_addr_q)
 
       // For vertices.
