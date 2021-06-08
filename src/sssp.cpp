@@ -1020,12 +1020,20 @@ void Switch(
     //
     ap_uint<log2(kShardCount)> b,
     //
+    istream<bool>& done_q, ostream<int64_t>& stat_q,
+    //
     istream<TaskOnChip>& in_q0, istream<TaskOnChip>& in_q1,
     //
     ostream<TaskOnChip>& out_q0, ostream<TaskOnChip>& out_q1) {
   bool should_prioritize_1 = false;
+  int64_t total_cycle_count = 0;
+  int64_t full_0_cycle_count = 0;
+  int64_t full_1_cycle_count = 0;
+  int64_t conflict_0_cycle_count = 0;
+  int64_t conflict_1_cycle_count = 0;
+
 spin:
-  for (bool is_pkt_0_valid, is_pkt_1_valid;;) {
+  for (bool is_pkt_0_valid, is_pkt_1_valid; done_q.empty();) {
 #pragma HLS pipeline II = 1
 #pragma HLS latency max = 0
     const auto pkt_0 = in_q0.peek(is_pkt_0_valid);
@@ -1073,7 +1081,32 @@ spin:
     if (has_conflict) {
       should_prioritize_1 = !should_prioritize_1;
     }
+
+    if (should_write_0) {
+      if (!is_0_written) {
+        ++full_0_cycle_count;
+      }
+      if (has_conflict) {
+        ++conflict_0_cycle_count;
+      }
+    }
+    if (should_write_1) {
+      if (!is_1_written) {
+        ++full_1_cycle_count;
+      }
+      if (has_conflict) {
+        ++conflict_1_cycle_count;
+      }
+    }
+    ++total_cycle_count;
   }
+
+  done_q.read(nullptr);
+  stat_q.write(total_cycle_count);
+  stat_q.write(full_0_cycle_count);
+  stat_q.write(full_1_cycle_count);
+  stat_q.write(conflict_0_cycle_count);
+  stat_q.write(conflict_1_cycle_count);
 }
 
 void EdgeReqArbiter(tapa::istreams<EdgeReq, kPeCount>& req_q,
@@ -1564,6 +1597,8 @@ void Dispatcher(
     istreams<int64_t, kShardCount>& edge_stat_q,
     ostreams<bool, kQueueCount>& queue_done_q,
     istreams<PiHeapStat, kQueueCount>& queue_stat_q,
+    ostreams<bool, kSwitchCount>& switch_done_q,
+    istreams<int64_t, kSwitchCount>& switch_stat_q,
     // Task initialization.
     ostream<TaskOnChip>& task_init_q,
     // Task count.
@@ -1622,6 +1657,7 @@ spin:
   RANGE(iid, kSubIntervalCount, vertex_cache_done_q[iid].write(false));
   RANGE(sid, kShardCount, edge_done_q[sid].write(false));
   RANGE(qid, kQueueCount, queue_done_q[qid].write(false));
+  RANGE(swid, kSwitchCount, switch_done_q[swid].write(false));
 
   metadata[0] = visited_edge_count;
   metadata[1] = push_count;
@@ -1650,6 +1686,16 @@ queue_stat:
       metadata[9 + kShardCount * kEdgeUnitStatCount +
                kSubIntervalCount * kVertexUniStatCount +
                i * kPiHeapStatTotalCount + j] = queue_stat_q[i].read();
+    }
+  }
+
+switch_stat:
+  for (int i = 0; i < kSwitchCount; ++i) {
+    for (int j = 0; j < kSwitchStatCount; ++j) {
+      metadata[9 + kShardCount * kEdgeUnitStatCount +
+               kSubIntervalCount * kVertexUniStatCount +
+               kQueueCount * kPiHeapStatTotalCount + i * kSwitchStatCount + j] =
+          switch_stat_q[i].read();
     }
   }
 }
@@ -1711,6 +1757,9 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   streams<bool, kShardCount, 2> edge_done_q;
   streams<int64_t, kShardCount, 2> edge_stat_q;
 
+  streams<bool, kSwitchCount, 2> switch_done_q;
+  streams<int64_t, kSwitchCount, 2> switch_stat_q;
+
   stream<uint_vertex_noop_t, 2> vertex_noop_q;
 
   streams<bool, kQueueCount, 2> queue_noop_qi;
@@ -1722,8 +1771,8 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   tapa::task()
       .invoke<join>(Dispatcher, root, metadata, vertex_cache_done_q,
                     vertex_cache_stat_q, edge_done_q, edge_stat_q, queue_done_q,
-                    queue_stat_q, task_init_q, vertex_noop_q, queue_noop_q,
-                    task_count_q)
+                    queue_stat_q, switch_done_q, switch_stat_q, task_init_q,
+                    vertex_noop_q, queue_noop_q, task_count_q)
       .invoke<detach>(TaskRespArbiter, task_resp_qi, task_resp_q)
       .invoke<detach, kQueueCount>(
           TaskQueue, queue_done_q, queue_stat_q, seq(), push_req_qi,
@@ -1752,11 +1801,11 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
       // For vertices.
       // Route updates via a kShardCount x kShardCount network.
       // clang-format off
-      .invoke<detach>(Switch, 0, xbar_q0[0], xbar_q0[1], xbar_q1[0], xbar_q1[1])
+      .invoke<join>(Switch, 0, switch_done_q[0], switch_stat_q[0], xbar_q0[0], xbar_q0[1], xbar_q1[0], xbar_q1[1])
 #if TAPA_SSSP_SHARD_COUNT >= 4
-      .invoke<detach>(Switch, 0, xbar_q0[2], xbar_q0[3], xbar_q1[2], xbar_q1[3])
-      .invoke<detach>(Switch, 1, xbar_q1[0], xbar_q1[2], xbar_q2[0], xbar_q2[2])
-      .invoke<detach>(Switch, 1, xbar_q1[1], xbar_q1[3], xbar_q2[1], xbar_q2[3])
+      .invoke<join>(Switch, 0, switch_done_q[1], switch_stat_q[1], xbar_q0[2], xbar_q0[3], xbar_q1[2], xbar_q1[3])
+      .invoke<join>(Switch, 1, switch_done_q[2], switch_stat_q[2], xbar_q1[0], xbar_q1[2], xbar_q2[0], xbar_q2[2])
+      .invoke<join>(Switch, 1, switch_done_q[3], switch_stat_q[3], xbar_q1[1], xbar_q1[3], xbar_q2[1], xbar_q2[3])
 #endif // TAPA_SSSP_SHARD_COUNT
       // clang-format on
 

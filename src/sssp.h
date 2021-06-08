@@ -407,6 +407,9 @@ static_assert(
     kPeCount % kShardCount == 0,
     "current implementation assumes PE count is a multiple of shard count");
 
+constexpr int kSwitchCount = kShardCount / 2 * log2(kShardCount);
+constexpr int kSwitchStatCount = 5;
+
 constexpr int kIntervalCount = 2;  // #vertex partitions.
 constexpr int kSubIntervalCount = kIntervalCount * 2;
 
