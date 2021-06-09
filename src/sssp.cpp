@@ -559,8 +559,13 @@ spin:
     }
 
 #ifdef TAPA_SSSP_PHEAP_INDEX
+#ifdef TAPA_SSSP_PRIORITIZE_PUSH
+    const bool do_push = !push_req_q.empty();
+    const bool do_pop = !do_push && !is_pe_active[pe_qid] && root.valid;
+#else   // TAPA_SSSP_PRIORITIZE_PUSH
     const bool do_pop = !is_pe_active[pe_qid] && root.valid;
     const bool do_push = !do_pop && !push_req_q.empty();
+#endif  // TAPA_SSSP_PRIORITIZE_PUSH
 #else   // TAPA_SSSP_PHEAP_INDEX
     const bool do_push = !push_req_q.empty();
     const bool do_pop = !is_pe_active[pe_qid] && (do_push || root.valid);
