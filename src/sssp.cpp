@@ -1322,7 +1322,7 @@ exec:
 
   spin:
     for (; done_q.empty();) {
-#pragma HLS pipeline
+#pragma HLS pipeline II = 2
       if (!write_resp_q.empty() && !write_vid_in_q.empty()) {
         ++write_resp_count;
 
