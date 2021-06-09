@@ -301,6 +301,25 @@ struct arbiter {
     pos = pos_right;
     return max_right;
   }
+
+  template <int N, typename pos_t>
+  static bool find_false(const bool (&array)[N], pos_t& pos) {
+#pragma HLS inline
+    static_assert(begin >= 0, "begin must >= 0");
+    static_assert(len > 1, "len must > 1");
+    static_assert(begin + len <= N, "begin + len must <= N");
+    pos_t pos_left, pos_right;
+    const auto is_left_false =
+        arbiter<begin, len / 2>::find_false(array, pos_left);
+    const auto is_right_false =
+        arbiter<begin + len / 2, len - len / 2>::find_false(array, pos_right);
+    if (is_left_false) {
+      pos = pos_left;
+      return is_left_false;
+    }
+    pos = pos_right;
+    return is_right_false;
+  }
 };
 
 template <int begin>
@@ -326,6 +345,15 @@ struct arbiter<begin, 1> {
     pos = begin;
     return array[begin];
   }
+
+  template <int N, typename pos_t>
+  static bool find_false(const bool (&array)[N], pos_t& pos) {
+#pragma HLS inline
+    static_assert(begin >= 0, "begin must >= 0");
+    static_assert(begin < N, "beginmust < N");
+    pos = begin;
+    return !array[begin];
+  }
 };
 
 /// Find a non-empty istream.
@@ -339,6 +367,17 @@ inline bool find_non_empty(tapa::istreams<T, S>& in_qs,
                            const ap_uint<int(S)>& priority, index_t& idx) {
 #pragma HLS inline
   return arbiter<0, S>::find_non_empty(in_qs, priority, idx);
+}
+
+/// Find a false value in a **completely partitioned** boolean array.
+///
+/// @param[in] array  A completely partitioned boolean array.
+/// @param[out] pos   Position of the false value, invalid if none found.
+/// @return           Whether a false value is found.
+template <int N, typename pos_t>
+inline bool find_false(const bool (&array)[N], pos_t& idx) {
+#pragma HLS inline
+  return arbiter<0, N>::find_false(array, idx);
 }
 
 /// Find the maximum value in a **completely partitioned** array.

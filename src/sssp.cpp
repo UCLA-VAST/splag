@@ -550,7 +550,7 @@ void PiHeapHead(
   });
 
 spin:
-  for (ap_uint<bit_length(kPeCount / kQueueCount - 1)> pe_qid = 0;; ++pe_qid) {
+  for (;;) {
 #pragma HLS pipeline off
     if (!task_resp_q.empty()) {
       const auto resp = task_resp_q.read(nullptr);
@@ -558,17 +558,21 @@ spin:
       is_pe_active[resp.addr] = false;
     }
 
+    ap_uint<bit_length(kPeCount / kQueueCount - 1)> pe_qid;
+
 #ifdef TAPA_SSSP_PHEAP_INDEX
 #ifdef TAPA_SSSP_PRIORITIZE_PUSH
     const bool do_push = !push_req_q.empty();
-    const bool do_pop = !do_push && !is_pe_active[pe_qid] && root.valid;
+    const bool do_pop =
+        !do_push && find_false(is_pe_active, pe_qid) && root.valid;
 #else   // TAPA_SSSP_PRIORITIZE_PUSH
-    const bool do_pop = !is_pe_active[pe_qid] && root.valid;
+    const bool do_pop = find_false(is_pe_active, pe_qid) && root.valid;
     const bool do_push = !do_pop && !push_req_q.empty();
 #endif  // TAPA_SSSP_PRIORITIZE_PUSH
 #else   // TAPA_SSSP_PHEAP_INDEX
     const bool do_push = !push_req_q.empty();
-    const bool do_pop = !is_pe_active[pe_qid] && (do_push || root.valid);
+    const bool do_pop =
+        find_false(is_pe_active, pe_qid) && (do_push || root.valid);
 #endif  // TAPA_SSSP_PHEAP_INDEX
 
     const auto push_req = do_push ? push_req_q.read(nullptr) : TaskOnChip();
