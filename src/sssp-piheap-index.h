@@ -40,7 +40,11 @@ inline uint_pifc_index_t GetPifcIndex(uint_vid_t vid) {
                    HeapIndexCacheEntry::kIndexLsb);
 }
 
+#ifdef TAPA_SSSP_PHEAP_PUSH_ACK
 constexpr int kPiscSize = kLevelCount;
+#else   // TAPA_SSSP_PHEAP_PUSH_ACK
+constexpr int kPiscSize = kLevelCount * 2;
+#endif  // TAPA_SSSP_PHEAP_PUSH_ACK
 using uint_pisc_pos_t = ap_uint<bit_length(kPiscSize - 1)>;
 
 struct HeapStaleIndexEntry : public HeapIndexEntry {
