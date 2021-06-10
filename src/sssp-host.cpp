@@ -679,7 +679,6 @@ int main(int argc, char* argv[]) {
         const char* kIndexOpNamesAligned[kPiHeapIndexOpTypeCount] = {
             "GET_STALE    ",  //
             "CLEAR_STALE  ",  //
-            "ACQUIRE_INDEX",  //
             "UPDATE_INDEX ",  //
             "CLEAR_FRESH  ",  //
         };

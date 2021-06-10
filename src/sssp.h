@@ -181,7 +181,7 @@ constexpr int kEdgeUnitStatCount = 4;
 
 constexpr int kVertexUniStatCount = 10;
 
-constexpr int kPiHeapIndexOpTypeCount = 5;
+constexpr int kPiHeapIndexOpTypeCount = 4;
 
 constexpr int kPiHeapStatCount[] = {
     10 + kPiHeapIndexOpTypeCount * kLevelCount * 2,  // PiHeapHead

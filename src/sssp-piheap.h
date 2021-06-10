@@ -19,12 +19,8 @@ using uint_on_chip_level_index_t =
 enum HeapOp {
   GET_STALE,
   CLEAR_STALE,
-  ACQUIRE_INDEX,
   UPDATE_INDEX,
   CLEAR_FRESH,
-  GET = GET_STALE,
-  SET = UPDATE_INDEX,
-  CLEAR = CLEAR_STALE,
 };
 
 namespace queue_state {
@@ -61,7 +57,6 @@ struct HeapAcquireIndexContext {
 
 struct HeapIndexResp {
   HeapIndexEntry entry;
-  bool yield;   // If true, requester should try again.
   bool enable;  // If true, enable PUSH.
 };
 

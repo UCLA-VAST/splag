@@ -10,6 +10,11 @@ using uint_pifc_tag_t =
     ap_uint<kVidWidth - log2(kPifcSize) - log2(kQueueCount)>;
 using uint_pifc_index_t = ap_uint<log2(kPifcSize)>;
 
+struct AcquireIndexReq {
+  Vid vid;
+  float distance;
+};
+
 struct HeapIndexCacheEntry {
   bool is_dirty;
   uint_pifc_tag_t tag;
