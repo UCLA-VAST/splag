@@ -116,6 +116,12 @@ inline bool IsUpdateNeeded(HeapElemSource& elems_in, const HeapReq& req,
   HeapElemType max_elem;
   max_elem.valid = req.op == QueueOp::PUSHPOP;
   max_elem.task = req.task;
+
+  // Make sure elem_pair_out[idx % 2] always contains a valid task.
+  idx = req.index;
+  CHECK_EQ(idx % 2, 0);
+  elem_pair_out[0].task = req.task;
+
 find_update:
   for (ap_uint<bit_length(kPiHeapWidth)> i = 0; i < kPiHeapWidth; i += 2) {
 #pragma HLS pipeline II = 1 rewind
