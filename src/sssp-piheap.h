@@ -3,7 +3,7 @@
 
 #include "sssp-kernel.h"
 
-#define TAPA_SSSP_PHEAP_INDEX
+// #define TAPA_SSSP_PHEAP_INDEX
 
 // #define TAPA_SSSP_PHEAP_PUSH_ACK
 
