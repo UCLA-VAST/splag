@@ -9,6 +9,11 @@
 
 #define TAPA_SSSP_PRIORITIZE_PUSH
 
+#ifndef TAPA_SSSP_PHEAP_INDEX
+// Vertices should be relaxed right after read to reduce amount of work.
+#define TAPA_SSSP_IMMEDIATE_RELAX
+#endif
+
 using uint_qid_t = ap_uint<bit_length(kQueueCount - 1)>;
 
 using uint_piheap_size_t = ap_uint<bit_length(kPiHeapCapacity)>;

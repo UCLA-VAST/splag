@@ -1129,9 +1129,16 @@ spin:
   }
 }
 
-void UpdateReqArbiter(tapa::istreams<TaskOnChip, kShardCount>& in_q,
-                      tapa::ostreams<TaskOnChip, kSubIntervalCount>& out_q) {
-  static_assert(kSubIntervalCount % kShardCount == 0,
+#ifdef TAPA_SSSP_IMMEDIATE_RELAX
+const int kSwitchOutputCount = kQueueCount;
+#else   // TAPA_SSSP_IMMEDIATE_RELAX
+const int kSwitchOutputCount = kSubIntervalCount;
+#endif  // TAPA_SSSP_IMMEDIATE_RELAX
+
+void SwitchOutputArbiter(
+    tapa::istreams<TaskOnChip, kShardCount>& in_q,
+    tapa::ostreams<TaskOnChip, kSwitchOutputCount>& out_q) {
+  static_assert(kSwitchOutputCount % kShardCount == 0,
                 "current implementation requires that sub-interval count is a "
                 "multiple of shard count");
   DECL_ARRAY(TaskOnChip, update, kShardCount, TaskOnChip());
@@ -1142,10 +1149,10 @@ spin:
 #pragma HLS pipeline II = 1
     RANGE(sid, kShardCount, {
       UNUSED SET(update_valid[sid], in_q[sid].try_read(update[sid]));
-      const auto iid =
-          update[sid].vid() % kSubIntervalCount / kShardCount * kShardCount +
+      const auto soid =
+          update[sid].vid() % kSwitchOutputCount / kShardCount * kShardCount +
           sid;
-      UNUSED RESET(update_valid[sid], out_q[iid].try_write(update[sid]));
+      UNUSED RESET(update_valid[sid], out_q[soid].try_write(update[sid]));
     });
   }
 }
@@ -1520,8 +1527,25 @@ spin:
   }
 }
 
-void PushReqArbiter(tapa::istreams<TaskOnChip, kSubIntervalCount>& in_q,
-                    tapa::ostreams<TaskOnChip, kQueueCount>& out_q) {
+void QueueOutputArbiter(tapa::istreams<TaskOnChip, kQueueCount>& in_q,
+                        tapa::ostreams<TaskOnChip, kSubIntervalCount>& out_q) {
+  static_assert(kQueueCount % kSubIntervalCount == 0,
+                "current implementation requires that queue count is a "
+                "multiple of interval count");
+spin:
+  for (uint_qid_t qid_base = 0;; ++qid_base) {
+#pragma HLS pipeline II = 1
+    RANGE(iid, kSubIntervalCount, {
+      const auto qid = qid_base / kSubIntervalCount * kSubIntervalCount + iid;
+      if (!in_q[qid].empty() && !out_q[iid].full()) {
+        out_q[iid].try_write(in_q[qid].read(nullptr));
+      }
+    });
+  }
+}
+
+void VertexOutputArbiter(tapa::istreams<TaskOnChip, kSubIntervalCount>& in_q,
+                         tapa::ostreams<TaskOnChip, kQueueCount>& out_q) {
   static_assert(kQueueCount % kSubIntervalCount == 0,
                 "current implementation requires that queue count is a "
                 "multiple of interval count");
@@ -1544,45 +1568,51 @@ spin:
   }
 }
 
+#ifdef TAPA_SSSP_IMMEDIATE_RELAX
+const int kTaskInputCount = kSubIntervalCount;
+#else   // TAPA_SSSP_IMMEDIATE_RELAX
+const int kTaskInputCount = kQueueCount;
+#endif  // TAPA_SSSP_IMMEDIATE_RELAX
+
 void TaskArbiter(  //
     istream<TaskOnChip>& task_init_q,
-    istreams<TaskOnChip, kQueueCount>& task_in_q,
+    istreams<TaskOnChip, kTaskInputCount>& task_in_q,
     ostreams<TaskOnChip, kPeCount>& task_req_q,
     istreams<Vid, kPeCount>& task_resp_q) {
 exec:
   for (;;) {
-    static_assert(kPeCount % kQueueCount == 0, "");
-    bool is_pe_active[kQueueCount][kPeCount / kQueueCount];
+    static_assert(kPeCount % kTaskInputCount == 0, "");
+    bool is_pe_active[kTaskInputCount][kPeCount / kTaskInputCount];
 #pragma HLS array_partition variable = is_pe_active complete dim = 0
     RANGE(peid, kPeCount,
-          is_pe_active[peid % kQueueCount][peid / kQueueCount] = false);
+          is_pe_active[peid % kTaskInputCount][peid / kTaskInputCount] = false);
 
     CLEAN_UP(clean_up, [&] {
-      RANGE(peid, kPeCount,
-            CHECK(!is_pe_active[peid % kQueueCount][peid / kQueueCount]));
+      RANGE(
+          peid, kPeCount,
+          CHECK(!is_pe_active[peid % kTaskInputCount][peid / kTaskInputCount]));
     });
 
     const auto task_init = task_init_q.read();
-    const uint_qid_t qid_init = task_init.vid() % kQueueCount;
-    task_req_q[qid_init].write(task_init);
-    is_pe_active[qid_init][0] = true;
-
-    ap_uint<bit_length(kPeCount / kQueueCount - 1)> pe_qid;
+    const auto tid_init = task_init.vid() % kTaskInputCount;
+    task_req_q[tid_init].write(task_init);
+    is_pe_active[tid_init][0] = true;
 
   spin:
     for (; task_init_q.empty();) {
 #pragma HLS pipeline II = 1
 
       // Issue task requests.
-      RANGE(qid, kQueueCount, {
-        if (!task_in_q[qid].empty() && find_false(is_pe_active[qid], pe_qid)) {
-          const auto peid = pe_qid * kQueueCount + qid;
-          const auto task = task_in_q[qid].read(nullptr);
-          CHECK_EQ(task.vid() % kQueueCount, qid);
+      RANGE(tid, kTaskInputCount, {
+        ap_uint<bit_length(kPeCount / kTaskInputCount - 1)> pe_tid;
+        if (!task_in_q[tid].empty() && find_false(is_pe_active[tid], pe_tid)) {
+          const auto peid = pe_tid * kTaskInputCount + tid;
+          const auto task = task_in_q[tid].read(nullptr);
+          CHECK_EQ(task.vid() % kTaskInputCount, tid);
           CHECK(!task_req_q[peid].full()) << "PE rate limit needed";
           task_req_q[peid].try_write(task);
-          CHECK(!is_pe_active[qid][pe_qid]);
-          is_pe_active[qid][pe_qid] = true;
+          CHECK(!is_pe_active[tid][pe_tid]);
+          is_pe_active[tid][pe_tid] = true;
         }
       });
 
@@ -1590,9 +1620,9 @@ exec:
       RANGE(peid, kPeCount, {
         if (!task_resp_q[peid].empty()) {
           const auto vid = task_resp_q[peid].read(nullptr);
-          CHECK_EQ(vid % kQueueCount, peid % kQueueCount);
-          CHECK(is_pe_active[peid % kQueueCount][peid / kQueueCount]);
-          is_pe_active[peid % kQueueCount][peid / kQueueCount] = false;
+          CHECK_EQ(vid % kTaskInputCount, peid % kTaskInputCount);
+          CHECK(is_pe_active[peid % kTaskInputCount][peid / kTaskInputCount]);
+          is_pe_active[peid % kTaskInputCount][peid / kTaskInputCount] = false;
         }
       });
     }
@@ -1720,9 +1750,8 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
           // For queues.
           tapa::mmap<HeapElemPacked> heap_array,
           tapa::mmap<HeapIndexEntry> heap_index) {
-  streams<TaskOnChip, kSubIntervalCount, 2> push_req_q;
-  streams<TaskOnChip, kQueueCount, 512> push_req_qi;
-  streams<TaskReq, kQueueCount, 2> task_req_q;
+  streams<TaskOnChip, kSubIntervalCount, 2> vertex_out_q;
+  streams<TaskOnChip, kQueueCount, 512> queue_push_q;
   streams<bool, kQueueCount, 2> queue_done_q;
   streams<PiHeapStat, kQueueCount, 2> queue_stat_q;
 
@@ -1756,7 +1785,7 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   streams<TaskOnChip, kShardCount, 32> xbar_q2;
 #endif  // TAPA_SSSP_SHARD_COUNT
 
-  streams<TaskOnChip, kSubIntervalCount, 32> update_req_qi0;
+  streams<TaskOnChip, kSubIntervalCount, 32> vertex_in_q;
   //   Connect the vertex readers and updaters.
   streams<bool, kSubIntervalCount, 2> update_noop_qi1;
   streams<Vid, kSubIntervalCount, 2> vertex_read_addr_q;
@@ -1787,17 +1816,25 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
                     vertex_cache_stat_q, edge_done_q, edge_stat_q, queue_done_q,
                     queue_stat_q, switch_done_q, switch_stat_q, task_init_q,
                     vertex_noop_q, queue_noop_q, task_count_q)
+#ifdef TAPA_SSSP_IMMEDIATE_RELAX
+      .invoke<detach>(TaskArbiter, task_init_q, vertex_out_q, task_req_qi,
+#else   // TAPA_SSSP_IMMEDIATE_RELAX
       .invoke<detach>(TaskArbiter, task_init_q, queue_pop_q, task_req_qi,
+#endif  // TAPA_SSSP_IMMEDIATE_RELAX
                       task_resp_qi)
       .invoke<detach, kQueueCount>(
-          TaskQueue, queue_done_q, queue_stat_q, seq(), push_req_qi,
+          TaskQueue, queue_done_q, queue_stat_q, seq(), queue_push_q,
           queue_noop_qi, queue_pop_q, piheap_array_read_addr_q,
           piheap_array_read_data_q, piheap_array_write_req_q,
           piheap_array_write_resp_q, piheap_index_read_addr_q,
           piheap_index_read_data_q, piheap_index_write_req_q,
           piheap_index_write_resp_q)
       .invoke<detach>(QueueNoopMerger, queue_noop_qi, queue_noop_q)
-      .invoke<detach>(PushReqArbiter, push_req_q, push_req_qi)
+#ifdef TAPA_SSSP_IMMEDIATE_RELAX
+      .invoke<detach>(QueueOutputArbiter, queue_pop_q, vertex_in_q)
+#else   // TAPA_SSSP_IMMEDIATE_RELAX
+      .invoke<detach>(VertexOutputArbiter, vertex_out_q, queue_push_q)
+#endif  // TAPA_SSSP_IMMEDIATE_RELAX
 
       // Put mmaps are in the top level to enable flexible floorplanning.
       .invoke<detach, kQueueCount>(
@@ -1824,7 +1861,7 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
       // clang-format on
 
       // Distribute updates amount sub-intervals.
-      .invoke<detach>(UpdateReqArbiter,
+      .invoke<detach>(SwitchOutputArbiter,
 #if TAPA_SSSP_SHARD_COUNT == 2
                       xbar_q1
 #elif TAPA_SSSP_SHARD_COUNT == 4
@@ -1833,14 +1870,18 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
 #error "invalid TAPA_SSSP_SHARD_COUNT"
 #endif  // TAPA_SSSP_SHARD_COUNT
                       ,
-                      update_req_qi0)
+#ifdef TAPA_SSSP_IMMEDIATE_RELAX
+                      queue_push_q)
+#else   // TAPA_SSSP_IMMEDIATE_RELAX
+                      vertex_in_q)
+#endif  // TAPA_SSSP_IMMEDIATE_RELAX
 
       .invoke<detach, kSubIntervalCount>(VertexMem, vertex_read_addr_q,
                                          vertex_read_data_q, vertex_write_req_q,
                                          vertex_write_resp_q, vertices)
       .invoke<detach, kSubIntervalCount>(
-          VertexCache, vertex_cache_done_q, vertex_cache_stat_q, update_req_qi0,
-          push_req_q, update_noop_qi1, read_vid_q, read_vid_q, write_vid_q,
+          VertexCache, vertex_cache_done_q, vertex_cache_stat_q, vertex_in_q,
+          vertex_out_q, update_noop_qi1, read_vid_q, read_vid_q, write_vid_q,
           write_vid_q, vertex_read_addr_q, vertex_read_data_q,
           vertex_write_req_q, vertex_write_resp_q)
       .invoke<detach>(VertexNoopMerger, update_noop_qi1, vertex_noop_q)
