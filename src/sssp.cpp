@@ -611,6 +611,14 @@ spin:
 #else   // TAPA_SSSP_PHEAP_INDEX
         heap_index_resp.entry.invalidate();
         heap_index_resp.enable = true;
+        {
+          const bool is_full = acquire_index_req_q.full();
+          CHECK(!is_full);
+        }
+        {
+          const bool is_full = noop_q.full();
+          CHECK(!is_full);
+        }
 #endif  // TAPA_SSSP_PHEAP_INDEX
         if (!heap_index_resp.enable || heap_index_resp.entry.valid()) {
           noop_q.write(false);
