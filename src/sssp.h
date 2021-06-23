@@ -241,6 +241,7 @@ class TaskOnChip {
   void set_degree(Vid degree) { data.range(degree_msb, degree_lsb) = degree; }
 
  private:
+  static constexpr int kDegreeWidth = 20;
   static constexpr int vid_lsb = 0;
   static constexpr int vid_msb = vid_lsb + kVidWidth - 1;
   static constexpr int parent_lsb = vid_msb + 1;
@@ -250,7 +251,7 @@ class TaskOnChip {
   static constexpr int offset_lsb = distance_msb + 1;
   static constexpr int offset_msb = offset_lsb + kEidWidth - 1;
   static constexpr int degree_lsb = offset_msb + 1;
-  static constexpr int degree_msb = degree_lsb + kVidWidth - 1;
+  static constexpr int degree_msb = degree_lsb + kDegreeWidth - 1;
   static constexpr int length = degree_msb + 1;
   ap_uint<length> data;
 
