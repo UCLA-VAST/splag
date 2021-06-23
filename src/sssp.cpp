@@ -1014,6 +1014,7 @@ void TaskQueue(
       .invoke<detach>(PiHeapIndexRespArbiter, index_resp_q, index_resp_qs);
 }
 
+#if TAPA_SSSP_SHARD_COUNT >= 2
 void Switch(
     //
     ap_uint<log2(kShardCount)> b,
@@ -1106,6 +1107,7 @@ spin:
   stat_q.write(conflict_0_cycle_count);
   stat_q.write(conflict_1_cycle_count);
 }
+#endif  // TAPA_SSSP_SHARD_COUNT
 
 void EdgeReqArbiter(tapa::istreams<EdgeReq, kPeCount>& req_q,
                     tapa::ostreams<SourceVertex, kShardCount>& src_q,
@@ -1780,7 +1782,9 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   // For vertices.
   // Route updates via a kShardCount x kShardCount network.
   streams<TaskOnChip, kShardCount, 32> xbar_q0;
+#if TAPA_SSSP_SHARD_COUNT >= 2
   streams<TaskOnChip, kShardCount, 32> xbar_q1;
+#endif  // TAPA_SSSP_SHARD_COUNT
 #if TAPA_SSSP_SHARD_COUNT >= 4
   streams<TaskOnChip, kShardCount, 32> xbar_q2;
 #endif  // TAPA_SSSP_SHARD_COUNT
@@ -1852,7 +1856,9 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
       // For vertices.
       // Route updates via a kShardCount x kShardCount network.
       // clang-format off
+#if TAPA_SSSP_SHARD_COUNT >= 2
       .invoke<join>(Switch, 0, switch_done_q[0], switch_stat_q[0], xbar_q0[0], xbar_q0[1], xbar_q1[0], xbar_q1[1])
+#endif // TAPA_SSSP_SHARD_COUNT
 #if TAPA_SSSP_SHARD_COUNT >= 4
       .invoke<join>(Switch, 0, switch_done_q[1], switch_stat_q[1], xbar_q0[2], xbar_q0[3], xbar_q1[2], xbar_q1[3])
       .invoke<join>(Switch, 1, switch_done_q[2], switch_stat_q[2], xbar_q1[0], xbar_q1[2], xbar_q2[0], xbar_q2[2])
@@ -1862,7 +1868,9 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
 
       // Distribute updates amount sub-intervals.
       .invoke<detach>(SwitchOutputArbiter,
-#if TAPA_SSSP_SHARD_COUNT == 2
+#if TAPA_SSSP_SHARD_COUNT == 1
+                      xbar_q0
+#elif TAPA_SSSP_SHARD_COUNT == 2
                       xbar_q1
 #elif TAPA_SSSP_SHARD_COUNT == 4
                       xbar_q2

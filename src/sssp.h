@@ -400,7 +400,7 @@ inline std::ostream& operator<<(std::ostream& os, const HeapIndexEntry& obj) {
 constexpr int kPeCount = 32;
 
 #ifndef TAPA_SSSP_SHARD_COUNT
-#define TAPA_SSSP_SHARD_COUNT 2
+#define TAPA_SSSP_SHARD_COUNT 1
 #endif
 
 constexpr int kShardCount = TAPA_SSSP_SHARD_COUNT;  // #edge partitions.
