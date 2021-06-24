@@ -1538,7 +1538,8 @@ spin:
   for (uint_qid_t qid_base = 0;; ++qid_base) {
 #pragma HLS pipeline II = 1
     RANGE(iid, kSubIntervalCount, {
-      const auto qid = qid_base / kSubIntervalCount * kSubIntervalCount + iid;
+      const auto qid =
+          qid_base % kQueueCount / kSubIntervalCount * kSubIntervalCount + iid;
       if (!in_q[qid].empty() && !out_q[iid].full()) {
         out_q[iid].try_write(in_q[qid].read(nullptr));
       }

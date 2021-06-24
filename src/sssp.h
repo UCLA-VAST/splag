@@ -109,7 +109,7 @@ inline std::ostream& operator<<(std::ostream& os, const Task& obj) {
   return os << "{vid: " << obj.vid << ", vertex: " << obj.vertex << "}";
 }
 
-constexpr int kQueueCount = 4;
+constexpr int kQueueCount = 1;
 
 #ifndef TAPA_SSSP_PHEAP_WIDTH
 #define TAPA_SSSP_PHEAP_WIDTH 16
@@ -172,6 +172,11 @@ inline int GetAddrOfOffChipHeapElem(int level, int idx, int qid) {
                 "need to change return value");
   const auto raw_index =
       ap_uint<kIndexWidth + kOffsetWidth>((GetCapOfLevel(level) + idx) / 2);
+  if (kQueueCount == 1) {
+    return ap_uint<kIndexWidth>(
+               raw_index.range(kIndexWidth + kOffsetWidth - 1, kOffsetWidth)),
+           ap_uint<kOffsetWidth>(idx / 2);
+  }
   return ap_uint<kIndexWidth>(
              raw_index.range(kIndexWidth + kOffsetWidth - 1, kOffsetWidth)),
          ap_uint<kQidWidth>(qid), ap_uint<kOffsetWidth>(idx / 2);

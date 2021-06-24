@@ -25,6 +25,9 @@ struct HeapIndexCacheEntry {
   }
 
   Vid GetVid(uint_pifc_index_t index, uint_qid_t qid) const {
+    if (kQueueCount == 1) {
+      return tag, index;
+    }
     return tag, index, qid;  // Concatenation.
   }
 

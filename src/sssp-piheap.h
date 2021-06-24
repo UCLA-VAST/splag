@@ -14,7 +14,7 @@
 #define TAPA_SSSP_IMMEDIATE_RELAX
 #endif
 
-using uint_qid_t = ap_uint<bit_length(kQueueCount - 1)>;
+using uint_qid_t = ap_uint<bit_length(std::max(1, kQueueCount - 1))>;
 
 using uint_piheap_size_t = ap_uint<bit_length(kPiHeapCapacity)>;
 
