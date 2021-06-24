@@ -402,7 +402,7 @@ inline std::ostream& operator<<(std::ostream& os, const HeapIndexEntry& obj) {
 }
 
 // Platform-specific constants and types.
-constexpr int kPeCount = 32;
+constexpr int kPeCount = 2;
 
 #ifndef TAPA_SSSP_SHARD_COUNT
 #define TAPA_SSSP_SHARD_COUNT 1
