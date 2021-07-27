@@ -167,7 +167,7 @@ inline int GetAddrOfOffChipHeapElem(int level, int idx, int qid) {
   //  1. index: bits excluding qid and offset;
   //  2. qid: log2(kQueueCount) bits;
   //  3. offset: log2(kPiHeapWidth) bits.
-  constexpr int kQidWidth = log2(kQueueCount);
+  constexpr int kQidWidth = std::max(1, log2(kQueueCount));
   constexpr int kOffsetWidth = log2(kPiHeapWidth / 2);
   constexpr int kIndexWidth = LevelIndex::width + 1 - kOffsetWidth;
   static_assert(kIndexWidth + kQidWidth + kOffsetWidth < 32,
