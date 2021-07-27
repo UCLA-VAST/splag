@@ -8,6 +8,8 @@
 
 #include <ap_int.h>
 
+#define TAPA_SSSP_COARSE_PRIORITY
+
 // Kernel-friendly bit_cast.
 template <typename To, typename From>
 inline To bit_cast(const From& from) {
@@ -422,5 +424,7 @@ constexpr int kSubIntervalCount = kIntervalCount * 1;
 constexpr int kHeapOnChipWidth = 8;  // #children per on-heap element.
 
 constexpr int kHeapOffChipWidth = 16;  // #children per off-heap element.
+
+using SpilledTask = TaskOnChip;
 
 #endif  // TAPA_SSSP_H_

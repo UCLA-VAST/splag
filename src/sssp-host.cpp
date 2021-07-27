@@ -304,8 +304,13 @@ void Refine(
 void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
           tapa::mmaps<Edge, kShardCount> edges,
           tapa::mmaps<Vertex, kIntervalCount> vertices,
+#ifdef TAPA_SSSP_COARSE_PRIORITY
+          tapa::mmap<SpilledTask> cgpq_spill
+#else   // TAPA_SSSP_COARSE_PRIORITY
           tapa::mmap<HeapElemPacked> heap_array,
-          tapa::mmap<HeapIndexEntry> heap_index);
+          tapa::mmap<HeapIndexEntry> heap_index
+#endif  // TAPA_SSSP_COARSE_PRIORITY
+);
 
 int main(int argc, char* argv[]) {
   FLAGS_logtostderr = true;
@@ -424,6 +429,7 @@ int main(int argc, char* argv[]) {
   for (auto& interval : vertices) {
     interval.resize(tapa::round_up_div<kIntervalCount>(vertex_count));
   }
+  aligned_vector<SpilledTask> cgpq_spill(1 << 24);
   aligned_vector<HeapElemPacked> heap_array(
       GetAddrOfOffChipHeapElem(kLevelCount - 1,
                                GetCapOfLevel(kLevelCount - 1) - 1,
@@ -460,7 +466,6 @@ int main(int argc, char* argv[]) {
     for (int qid = 0; qid < kQueueCount; ++qid) {
       for (int idx = 0; idx < GetCapOfLevel(level); idx += 2) {
         const auto addr = GetAddrOfOffChipHeapElem(level, idx, qid);
-        CHECK_NE(heap_array[addr], init_elem_packed);
         heap_array[addr] = init_elem_packed;
       }
     }
@@ -501,8 +506,13 @@ int main(int argc, char* argv[]) {
             tapa::write_only_mmap<int64_t>(metadata),
             tapa::read_only_mmaps<Edge, kShardCount>(edges),
             tapa::read_write_mmaps<Vertex, kIntervalCount>(vertices),
+#ifdef TAPA_SSSP_COARSE_PRIORITY
+            tapa::placeholder_mmap<SpilledTask>(cgpq_spill)
+#else   // TAPA_SSSP_COARSE_PRIORITY
             tapa::read_only_mmap<HeapElemPacked>(heap_array),
-            tapa::read_only_mmap<HeapIndexEntry>(heap_index));
+            tapa::read_only_mmap<HeapIndexEntry>(heap_index)
+#endif  // TAPA_SSSP_COARSE_PRIORITY
+        );
     VLOG(3) << "kernel time: " << elapsed_time << " s";
 
     const auto tic = steady_clock::now();

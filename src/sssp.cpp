@@ -1,4 +1,5 @@
 #include <cassert>
+#include <cstdint>
 #include <cstring>
 
 #include <algorithm>
@@ -6,6 +7,7 @@
 
 #include <tapa.h>
 
+#include "sssp-cgpq.h"
 #include "sssp-kernel.h"
 #include "sssp-piheap-index.h"
 #include "sssp-piheap.h"
@@ -23,6 +25,9 @@ using tapa::seq;
 using tapa::stream;
 using tapa::streams;
 using tapa::task;
+
+using cgpq::PushReq;
+using cgpq::uint_spill_addr_t;
 
 static_assert(kQueueCount % kShardCount == 0,
               "current implementation requires that queue count is a multiple "
@@ -873,6 +878,469 @@ spin:
   }
 }
 
+void CgpqSpillMem(
+    //
+    istream<uint_spill_addr_t>& read_addr_q, ostream<SpilledTask>& read_data_q,
+    istream<packet<uint_spill_addr_t, SpilledTask>>& write_req_q,
+    ostream<bool>& write_resp_q,
+    //
+    tapa::async_mmap<SpilledTask> mem) {
+  ReadWriteMem(read_addr_q, read_data_q, write_req_q, write_resp_q, mem);
+}
+
+void CgpqBucketGen(istream<TaskOnChip>& in_q, ostream<PushReq>& out_q) {
+  using namespace cgpq;
+
+  const float min_distance = 0.01;
+  const float max_distance = 1;
+
+spin:
+  for (;;) {
+    if (!in_q.empty()) {
+      const auto task = in_q.read(nullptr);
+      const uint_bid_t bid = std::max(
+          std::min(
+              int(
+#ifdef TAPA_SSSP_CGPQ_LOG_BUCKET
+                  (log(task.vertex().distance + 1) - log(min_distance + 1)) /
+                  (log(max_distance + 1) - log(min_distance + 1))
+#else
+                  (task.vertex().distance - min_distance) /
+                  (max_distance - min_distance)
+#endif
+                  * kBucketCount),
+              kBucketCount - 1),
+          0);
+
+      out_q.write({.bid = bid, .task = task});
+    }
+  }
+}
+
+// Coarse-grained priority queue.
+// Implements chunks of buckets and an on-chip heap that manages the chunks.
+void CgpqCore(
+    //
+    istream<bool>& done_q, ostream<PiHeapStat>& stat_q,
+    // Scalar
+    uint_qid_t qid,
+    // Queue requests.
+    istream<PushReq>& push_req_q,
+    // NOOP acknowledgements
+    ostream<bool>& noop_q,
+    // Queue outputs.
+    ostream<TaskOnChip>& pop_q,
+    //
+    ostream<uint_spill_addr_t>& mem_read_addr_q,
+    istream<TaskOnChip>& mem_read_data_q,
+    ostream<packet<uint_spill_addr_t, TaskOnChip>>& mem_write_req_q,
+    istream<bool>& mem_write_resp_q) {
+#pragma HLS inline recursive
+
+  using namespace cgpq;
+
+  // Heap rule: !(parent < children) (comparing priority).
+  // Root is at pos = 1.
+  // Parent of pos = pos / 2.
+  // Children of pos = pos * 2, pos * 2 + 1.
+  ChunkRefPair heap_array[(kCgpqCapacity + 1) / 2];
+#pragma HLS bind_storage variable = heap_array type = RAM_T2P impl = URAM
+  // Extra copy of heap top in registers due to limited read ports.
+  ChunkRef heap_root;
+  ap_uint<bit_length(kCgpqCapacity + 1)> heap_pos, heap_size = 0;
+  ap_int<bit_length(kCgpqCapacity + 1) + 1> heap_pos_prev = -1;
+  ChunkRef heap_elem;
+  ChunkRefPair heap_pair_prev;
+  bool is_heapifying_up = false;
+  bool is_heapifying_up_init = false;
+  bool is_heapifying_down = false;
+  bool is_heapifying_down_init = false;
+
+  DECL_ARRAY(ChunkMeta, chunk_meta, kBucketCount, ChunkMeta());
+#pragma HLS aggregate variable = chunk_meta bit
+
+  TaskOnChip chunk_buf[kBucketCount][kBufferSize];
+#pragma HLS bind_storage variable = chunk_buf type = RAM_S2P impl = URAM
+#pragma HLS array_partition variable = chunk_buf cyclic factor = \
+    kChunkPartFac dim = 1
+
+  int_bid_t spill_bid = -1;
+  uint_spill_addr_t spill_addr_req = 0;
+  uint_spill_addr_t spill_addr_resp = 0;
+
+  // Refill requests should read from this address.
+  int_spill_addr_t refill_addr = -1;
+  // Refill data should write to this bucket.
+  int_bid_t refill_bid = -1;
+  // Future refill data should write to this bucket.
+  int_bid_t refill_bid_next = -1;
+  // Number of data remaining to refill.
+  uint_chunk_size_t refill_remain_count;
+
+spin:
+  for (; done_q.empty();) {
+#pragma HLS pipeline II = 1
+    bool is_heapifying_up_next = is_heapifying_up;
+    bool is_heapifying_up_init_next = is_heapifying_up_init;
+    bool is_heapifying_down_next = is_heapifying_down;
+    bool is_heapifying_down_init_next = is_heapifying_down_init;
+
+#pragma HLS dependence variable = heap_array inter false
+
+    if (is_heapifying_up_init) {
+      CHECK(is_heapifying_up);
+      CHECK_NE(heap_pos_prev, heap_pos / 2);
+      heap_pair_prev = heap_array[heap_pos / 2];
+      is_heapifying_up_init_next = false;
+      heap_pos_prev = -1;
+    } else if (is_heapifying_up) {
+      CHECK(!is_heapifying_down);
+      const auto heap_pos_next = heap_pos / 2;
+      CHECK_NE(heap_pos_prev, heap_pos_next / 2);
+      auto heap_pair = heap_pair_prev;
+      heap_pair_prev = heap_array[heap_pos_next / 2];
+      const auto heap_elem_next = heap_pair_prev[heap_pos_next % 2];
+      heap_pos_prev = heap_pos / 2;
+      CHECK(ChunkRefPairEq(heap_array[heap_pos / 2], heap_pair));
+      if (heap_pos > 1 && heap_elem_next < heap_elem) {
+        heap_pair[heap_pos % 2] = heap_elem_next;
+        heap_array[heap_pos / 2] = heap_pair;
+        if (heap_pos == 1) {
+          heap_root = heap_elem_next;
+        }
+        heap_pos = heap_pos_next;
+      } else {
+        heap_pair[heap_pos % 2] = heap_elem;
+        heap_array[heap_pos / 2] = heap_pair;
+        if (heap_pos == 1) {
+          heap_root = heap_elem;
+        }
+        is_heapifying_up_next = false;
+      }
+    } else if (is_heapifying_down_init) {
+      CHECK(is_heapifying_down);
+      CHECK_NE(heap_pos_prev, (heap_size + 1) / 2);
+      heap_elem = heap_array[(heap_size + 1) / 2][(heap_size + 1) % 2];
+      is_heapifying_down_init_next = false;
+      heap_pair_prev[1] = heap_root;
+      heap_pos = 1;
+      heap_pos_prev = -1;
+    } else if (is_heapifying_down) {
+      CHECK(!is_heapifying_up);
+      const auto heap_pos_next_left = heap_pos * 2;
+      const auto heap_pos_next_right = heap_pos * 2 + 1;
+      const bool is_left_valid = heap_pos_next_left < heap_size + 1;
+      const bool is_right_valid = heap_pos_next_right < heap_size + 1;
+      CHECK_NE(heap_pos_prev, heap_pos);
+      auto heap_pair = heap_pair_prev;
+      heap_pair_prev = is_left_valid ? heap_array[heap_pos] : ChunkRefPair();
+      const auto heap_elem_next_left = heap_pair_prev[0];
+      const auto heap_elem_next_right = heap_pair_prev[1];
+      const bool is_left_update_needed =
+          is_left_valid && heap_elem < heap_elem_next_left;
+      const bool is_right_update_needed =
+          is_right_valid && heap_elem < heap_elem_next_right;
+      heap_pos_prev = heap_pos / 2;
+      CHECK(heap_array[heap_pos / 2][1] == heap_pair[1]);
+      if (heap_pos / 2 != 0) {
+        CHECK(heap_array[heap_pos / 2][0] == heap_pair[0]);
+      }
+      const auto heap_pos_curr = heap_pos;
+      if (is_left_update_needed || is_right_update_needed) {
+        if (is_right_valid && heap_elem_next_left < heap_elem_next_right) {
+          heap_pair[heap_pos % 2] = heap_elem_next_right;
+          if (heap_pos == 1) {
+            heap_root = heap_elem_next_right;
+          }
+          heap_pos = heap_pos_next_right;
+        } else {
+          heap_pair[heap_pos % 2] = heap_elem_next_left;
+          if (heap_pos == 1) {
+            heap_root = heap_elem_next_left;
+          }
+          heap_pos = heap_pos_next_left;
+        }
+      } else {
+        heap_pair[heap_pos % 2] = heap_elem;
+        if (heap_pos == 1) {
+          heap_root = heap_elem;
+        }
+        is_heapifying_down_next = false;
+      }
+      heap_array[heap_pos_curr / 2] = heap_pair;
+    } else {
+      heap_pos_prev = -1;
+    }
+
+    bool is_push_req_valid;
+    const auto push_req = push_req_q.peek(is_push_req_valid);
+    const auto input_task = push_req.task;
+
+    bool is_refill_task_valid;
+    const auto refill_task = mem_read_data_q.peek(is_refill_task_valid);
+
+    const int_bid_t input_bid =
+        is_push_req_valid ? int_bid_t(push_req.bid) : int_bid_t(-1);
+    const auto input_meta = chunk_meta[input_bid];
+
+    const auto spill_meta = chunk_meta[spill_bid];
+    const auto refill_meta = chunk_meta[refill_bid];
+
+    int_bid_t output_bid;
+    ChunkMeta output_meta;
+    int_bid_t full_bid;
+    ChunkMeta full_meta;
+    FindChunk(chunk_meta, output_bid, output_meta, full_bid, full_meta);
+
+    const int_bid_t top_bid =
+        heap_size == 0 ? int_bid_t(-1) : int_bid_t(heap_root.bucket);
+
+    // Read refill data and push into chunk buffer if
+    const bool can_recv_refill =
+        refill_bid >= 0 &&    // there is active refilling, and
+        is_refill_task_valid  // refill data is available for read.
+        ;
+
+    // Read input task and push into chunk buffer if
+    const bool can_enqueue =
+        input_bid >= 0 &&                    // there is an input task, and
+        !input_meta.IsFull() &&              // chunk is not already full, and
+        (input_bid != refill_bid ||          // if chunk is refilling,
+         kBufferSize - input_meta.GetSize()  // available space
+             >                               // must be greater than
+             refill_remain_count             // #tasks to refill,
+         ) &&                                // and
+        (input_bid != refill_bid_next ||     // if chunk will refill soon,
+         kBufferSize - input_meta.GetSize()  // available space
+             >                               // must be greater than
+             kChunkSize                      // #tasks to refill,
+         ) &&                                // and
+        (!can_recv_refill ||                 // if reading refill data,
+         input_bid % kChunkPartFac           // the input bucket
+             !=                              // must access a different bank
+             refill_bid % kChunkPartFac      // as the refill bucket.
+        );
+
+    // Pop from chunk buffer and write spill data if
+    const bool can_send_spill =
+        spill_bid >= 0 &&         // there is active spilling, and
+        !mem_write_req_q.full();  // spill data is available for write.
+
+    // Pop from highest-priority chunk buffer and write output data if
+    const bool can_dequeue =
+        output_bid >= 0 &&           // there is a non-empty chunk, and
+        !pop_q.full() &&             // output is available for write, and
+        (output_bid != spill_bid ||  // if chunk is spilling,
+         output_meta.GetSize()       // available tasks
+             >                       // must be greater than
+             kChunkSize - spill_addr_req % kChunkSize  // #tasks to spill,
+         ) &&                                          // and
+        (spill_bid < 0 ||               // if there is active spilling,
+         output_bid % kChunkPartFac     // the output bucket
+             !=                         // must access a different bank
+             spill_bid % kChunkPartFac  // as the spill bucket.
+        );
+    // Note: to avoid chunk_buf read address being dependent on FIFO fullness,
+    // can_dequeue must not depend on the fullness of mem_write_req_q.
+
+    // Start spilling a new chunk if
+    const bool can_start_spill =
+        spill_bid < 0 &&             // there is no active spilling, and
+        full_bid >= 0 &&             // chunks need spilling, and
+        full_meta.IsAlmostFull() &&  // chunk is almost full, and
+        !(can_dequeue && full_bid == output_bid) &&  // chunk won't pop, and
+        !is_heapifying_up && !is_heapifying_down     // heap is available.
+        ;
+
+    // Start refilling a new chunk if
+    const bool can_schedule_refill =
+        refill_addr < 0 &&        // there is no active refilling, and
+        refill_bid_next < 0 &&    // no future refilling is scheduled, and
+        top_bid >= 0 &&           // there is a chunk for refilling, and
+        top_bid != refill_bid &&  // the chunk is not refilling now, and
+        (output_bid < 0 ||        // either on-chip chunk is empty, or
+         output_bid >= top_bid    // off-chip chunk has higher priority,
+         ) &&                     // and
+        chunk_meta[top_bid].IsAlmostEmpty() &&     // chunk is almost empty,
+        !(can_enqueue && top_bid == input_bid) &&  // chunk won't push, and
+        !can_start_spill &&
+        !is_heapifying_up && !is_heapifying_down  // heap is available.
+        ;
+
+    // Send refill data read address if
+    const bool can_send_refill =
+        refill_addr >= 0 &&  // there is an active refill request, and
+        refill_addr <= spill_addr_resp &&  // writes have finished, and
+        !mem_read_addr_q.full()            // address output is not full.
+        ;
+
+    TaskOnChip spill_task, output_task;
+    for (int i = 0; i < kChunkPartFac; ++i) {
+#pragma HLS unroll
+      {
+        const bool is_spill = spill_bid >= 0 && spill_bid % kChunkPartFac == i;
+        const bool is_output =
+            output_bid >= 0 && output_bid % kChunkPartFac == i;
+        if (is_spill || is_output) {
+          // For II = 1, chunk_ref read must not depend on FIFO fullness, so
+          // is_spill and is_output may both be true, in which case is_spill
+          // takes precedence.
+          const auto load_bid = is_spill ? spill_bid : output_bid;
+          const auto read_pos =
+              (is_spill ? spill_meta : output_meta).GetReadPos();
+          CHECK_EQ(load_bid % kChunkPartFac, i);
+          (is_spill ? spill_task : output_task) =
+              chunk_buf[load_bid / kChunkPartFac * kChunkPartFac + i][read_pos];
+        }
+      }
+
+      {
+        const bool is_refill =
+            can_recv_refill && refill_bid % kChunkPartFac == i;
+        const bool is_input = can_enqueue && input_bid % kChunkPartFac == i;
+        if (is_refill || is_input) {
+          CHECK(!is_refill || !is_input);
+          const auto store_bid = is_refill ? refill_bid : input_bid;
+          const auto write_pos =
+              (is_refill ? refill_meta : input_meta).GetWritePos();
+          chunk_buf[store_bid / kChunkPartFac * kChunkPartFac + i][write_pos] =
+              is_refill ? refill_task : input_task;
+        }
+      }
+    }
+
+    ap_uint<kBucketCount> is_push = 0;
+
+    if (can_recv_refill) {
+      CHECK_GE(
+          kBufferSize - chunk_meta[refill_bid].GetSize(),  // Available slots.
+          refill_remain_count  // Remaining to refill.
+          )
+          << "refill_bid: " << refill_bid;
+      mem_read_data_q.read(nullptr);
+      CHECK(!is_push.test(refill_bid));
+      is_push.set(refill_bid);
+
+      --refill_remain_count;
+      VLOG(5) << "refilling bucket " << refill_bid << " ("
+              << refill_remain_count << " to go)";
+      if (refill_remain_count == 0) {
+        refill_bid = -1;
+      }
+    }
+
+    if (can_enqueue) {
+      push_req_q.read(nullptr);
+      CHECK(!is_push.test(input_bid));
+      is_push.set(input_bid);
+
+      VLOG(5) << "enqueue " << push_req.task << " to bucket " << input_bid
+              << " (which already has " << input_meta.GetSize() << " tasks)";
+    }
+
+    ap_uint<kBucketCount> is_pop = 0;
+
+    if (can_send_spill) {
+      CHECK_GE(chunk_meta[spill_bid].GetSize(),          // Available tasks.
+               kChunkSize - spill_addr_req % kChunkSize  // Remaining to spill.
+      );
+      mem_write_req_q.try_write({spill_addr_req, spill_task});
+
+      CHECK(!is_pop.test(spill_bid));
+      is_pop.set(spill_bid);
+      ++spill_addr_req;
+      if (spill_addr_req % kChunkSize == 0) {
+        spill_bid = -1;
+      }
+    }
+
+    if (can_dequeue) {
+      pop_q.try_write(output_task);
+      CHECK(!is_pop.test(output_bid));
+      is_pop.set(output_bid);
+    }
+
+    RANGE(i, kBucketCount, {
+      if (is_push.test(i)) {
+        chunk_meta[i].Push();
+      }
+      if (is_pop.test(i)) {
+        chunk_meta[i].Pop();
+      }
+    });
+
+    if (can_start_spill) {
+      spill_bid = full_bid;
+
+      heap_elem = {
+          .addr = spill_addr_req,
+          .bucket = spill_bid,
+      };
+      ++heap_size;
+      CHECK_LT(heap_size, kCgpqCapacity);
+
+      // Heapify up.
+      heap_pos = heap_size;
+      is_heapifying_up_next = is_heapifying_up_init_next = true;
+
+      VLOG(5) << "start spilling bucket " << spill_bid << " to ["
+              << spill_addr_req
+              << "], current buffer size: " << full_meta.GetSize();
+    }
+
+    if (can_schedule_refill) {
+      refill_bid_next = top_bid;
+      refill_addr = heap_root.addr;
+      CHECK_EQ(refill_addr % kChunkSize, 0);
+
+      CHECK_GT(heap_size, 0);
+      --heap_size;
+
+      // Heapify down.
+      CHECK(!is_heapifying_down_init);
+      is_heapifying_down_next = is_heapifying_down_init_next = true;
+
+      VLOG(5) << "schedule refilling bucket " << refill_bid_next << " from "
+              << refill_addr
+              << ", current buffer size: " << chunk_meta[top_bid].GetSize();
+    }
+
+    if (can_send_refill) {
+      VLOG(5) << "refilling from [" << refill_addr << "]";
+
+      mem_read_addr_q.try_write(refill_addr);
+      ++refill_addr;
+      if (refill_addr % kChunkSize == 0) {
+        refill_addr = -1;
+      }
+    }
+
+    if (!mem_write_resp_q.empty()) {
+      mem_write_resp_q.read(nullptr);
+      ++spill_addr_resp;
+    }
+
+    if (refill_bid < 0) {
+      refill_bid = refill_bid_next;
+      refill_remain_count = kChunkSize;
+      refill_bid_next = -1;
+    }
+
+    is_heapifying_up = is_heapifying_up_next;
+    is_heapifying_up_init = is_heapifying_up_init_next;
+    is_heapifying_down = is_heapifying_down_next;
+    is_heapifying_down_init = is_heapifying_down_init_next;
+  }
+
+  done_q.read(nullptr);
+
+  CHECK_EQ(heap_size, 0);
+
+  for (int bid = 0; bid < kBucketCount; ++bid) {
+    CHECK(chunk_meta[bid].IsEmpty());
+  }
+}
+
 // Each push request puts the task in the queue if there isn't a task for the
 // same vertex in the queue, or decreases the priority of the existing task
 // using the new value. Whether a new task is created is returned in the
@@ -891,6 +1359,13 @@ void TaskQueue(
     ostream<bool>& noop_q,
     // Queue outputs.
     ostream<TaskOnChip>& pop_q,
+#ifdef TAPA_SSSP_COARSE_PRIORITY
+    //
+    ostream<uint_spill_addr_t>& cgpq_spill_read_addr_q,
+    istream<TaskOnChip>& cgpq_spill_read_data_q,
+    ostream<packet<uint_spill_addr_t, TaskOnChip>>& cgpq_spill_write_req_q,
+    istream<bool>& cgpq_spill_write_resp_q
+#else   // TAPA_SSSP_COARSE_PRIORITY
     //
     ostream<Vid>& piheap_array_read_addr_q,
     istream<HeapElemPacked>& piheap_array_read_data_q,
@@ -900,7 +1375,18 @@ void TaskQueue(
     ostream<Vid>& piheap_index_read_addr_q,
     istream<HeapIndexEntry>& piheap_index_read_data_q,
     ostream<packet<Vid, HeapIndexEntry>>& piheap_index_write_req_q,
-    istream<bool>& piheap_index_write_resp_q) {
+    istream<bool>& piheap_index_write_resp_q
+#endif  // TAPA_SSSP_COARSE_PRIORITY
+) {
+#ifdef TAPA_SSSP_COARSE_PRIORITY
+  stream<PushReq> push_req_qi;
+
+  task()
+      .invoke<detach>(CgpqBucketGen, push_req_q, push_req_qi)
+      .invoke<detach>(CgpqCore, done_q, stat_q, qid, push_req_qi, noop_q, pop_q,
+                      cgpq_spill_read_addr_q, cgpq_spill_read_data_q,
+                      cgpq_spill_write_req_q, cgpq_spill_write_resp_q);
+#else  // TAPA_SSSP_COARSE_PRIORITY
   // Heap rule: child <= parent
   streams<HeapReq, kLevelCount, 1> req_q;
   streams<HeapResp, kLevelCount, 1> resp_q;
@@ -1012,6 +1498,7 @@ void TaskQueue(
                       piheap_index_write_req_q, piheap_index_write_resp_q,
                       acquire_index_ctx_q, acquire_index_ctx_q)
       .invoke<detach>(PiHeapIndexRespArbiter, index_resp_q, index_resp_qs);
+#endif  // TAPA_SSSP_COARSE_PRIORITY
 }
 
 #if TAPA_SSSP_SHARD_COUNT >= 2
@@ -1732,7 +2219,13 @@ queue_stat:
     for (int j = 0; j < kPiHeapStatTotalCount; ++j) {
       metadata[9 + kShardCount * kEdgeUnitStatCount +
                kSubIntervalCount * kVertexUniStatCount +
-               i * kPiHeapStatTotalCount + j] = queue_stat_q[i].read();
+               i * kPiHeapStatTotalCount + j] =
+#ifdef TAPA_SSSP_COARSE_PRIORITY
+          0
+#else   // TAPA_SSSP_COARSE_PRIORITY
+          queue_stat_q[i].read()
+#endif  // TAPA_SSSP_COARSE_PRIORITY
+          ;
     }
   }
 
@@ -1750,14 +2243,25 @@ switch_stat:
 void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
           tapa::mmaps<Edge, kShardCount> edges,
           tapa::mmaps<Vertex, kIntervalCount> vertices,
-          // For queues.
+// For queues.
+#ifdef TAPA_SSSP_COARSE_PRIORITY
+          tapa::mmap<SpilledTask> cgpq_spill
+#else   // TAPA_SSSP_COARSE_PRIORITY
           tapa::mmap<HeapElemPacked> heap_array,
-          tapa::mmap<HeapIndexEntry> heap_index) {
+          tapa::mmap<HeapIndexEntry> heap_index
+#endif  // TAPA_SSSP_COARSE_PRIORITY
+) {
   streams<TaskOnChip, kSubIntervalCount, 2> vertex_out_q;
   streams<TaskOnChip, kQueueCount, 512> queue_push_q;
   streams<bool, kQueueCount, 2> queue_done_q;
   streams<PiHeapStat, kQueueCount, 2> queue_stat_q;
 
+#ifdef TAPA_SSSP_COARSE_PRIORITY
+  stream<uint_spill_addr_t> cgpq_spill_read_addr_q;
+  stream<TaskOnChip> cgpq_spill_read_data_q;
+  stream<packet<uint_spill_addr_t, TaskOnChip>> cgpq_spill_write_req_q;
+  stream<bool> cgpq_spill_write_resp_q;
+#else   // TAPA_SSSP_COARSE_PRIORITY
   streams<Vid, kQueueCount, 2> piheap_array_read_addr_q;
   streams<HeapElemPacked, kQueueCount, 2> piheap_array_read_data_q;
   streams<packet<Vid, HeapElemPacked>, kQueueCount, 2> piheap_array_write_req_q;
@@ -1767,6 +2271,7 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   streams<HeapIndexEntry, kQueueCount, 2> piheap_index_read_data_q;
   streams<packet<Vid, HeapIndexEntry>, kQueueCount, 2> piheap_index_write_req_q;
   streams<bool, kQueueCount, 2> piheap_index_write_resp_q;
+#endif  // TAPA_SSSP_COARSE_PRIORITY
 
   streams<TaskOnChip, kPeCount, 2> task_req_qi("task_req_i");
   streams<Vid, kPeCount, 2> task_resp_qi("task_resp_i");
@@ -1829,11 +2334,17 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
                       task_resp_qi)
       .invoke<detach, kQueueCount>(
           TaskQueue, queue_done_q, queue_stat_q, seq(), queue_push_q,
-          queue_noop_qi, queue_pop_q, piheap_array_read_addr_q,
-          piheap_array_read_data_q, piheap_array_write_req_q,
-          piheap_array_write_resp_q, piheap_index_read_addr_q,
-          piheap_index_read_data_q, piheap_index_write_req_q,
-          piheap_index_write_resp_q)
+          queue_noop_qi, queue_pop_q,
+#ifdef TAPA_SSSP_COARSE_PRIORITY
+          cgpq_spill_read_addr_q, cgpq_spill_read_data_q,
+          cgpq_spill_write_req_q, cgpq_spill_write_resp_q
+#else   // TAPA_SSSP_COARSE_PRIORITY
+          piheap_array_read_addr_q, piheap_array_read_data_q,
+          piheap_array_write_req_q, piheap_array_write_resp_q,
+          piheap_index_read_addr_q, piheap_index_read_data_q,
+          piheap_index_write_req_q, piheap_index_write_resp_q
+#endif  // TAPA_SSSP_COARSE_PRIORITY
+          )
       .invoke<detach>(QueueNoopMerger, queue_noop_qi, queue_noop_q)
 #ifdef TAPA_SSSP_IMMEDIATE_RELAX
       .invoke<detach>(QueueOutputArbiter, queue_pop_q, vertex_in_q)
@@ -1841,22 +2352,28 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
       .invoke<detach>(VertexOutputArbiter, vertex_out_q, queue_push_q)
 #endif  // TAPA_SSSP_IMMEDIATE_RELAX
 
-      // Put mmaps are in the top level to enable flexible floorplanning.
+  // Put mmaps are in the top level to enable flexible floorplanning.
+#ifdef TAPA_SSSP_COARSE_PRIORITY
+      .invoke<detach, kQueueCount>(
+          CgpqSpillMem, cgpq_spill_read_addr_q, cgpq_spill_read_data_q,
+          cgpq_spill_write_req_q, cgpq_spill_write_resp_q, cgpq_spill)
+#else   // TAPA_SSSP_COARSE_PRIORITY
       .invoke<detach, kQueueCount>(
           PiHeapArrayMem, piheap_array_read_addr_q, piheap_array_read_data_q,
           piheap_array_write_req_q, piheap_array_write_resp_q, heap_array)
       .invoke<detach, kQueueCount>(
           PiHeapIndexMem, piheap_index_read_addr_q, piheap_index_read_data_q,
           piheap_index_write_req_q, piheap_index_write_resp_q, heap_index)
+#endif  // TAPA_SSSP_COARSE_PRIORITY
 
       // For edges.
       .invoke<join, kShardCount>(EdgeMem, edge_done_q, edge_stat_q,
                                  edge_read_addr_q, edge_read_data_q, edges)
       .invoke<detach>(EdgeReqArbiter, edge_req_q, src_q, edge_read_addr_q)
 
-      // For vertices.
-      // Route updates via a kShardCount x kShardCount network.
-      // clang-format off
+  // For vertices.
+  // Route updates via a kShardCount x kShardCount network.
+  // clang-format off
 #if TAPA_SSSP_SHARD_COUNT >= 2
       .invoke<join>(Switch, 0, switch_done_q[0], switch_stat_q[0], xbar_q0[0], xbar_q0[1], xbar_q1[0], xbar_q1[1])
 #endif // TAPA_SSSP_SHARD_COUNT
