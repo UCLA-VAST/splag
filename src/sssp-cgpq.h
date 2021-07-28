@@ -48,10 +48,7 @@ class ChunkMeta {
   using uint_pos_t = ap_uint<bit_length(kBufferSize - 1)>;
   using uint_size_t = ap_uint<bit_length(kBufferSize)>;
 
-  auto GetSize() const {
-    return is_full_ ? uint_size_t(kBufferSize)
-                    : uint_size_t(uint_pos_t(write_pos_ - read_pos_));
-  }
+  auto GetSize() const { return size_; }
 
   auto GetReadPos() const { return read_pos_; }
 
@@ -90,27 +87,24 @@ class ChunkMeta {
 
   void Push() {
     CHECK(!IsFull());
-    const auto before = GetSize();
     ++write_pos_;
+    ++size_;
     is_empty_ = false;
     is_full_ = write_pos_ == read_pos_;
-    const auto after = GetSize();
-    CHECK_EQ(before + 1, after);
   }
 
   void Pop() {
     CHECK(!IsEmpty());
-    const auto before = GetSize();
     ++read_pos_;
+    --size_;
     is_empty_ = write_pos_ == read_pos_;
     is_full_ = false;
-    const auto after = GetSize();
-    CHECK_EQ(before, after + 1);
   }
 
  private:
   uint_pos_t read_pos_ = 0;
   uint_pos_t write_pos_ = 0;
+  uint_size_t size_ = 0;
   bool is_empty_ = true;
   bool is_full_ = false;
 };
