@@ -67,11 +67,18 @@ class ChunkMeta {
   bool IsFull() const {
     if (is_full_) {
       CHECK_EQ(write_pos_, read_pos_);
+      CHECK(!is_empty_);
     }
     return is_full_;
   }
 
-  bool IsEmpty() const { return write_pos_ == read_pos_ && !is_full_; }
+  bool IsEmpty() const {
+    if (is_empty_) {
+      CHECK_EQ(write_pos_, read_pos_);
+      CHECK(!is_full_);
+    }
+    return is_empty_;
+  }
 
   bool IsAlmostFull() const {
 #ifdef TAPA_SSSP_2X_BUFFER
@@ -92,6 +99,7 @@ class ChunkMeta {
     CHECK(!IsFull());
     const auto before = GetSize();
     ++write_pos_;
+    is_empty_ = false;
     is_full_ = write_pos_ == read_pos_;
     const auto after = GetSize();
     CHECK_EQ(before + 1, after);
@@ -101,6 +109,7 @@ class ChunkMeta {
     CHECK(!IsEmpty());
     const auto before = GetSize();
     ++read_pos_;
+    is_empty_ = write_pos_ == read_pos_;
     is_full_ = false;
     const auto after = GetSize();
     CHECK_EQ(before, after + 1);
@@ -109,6 +118,7 @@ class ChunkMeta {
  private:
   uint_pos_t read_pos_ = 0;
   uint_pos_t write_pos_ = 0;
+  bool is_empty_ = true;
   bool is_full_ = false;
 };
 
