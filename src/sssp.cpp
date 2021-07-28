@@ -968,6 +968,7 @@ void CgpqCore(
   uint_bid_t spill_bid;
   uint_spill_addr_t spill_addr_req = 0;
   uint_spill_addr_t spill_addr_resp = 0;
+  ChunkMeta::uint_size_t task_to_spill_count = kChunkSize;
 
   // Refill requests should read from this address.
   bool is_refill_addr_valid = false;
@@ -1141,7 +1142,7 @@ spin:
         (!is_spill_valid || output_bid != spill_bid ||  // if chunk is spilling,
          output_meta.GetSize()                          // available tasks
              >                                          // must be greater than
-             kChunkSize - spill_addr_req % kChunkSize   // #tasks to spill,
+             task_to_spill_count                        // #tasks to spill,
          ) &&                                           // and
         (!is_spill_valid ||             // if there is active spilling,
          output_bid % kChunkPartFac     // the output bucket
@@ -1231,8 +1232,10 @@ spin:
       CHECK(!is_pop.bit(spill_bid));
       is_pop.bit(spill_bid) = true;
       ++spill_addr_req;
-      if (spill_addr_req % kChunkSize == 0) {
+      --task_to_spill_count;
+      if (task_to_spill_count == 0) {
         is_spill_valid = false;
+        task_to_spill_count = kChunkSize;
       }
     }
 
