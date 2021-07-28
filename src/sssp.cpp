@@ -1187,20 +1187,9 @@ spin:
     ReadChunk(chunk_buf, is_spill_valid, spill_bid, spill_meta.GetReadPos(),
               is_output_valid, output_bid, output_meta.GetReadPos(), spill_task,
               output_task);
-
-    for (int i = 0; i < kChunkPartFac; ++i) {
-#pragma HLS unroll
-      const bool is_refill = can_recv_refill && refill_bid % kChunkPartFac == i;
-      const bool is_input = can_enqueue && input_bid % kChunkPartFac == i;
-      if (is_refill || is_input) {
-        CHECK(!is_refill || !is_input);
-        const auto store_bid = is_refill ? refill_bid : input_bid;
-        const auto write_pos =
-            (is_refill ? refill_meta : input_meta).GetWritePos();
-        chunk_buf[store_bid / kChunkPartFac * kChunkPartFac + i][write_pos] =
-            is_refill ? refill_task : input_task;
-      }
-    }
+    WriteChunk(can_recv_refill, refill_bid, refill_meta.GetWritePos(),
+               refill_task, can_enqueue, input_bid, input_meta.GetWritePos(),
+               input_task, chunk_buf);
 
     ap_uint<kBucketCount> is_push = 0;
 

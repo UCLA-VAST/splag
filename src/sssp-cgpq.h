@@ -53,16 +53,9 @@ class ChunkMeta {
                     : uint_size_t(uint_pos_t(write_pos_ - read_pos_));
   }
 
-  auto GetReadPos() const {
-    // Do not check for emptiness because read is not destructive.
-    return read_pos_;
-  }
+  auto GetReadPos() const { return read_pos_; }
 
-  auto GetWritePos() const {
-    // Do check for fullness because write is destructive if full.
-    CHECK(!IsFull());
-    return write_pos_;
-  }
+  auto GetWritePos() const { return write_pos_; }
 
   bool IsFull() const {
     if (is_full_) {
@@ -182,6 +175,22 @@ struct Arbiter {
         chunk_buf, is_spill, spill_bid, spill_pos, is_output, output_bid,
         output_pos, spill_task, output_task);
   }
+
+  static void WriteChunk(
+      // Inputs.
+      const ap_uint<kChunkPartFac> is_refill, const uint_bid_t refill_bid,
+      const ChunkMeta::uint_pos_t refill_pos, const TaskOnChip& refill_task,
+      const ap_uint<kChunkPartFac> is_input, const uint_bid_t input_bid,
+      const ChunkMeta::uint_pos_t input_pos, const TaskOnChip& input_task,
+      // Outputs.
+      TaskOnChip (&chunk_buf)[kBucketCount][kBufferSize]) {
+    Arbiter<begin, len / 2>::WriteChunk(is_refill, refill_bid, refill_pos,
+                                        refill_task, is_input, input_bid,
+                                        input_pos, input_task, chunk_buf);
+    Arbiter<begin + len / 2, len - len / 2>::WriteChunk(
+        is_refill, refill_bid, refill_pos, refill_task, is_input, input_bid,
+        input_pos, input_task, chunk_buf);
+  }
 };
 
 template <int begin>
@@ -217,6 +226,22 @@ struct Arbiter<begin, 1> {
       output_task = task;
     }
   }
+
+  static void WriteChunk(
+      // Inputs.
+      const ap_uint<kChunkPartFac> is_refill, const uint_bid_t refill_bid,
+      const ChunkMeta::uint_pos_t refill_pos, const TaskOnChip& refill_task,
+      const ap_uint<kChunkPartFac> is_input, const uint_bid_t input_bid,
+      const ChunkMeta::uint_pos_t input_pos, const TaskOnChip& input_task,
+      // Outputs.
+      TaskOnChip (&chunk_buf)[kBucketCount][kBufferSize]) {
+    const auto bid = is_refill.bit(begin) ? refill_bid : input_bid;
+    const auto pos = is_refill.bit(begin) ? refill_pos : input_pos;
+    const auto task = is_refill.bit(begin) ? refill_task : input_task;
+    if (is_refill.bit(begin) || is_input.bit(begin)) {
+      chunk_buf[bid / kChunkPartFac * kChunkPartFac + begin][pos] = task;
+    }
+  }
 };
 
 }  // namespace internal
@@ -246,6 +271,23 @@ inline void ReadChunk(
   internal::Arbiter<0, kChunkPartFac>::ReadChunk(
       chunk_buf, is_spill, spill_bid, spill_pos, is_output, output_bid,
       output_pos, spill_task, output_task);
+}
+
+inline void WriteChunk(
+    // Inputs.
+    const bool can_recv_refill, const uint_bid_t refill_bid,
+    const ChunkMeta::uint_pos_t refill_pos, const TaskOnChip& refill_task,
+    const bool can_enqueue, const uint_bid_t input_bid,
+    const ChunkMeta::uint_pos_t input_pos, const TaskOnChip& input_task,
+    // Outputs.
+    TaskOnChip (&chunk_buf)[kBucketCount][kBufferSize]) {
+#pragma HLS inline recursive
+  ap_uint<kChunkPartFac> is_refill = 0, is_input = 0;
+  is_refill.bit(refill_bid % kChunkPartFac) = can_recv_refill;
+  is_input.bit(input_bid % kChunkPartFac) = can_enqueue;
+  internal::Arbiter<0, kChunkPartFac>::WriteChunk(
+      is_refill, refill_bid, refill_pos, refill_task, is_input, input_bid,
+      input_pos, input_task, chunk_buf);
 }
 
 }  // namespace cgpq
