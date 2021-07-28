@@ -155,6 +155,23 @@ struct Arbiter {
     full_bid = is_full_valid_0 ? full_bid_0 : full_bid_1;
     full_meta = is_full_valid_0 ? full_meta_0 : full_meta_1;
   }
+
+  static void ReadChunk(
+      // Inputs.
+      const TaskOnChip (&chunk_buf)[kBucketCount][kBufferSize],
+      const ap_uint<kChunkPartFac> is_spill, const uint_bid_t spill_bid,
+      const ChunkMeta::uint_pos_t spill_pos,
+      const ap_uint<kChunkPartFac> is_output, const uint_bid_t output_bid,
+      const ChunkMeta::uint_pos_t output_pos,
+      // Outputs.
+      TaskOnChip& spill_task, TaskOnChip& output_task) {
+    Arbiter<begin, len / 2>::ReadChunk(chunk_buf, is_spill, spill_bid,
+                                       spill_pos, is_output, output_bid,
+                                       output_pos, spill_task, output_task);
+    Arbiter<begin + len / 2, len - len / 2>::ReadChunk(
+        chunk_buf, is_spill, spill_bid, spill_pos, is_output, output_bid,
+        output_pos, spill_task, output_task);
+  }
 };
 
 template <int begin>
@@ -169,6 +186,27 @@ struct Arbiter<begin, 1> {
     output_bid = begin;
     full_bid = begin;
   }
+
+  static void ReadChunk(
+      // Inputs.
+      const TaskOnChip (&chunk_buf)[kBucketCount][kBufferSize],
+      const ap_uint<kChunkPartFac> is_spill, const uint_bid_t spill_bid,
+      const ChunkMeta::uint_pos_t spill_pos,
+      const ap_uint<kChunkPartFac> is_output, const uint_bid_t output_bid,
+      const ChunkMeta::uint_pos_t output_pos,
+      // Outputs.
+      TaskOnChip& spill_task, TaskOnChip& output_task) {
+    const auto bid = is_spill.bit(begin) ? spill_bid : output_bid;
+    const auto pos = is_spill.bit(begin) ? spill_pos : output_pos;
+    const auto task =
+        chunk_buf[bid / kChunkPartFac * kChunkPartFac + begin][pos];
+    if (is_spill.bit(begin)) {
+      spill_task = task;
+    }
+    if (is_output.bit(begin)) {
+      output_task = task;
+    }
+  }
 };
 
 }  // namespace internal
@@ -181,6 +219,23 @@ inline void FindChunk(const ChunkMeta (&chunk_meta)[kBucketCount],
   internal::Arbiter<0, kBucketCount>::FindChunk(
       chunk_meta, is_output_valid, output_bid, output_meta, is_full_valid,
       full_bid, full_meta);
+}
+
+inline void ReadChunk(
+    // Inputs.
+    const TaskOnChip (&chunk_buf)[kBucketCount][kBufferSize],
+    const bool is_spill_valid, const uint_bid_t spill_bid,
+    const ChunkMeta::uint_pos_t spill_pos, const bool is_output_valid,
+    const uint_bid_t output_bid, const ChunkMeta::uint_pos_t output_pos,
+    // Outputs.
+    TaskOnChip& spill_task, TaskOnChip& output_task) {
+#pragma HLS inline recursive
+  ap_uint<kChunkPartFac> is_spill = 0, is_output = 0;
+  is_spill.bit(spill_bid % kChunkPartFac) = is_spill_valid;
+  is_output.bit(output_bid % kChunkPartFac) = is_output_valid;
+  internal::Arbiter<0, kChunkPartFac>::ReadChunk(
+      chunk_buf, is_spill, spill_bid, spill_pos, is_output, output_bid,
+      output_pos, spill_task, output_task);
 }
 
 }  // namespace cgpq

@@ -1185,37 +1185,21 @@ spin:
         ;
 
     TaskOnChip spill_task, output_task;
+    ReadChunk(chunk_buf, is_spill_valid, spill_bid, spill_meta.GetReadPos(),
+              is_output_valid, output_bid, output_meta.GetReadPos(), spill_task,
+              output_task);
+
     for (int i = 0; i < kChunkPartFac; ++i) {
 #pragma HLS unroll
-      {
-        const bool is_spill = is_spill_valid && spill_bid % kChunkPartFac == i;
-        const bool is_output =
-            is_output_valid && output_bid % kChunkPartFac == i;
-        if (is_spill || is_output) {
-          // For II = 1, chunk_ref read must not depend on FIFO fullness, so
-          // is_spill and is_output may both be true, in which case is_spill
-          // takes precedence.
-          const auto load_bid = is_spill ? spill_bid : output_bid;
-          const auto read_pos =
-              (is_spill ? spill_meta : output_meta).GetReadPos();
-          CHECK_EQ(load_bid % kChunkPartFac, i);
-          (is_spill ? spill_task : output_task) =
-              chunk_buf[load_bid / kChunkPartFac * kChunkPartFac + i][read_pos];
-        }
-      }
-
-      {
-        const bool is_refill =
-            can_recv_refill && refill_bid % kChunkPartFac == i;
-        const bool is_input = can_enqueue && input_bid % kChunkPartFac == i;
-        if (is_refill || is_input) {
-          CHECK(!is_refill || !is_input);
-          const auto store_bid = is_refill ? refill_bid : input_bid;
-          const auto write_pos =
-              (is_refill ? refill_meta : input_meta).GetWritePos();
-          chunk_buf[store_bid / kChunkPartFac * kChunkPartFac + i][write_pos] =
-              is_refill ? refill_task : input_task;
-        }
+      const bool is_refill = can_recv_refill && refill_bid % kChunkPartFac == i;
+      const bool is_input = can_enqueue && input_bid % kChunkPartFac == i;
+      if (is_refill || is_input) {
+        CHECK(!is_refill || !is_input);
+        const auto store_bid = is_refill ? refill_bid : input_bid;
+        const auto write_pos =
+            (is_refill ? refill_meta : input_meta).GetWritePos();
+        chunk_buf[store_bid / kChunkPartFac * kChunkPartFac + i][write_pos] =
+            is_refill ? refill_task : input_task;
       }
     }
 
