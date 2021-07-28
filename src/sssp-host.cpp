@@ -423,7 +423,7 @@ int main(int argc, char* argv[]) {
   // Other kernel arguments.
   aligned_vector<int64_t> metadata(9 + kSubIntervalCount * kVertexUniStatCount +
                                    kShardCount * kEdgeUnitStatCount +
-                                   kQueueCount * kPiHeapStatTotalCount +
+                                   kQueueCount * kQueueStatCount +
                                    kSwitchCount * kSwitchStatCount);
   array<aligned_vector<Vertex>, kIntervalCount> vertices;
   for (auto& interval : vertices) {
@@ -632,6 +632,15 @@ int main(int argc, char* argv[]) {
     for (int qid = 0; qid < kQueueCount; ++qid) {
       VLOG(3) << "  queue[" << qid << "]:";
 
+#ifdef TAPA_SSSP_COARSE_PRIORITY
+      const auto spill_count = *(metadata_it++);
+      const auto max_heap_size = *(metadata_it++);
+      VLOG(3) << "    spill count  : " << setfill(' ') << setw(10)
+              << spill_count << " / " << cgpq_spill.size() / kCgpqChunkSize;
+      VLOG(3) << "    max heap size: " << setfill(' ') << setw(10)
+              << max_heap_size << " / " << kCgpqCapacity;
+#else   // TAPA_SSSP_COARSE_PRIORITY
+
       // Queue op counts.
       {
         constexpr const char* kQueueUnitOpNamesAligned[] = {
@@ -760,6 +769,7 @@ int main(int argc, char* argv[]) {
               << 100. * item / total << "%)";
         }
       }
+#endif  // TAPA_SSSP_COARSE_PRIORITY
     }
 
     for (int swid = 0; swid < kSwitchCount; ++swid) {

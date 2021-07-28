@@ -947,7 +947,8 @@ void CgpqCore(
 #pragma HLS bind_storage variable = heap_array type = RAM_T2P impl = URAM
   // Extra copy of heap top in registers due to limited read ports.
   ChunkRef heap_root;
-  ap_uint<bit_length(kCgpqCapacity + 1)> heap_pos, heap_size = 0;
+  ap_uint<bit_length(kCgpqCapacity + 1)> heap_pos, heap_size = 0,
+                                                   max_heap_size = 0;
   ap_int<bit_length(kCgpqCapacity + 1) + 1> heap_pos_prev = -1;
   ChunkRef heap_elem;
   ChunkRefPair heap_pair_prev;
@@ -1287,6 +1288,7 @@ spin:
           .bucket = spill_bid,
       };
       ++heap_size;
+      max_heap_size = std::max(max_heap_size, heap_size);
       CHECK_LT(heap_size, kCgpqCapacity);
 
       // Heapify up.
@@ -1346,6 +1348,9 @@ spin:
   }
 
   done_q.read(nullptr);
+
+  stat_q.write(spill_addr_req / kChunkSize);
+  stat_q.write(max_heap_size);
 
   CHECK_EQ(heap_size, 0);
 
@@ -2233,16 +2238,10 @@ edge_stat:
 
 queue_stat:
   for (int i = 0; i < kQueueCount; ++i) {
-    for (int j = 0; j < kPiHeapStatTotalCount; ++j) {
+    for (int j = 0; j < kQueueStatCount; ++j) {
       metadata[9 + kShardCount * kEdgeUnitStatCount +
-               kSubIntervalCount * kVertexUniStatCount +
-               i * kPiHeapStatTotalCount + j] =
-#ifdef TAPA_SSSP_COARSE_PRIORITY
-          0
-#else   // TAPA_SSSP_COARSE_PRIORITY
-          queue_stat_q[i].read()
-#endif  // TAPA_SSSP_COARSE_PRIORITY
-          ;
+               kSubIntervalCount * kVertexUniStatCount + i * kQueueStatCount +
+               j] = queue_stat_q[i].read();
     }
   }
 
@@ -2252,7 +2251,7 @@ switch_stat:
     for (int j = 0; j < kSwitchStatCount; ++j) {
       metadata[9 + kShardCount * kEdgeUnitStatCount +
                kSubIntervalCount * kVertexUniStatCount +
-               kQueueCount * kPiHeapStatTotalCount + i * kSwitchStatCount + j] =
+               kQueueCount * kQueueStatCount + i * kSwitchStatCount + j] =
           switch_stat_q[i].read();
     }
   }

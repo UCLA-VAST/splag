@@ -15,9 +15,8 @@
 namespace cgpq {
 
 constexpr int kBucketCount = 64;
-constexpr int kChunkSize = 1024;
-constexpr int kCgpqLevel = 15;
-constexpr int kCgpqCapacity = (1 << kCgpqLevel) - 1;
+
+constexpr int kChunkSize = kCgpqChunkSize;
 
 #ifdef TAPA_SSSP_2X_BUFFER
 constexpr int kBufferSize = kChunkSize * 2;

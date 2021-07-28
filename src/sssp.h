@@ -198,6 +198,12 @@ constexpr int kPiHeapStatTotalCount = kPiHeapStatCount[0] + kPiHeapStatCount[1];
 constexpr int kPiHeapStatTaskCount =
     sizeof(kPiHeapStatCount) / sizeof(kPiHeapStatCount[0]);
 
+#ifdef TAPA_SSSP_COARSE_PRIORITY
+constexpr int kQueueStatCount = 2;
+#else   // TAPA_SSSP_COARSE_PRIORITY
+constexpr int kQueueStatCount = kPiHeapStatTotalCount;
+#endif  // TAPA_SSSP_COARSE_PRIORITY
+
 class TaskOnChip {
  public:
   TaskOnChip() {}
@@ -426,5 +432,11 @@ constexpr int kHeapOnChipWidth = 8;  // #children per on-heap element.
 constexpr int kHeapOffChipWidth = 16;  // #children per off-heap element.
 
 using SpilledTask = TaskOnChip;
+
+constexpr int kCgpqChunkSize = 1024;
+
+constexpr int kCgpqLevel = 15;
+
+constexpr int kCgpqCapacity = (1 << kCgpqLevel) - 1;
 
 #endif  // TAPA_SSSP_H_
