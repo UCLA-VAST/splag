@@ -958,7 +958,6 @@ void CgpqCore(
   bool is_heapifying_down_init = false;
 
   DECL_ARRAY(ChunkMeta, chunk_meta, kBucketCount, ChunkMeta());
-#pragma HLS aggregate variable = chunk_meta bit
 
   TaskOnChip chunk_buf[kBucketCount][kBufferSize];
 #pragma HLS bind_storage variable = chunk_buf type = RAM_S2P impl = URAM
