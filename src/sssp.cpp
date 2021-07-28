@@ -2131,8 +2131,10 @@ void Dispatcher(
     istreams<int64_t, kShardCount>& edge_stat_q,
     ostreams<bool, kQueueCount>& queue_done_q,
     istreams<PiHeapStat, kQueueCount>& queue_stat_q,
+#if TAPA_SSSP_SHARD_COUNT > 1
     ostreams<bool, kSwitchCount>& switch_done_q,
     istreams<int64_t, kSwitchCount>& switch_stat_q,
+#endif  // TAPA_SSSP_SHARD_COUNT
     // Task initialization.
     ostream<TaskOnChip>& task_init_q,
     // Task count.
@@ -2191,7 +2193,9 @@ spin:
   RANGE(iid, kSubIntervalCount, vertex_cache_done_q[iid].write(false));
   RANGE(sid, kShardCount, edge_done_q[sid].write(false));
   RANGE(qid, kQueueCount, queue_done_q[qid].write(false));
+#if TAPA_SSSP_SHARD_COUNT > 1
   RANGE(swid, kSwitchCount, switch_done_q[swid].write(false));
+#endif  // TAPA_SSSP_SHARD_COUNT
 
   metadata[0] = visited_edge_count;
   metadata[1] = push_count;
@@ -2229,6 +2233,7 @@ queue_stat:
     }
   }
 
+#if TAPA_SSSP_SHARD_COUNT > 1
 switch_stat:
   for (int i = 0; i < kSwitchCount; ++i) {
     for (int j = 0; j < kSwitchStatCount; ++j) {
@@ -2238,6 +2243,7 @@ switch_stat:
           switch_stat_q[i].read();
     }
   }
+#endif  // TAPA_SSSP_SHARD_COUNT
 }
 
 void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
@@ -2324,8 +2330,11 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   tapa::task()
       .invoke<join>(Dispatcher, root, metadata, vertex_cache_done_q,
                     vertex_cache_stat_q, edge_done_q, edge_stat_q, queue_done_q,
-                    queue_stat_q, switch_done_q, switch_stat_q, task_init_q,
-                    vertex_noop_q, queue_noop_q, task_count_q)
+                    queue_stat_q,
+#if TAPA_SSSP_SHARD_COUNT > 1
+                    switch_done_q, switch_stat_q,
+#endif  // TAPA_SSSP_SHARD_COUNT
+                    task_init_q, vertex_noop_q, queue_noop_q, task_count_q)
 #ifdef TAPA_SSSP_IMMEDIATE_RELAX
       .invoke<detach>(TaskArbiter, task_init_q, vertex_out_q, task_req_qi,
 #else   // TAPA_SSSP_IMMEDIATE_RELAX
