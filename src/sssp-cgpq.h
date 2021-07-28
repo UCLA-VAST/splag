@@ -28,10 +28,8 @@ constexpr int kBufferSize = kChunkSize;
 constexpr int kChunkPartFac = kBucketCount / (4096 / kBufferSize);
 
 using uint_spill_addr_t = ap_uint<24>;
-using int_spill_addr_t = ap_int<uint_spill_addr_t::width + 1>;
 
 using uint_bid_t = ap_uint<bit_length(kBucketCount - 1)>;
-using int_bid_t = ap_int<uint_bid_t::width + 1>;
 
 using uint_chunk_size_t = ap_uint<bit_length(kChunkSize)>;
 
@@ -139,11 +137,11 @@ namespace internal {
 template <int begin, int len>
 struct Arbiter {
   static void FindChunk(const ChunkMeta (&chunk_meta)[kBucketCount],
-                        bool& is_output_valid, int_bid_t& output_bid,
+                        bool& is_output_valid, uint_bid_t& output_bid,
                         ChunkMeta& output_meta, bool& is_full_valid,
-                        int_bid_t& full_bid, ChunkMeta& full_meta) {
+                        uint_bid_t& full_bid, ChunkMeta& full_meta) {
     bool is_output_valid_0, is_output_valid_1, is_full_valid_0, is_full_valid_1;
-    int_bid_t output_bid_0, output_bid_1, full_bid_0, full_bid_1;
+    uint_bid_t output_bid_0, output_bid_1, full_bid_0, full_bid_1;
     ChunkMeta output_meta_0, output_meta_1, full_meta_0, full_meta_1;
     Arbiter<begin, len / 2>::FindChunk(
         chunk_meta, is_output_valid_0, output_bid_0, output_meta_0,
@@ -163,24 +161,24 @@ struct Arbiter {
 template <int begin>
 struct Arbiter<begin, 1> {
   static void FindChunk(const ChunkMeta (&chunk_meta)[kBucketCount],
-                        bool& is_output_valid, int_bid_t& output_bid,
+                        bool& is_output_valid, uint_bid_t& output_bid,
                         ChunkMeta& output_meta, bool& is_full_valid,
-                        int_bid_t& full_bid, ChunkMeta& full_meta) {
+                        uint_bid_t& full_bid, ChunkMeta& full_meta) {
     output_meta = full_meta = chunk_meta[begin];
     is_output_valid = !output_meta.IsEmpty();
     is_full_valid = full_meta.IsFull();
-    output_bid = is_output_valid ? begin : -1;
-    full_bid = is_full_valid ? begin : -1;
+    output_bid = begin;
+    full_bid = begin;
   }
 };
 
 }  // namespace internal
 
 inline void FindChunk(const ChunkMeta (&chunk_meta)[kBucketCount],
-                      int_bid_t& output_bid, ChunkMeta& output_meta,
-                      int_bid_t& full_bid, ChunkMeta& full_meta) {
+                      bool& is_output_valid, uint_bid_t& output_bid,
+                      ChunkMeta& output_meta, bool& is_full_valid,
+                      uint_bid_t& full_bid, ChunkMeta& full_meta) {
 #pragma HLS inline recursive
-  bool is_output_valid, is_full_valid;
   internal::Arbiter<0, kBucketCount>::FindChunk(
       chunk_meta, is_output_valid, output_bid, output_meta, is_full_valid,
       full_bid, full_meta);

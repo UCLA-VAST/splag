@@ -964,16 +964,20 @@ void CgpqCore(
 #pragma HLS array_partition variable = chunk_buf cyclic factor = \
     kChunkPartFac dim = 1
 
-  int_bid_t spill_bid = -1;
+  bool is_spill_valid = false;
+  uint_bid_t spill_bid;
   uint_spill_addr_t spill_addr_req = 0;
   uint_spill_addr_t spill_addr_resp = 0;
 
   // Refill requests should read from this address.
-  int_spill_addr_t refill_addr = -1;
+  bool is_refill_addr_valid = false;
+  uint_spill_addr_t refill_addr;
   // Refill data should write to this bucket.
-  int_bid_t refill_bid = -1;
+  bool is_refill_valid = false;
+  uint_bid_t refill_bid;
   // Future refill data should write to this bucket.
-  int_bid_t refill_bid_next = -1;
+  bool is_refill_next_valid = false;
+  uint_bid_t refill_bid_next;
   // Number of data remaining to refill.
   uint_chunk_size_t refill_remain_count;
 
@@ -1072,45 +1076,49 @@ spin:
       heap_pos_prev = -1;
     }
 
-    bool is_push_req_valid;
-    const auto push_req = push_req_q.peek(is_push_req_valid);
+    bool is_input_valid;
+    const auto push_req = push_req_q.peek(is_input_valid);
     const auto input_task = push_req.task;
 
     bool is_refill_task_valid;
     const auto refill_task = mem_read_data_q.peek(is_refill_task_valid);
 
-    const int_bid_t input_bid =
-        is_push_req_valid ? int_bid_t(push_req.bid) : int_bid_t(-1);
+    const auto input_bid = push_req.bid;
     const auto input_meta = chunk_meta[input_bid];
 
     const auto spill_meta = chunk_meta[spill_bid];
     const auto refill_meta = chunk_meta[refill_bid];
 
-    int_bid_t output_bid;
+    bool is_output_valid;
+    uint_bid_t output_bid;
     ChunkMeta output_meta;
-    int_bid_t full_bid;
+    bool is_full_valid;
+    uint_bid_t full_bid;
     ChunkMeta full_meta;
-    FindChunk(chunk_meta, output_bid, output_meta, full_bid, full_meta);
+    FindChunk(chunk_meta, is_output_valid, output_bid, output_meta,
+              is_full_valid, full_bid, full_meta);
 
-    const int_bid_t top_bid =
-        heap_size == 0 ? int_bid_t(-1) : int_bid_t(heap_root.bucket);
+    const bool is_top_valid = heap_size != 0;
+    const uint_bid_t top_bid = heap_root.bucket;
 
     // Read refill data and push into chunk buffer if
     const bool can_recv_refill =
-        refill_bid >= 0 &&    // there is active refilling, and
+        is_refill_valid &&    // there is active refilling, and
         is_refill_task_valid  // refill data is available for read.
         ;
 
     // Read input task and push into chunk buffer if
     const bool can_enqueue =
-        input_bid >= 0 &&                    // there is an input task, and
-        !input_meta.IsFull() &&              // chunk is not already full, and
-        (input_bid != refill_bid ||          // if chunk is refilling,
+        is_input_valid &&        // there is an input task, and
+        !input_meta.IsFull() &&  // chunk is not already full, and
+        (!is_refill_valid ||
+         input_bid != refill_bid ||          // if chunk is refilling,
          kBufferSize - input_meta.GetSize()  // available space
              >                               // must be greater than
              refill_remain_count             // #tasks to refill,
          ) &&                                // and
-        (input_bid != refill_bid_next ||     // if chunk will refill soon,
+        (!is_refill_next_valid ||
+         input_bid != refill_bid_next ||     // if chunk will refill soon,
          kBufferSize - input_meta.GetSize()  // available space
              >                               // must be greater than
              kChunkSize                      // #tasks to refill,
@@ -1123,19 +1131,19 @@ spin:
 
     // Pop from chunk buffer and write spill data if
     const bool can_send_spill =
-        spill_bid >= 0 &&         // there is active spilling, and
+        is_spill_valid &&         // there is active spilling, and
         !mem_write_req_q.full();  // spill data is available for write.
 
     // Pop from highest-priority chunk buffer and write output data if
     const bool can_dequeue =
-        output_bid >= 0 &&           // there is a non-empty chunk, and
-        !pop_q.full() &&             // output is available for write, and
-        (output_bid != spill_bid ||  // if chunk is spilling,
-         output_meta.GetSize()       // available tasks
-             >                       // must be greater than
-             kChunkSize - spill_addr_req % kChunkSize  // #tasks to spill,
-         ) &&                                          // and
-        (spill_bid < 0 ||               // if there is active spilling,
+        is_output_valid &&  // there is a non-empty chunk, and
+        !pop_q.full() &&    // output is available for write, and
+        (!is_spill_valid || output_bid != spill_bid ||  // if chunk is spilling,
+         output_meta.GetSize()                          // available tasks
+             >                                          // must be greater than
+             kChunkSize - spill_addr_req % kChunkSize   // #tasks to spill,
+         ) &&                                           // and
+        (!is_spill_valid ||             // if there is active spilling,
          output_bid % kChunkPartFac     // the output bucket
              !=                         // must access a different bank
              spill_bid % kChunkPartFac  // as the spill bucket.
@@ -1145,8 +1153,8 @@ spin:
 
     // Start spilling a new chunk if
     const bool can_start_spill =
-        spill_bid < 0 &&             // there is no active spilling, and
-        full_bid >= 0 &&             // chunks need spilling, and
+        !is_spill_valid &&           // there is no active spilling, and
+        is_full_valid &&             // chunks need spilling, and
         full_meta.IsAlmostFull() &&  // chunk is almost full, and
         !(can_dequeue && full_bid == output_bid) &&  // chunk won't pop, and
         !is_heapifying_up && !is_heapifying_down     // heap is available.
@@ -1154,13 +1162,14 @@ spin:
 
     // Start refilling a new chunk if
     const bool can_schedule_refill =
-        refill_addr < 0 &&        // there is no active refilling, and
-        refill_bid_next < 0 &&    // no future refilling is scheduled, and
-        top_bid >= 0 &&           // there is a chunk for refilling, and
-        top_bid != refill_bid &&  // the chunk is not refilling now, and
-        (output_bid < 0 ||        // either on-chip chunk is empty, or
-         output_bid >= top_bid    // off-chip chunk has higher priority,
-         ) &&                     // and
+        !is_refill_addr_valid &&  // there is no active refilling, and
+        !is_refill_next_valid &&  // no future refilling is scheduled, and
+        is_top_valid &&           // there is a chunk for refilling, and
+        (!is_refill_valid ||
+         top_bid != refill_bid) &&  // the chunk is not refilling now, and
+        (!is_output_valid ||        // either on-chip chunk is empty, or
+         output_bid >= top_bid      // off-chip chunk has higher priority,
+         ) &&                       // and
         chunk_meta[top_bid].IsAlmostEmpty() &&     // chunk is almost empty,
         !(can_enqueue && top_bid == input_bid) &&  // chunk won't push, and
         !can_start_spill &&
@@ -1169,7 +1178,7 @@ spin:
 
     // Send refill data read address if
     const bool can_send_refill =
-        refill_addr >= 0 &&  // there is an active refill request, and
+        is_refill_addr_valid &&  // there is an active refill request, and
         refill_addr <= spill_addr_resp &&  // writes have finished, and
         !mem_read_addr_q.full()            // address output is not full.
         ;
@@ -1178,9 +1187,9 @@ spin:
     for (int i = 0; i < kChunkPartFac; ++i) {
 #pragma HLS unroll
       {
-        const bool is_spill = spill_bid >= 0 && spill_bid % kChunkPartFac == i;
+        const bool is_spill = is_spill_valid && spill_bid % kChunkPartFac == i;
         const bool is_output =
-            output_bid >= 0 && output_bid % kChunkPartFac == i;
+            is_output_valid && output_bid % kChunkPartFac == i;
         if (is_spill || is_output) {
           // For II = 1, chunk_ref read must not depend on FIFO fullness, so
           // is_spill and is_output may both be true, in which case is_spill
@@ -1218,21 +1227,21 @@ spin:
           )
           << "refill_bid: " << refill_bid;
       mem_read_data_q.read(nullptr);
-      CHECK(!is_push.test(refill_bid));
-      is_push.set(refill_bid);
+      CHECK(!is_push.bit(refill_bid));
+      is_push.bit(refill_bid) = true;
 
       --refill_remain_count;
       VLOG(5) << "refilling bucket " << refill_bid << " ("
               << refill_remain_count << " to go)";
       if (refill_remain_count == 0) {
-        refill_bid = -1;
+        is_refill_valid = false;
       }
     }
 
     if (can_enqueue) {
       push_req_q.read(nullptr);
-      CHECK(!is_push.test(input_bid));
-      is_push.set(input_bid);
+      CHECK(!is_push.bit(input_bid));
+      is_push.bit(input_bid) = true;
 
       VLOG(5) << "enqueue " << push_req.task << " to bucket " << input_bid
               << " (which already has " << input_meta.GetSize() << " tasks)";
@@ -1246,31 +1255,32 @@ spin:
       );
       mem_write_req_q.try_write({spill_addr_req, spill_task});
 
-      CHECK(!is_pop.test(spill_bid));
-      is_pop.set(spill_bid);
+      CHECK(!is_pop.bit(spill_bid));
+      is_pop.bit(spill_bid) = true;
       ++spill_addr_req;
       if (spill_addr_req % kChunkSize == 0) {
-        spill_bid = -1;
+        is_spill_valid = false;
       }
     }
 
     if (can_dequeue) {
       pop_q.try_write(output_task);
-      CHECK(!is_pop.test(output_bid));
-      is_pop.set(output_bid);
+      CHECK(!is_pop.bit(output_bid));
+      is_pop.bit(output_bid) = true;
     }
 
     RANGE(i, kBucketCount, {
-      if (is_push.test(i)) {
+      if (is_push.bit(i)) {
         chunk_meta[i].Push();
       }
-      if (is_pop.test(i)) {
+      if (is_pop.bit(i)) {
         chunk_meta[i].Pop();
       }
     });
 
     if (can_start_spill) {
       spill_bid = full_bid;
+      is_spill_valid = true;
 
       heap_elem = {
           .addr = spill_addr_req,
@@ -1290,7 +1300,9 @@ spin:
 
     if (can_schedule_refill) {
       refill_bid_next = top_bid;
+      is_refill_next_valid = true;
       refill_addr = heap_root.addr;
+      is_refill_addr_valid = true;
       CHECK_EQ(refill_addr % kChunkSize, 0);
 
       CHECK_GT(heap_size, 0);
@@ -1311,7 +1323,7 @@ spin:
       mem_read_addr_q.try_write(refill_addr);
       ++refill_addr;
       if (refill_addr % kChunkSize == 0) {
-        refill_addr = -1;
+        is_refill_addr_valid = false;
       }
     }
 
@@ -1320,10 +1332,11 @@ spin:
       ++spill_addr_resp;
     }
 
-    if (refill_bid < 0) {
+    if (!is_refill_valid) {
       refill_bid = refill_bid_next;
+      is_refill_valid = is_refill_next_valid;
+      is_refill_next_valid = false;
       refill_remain_count = kChunkSize;
-      refill_bid_next = -1;
     }
 
     is_heapifying_up = is_heapifying_up_next;
