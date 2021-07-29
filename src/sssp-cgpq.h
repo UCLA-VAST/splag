@@ -32,6 +32,10 @@ using uint_bid_t = ap_uint<bit_length(kBucketCount - 1)>;
 
 using uint_chunk_size_t = ap_uint<bit_length(kChunkSize)>;
 
+using uint_heap_pos_t = ap_uint<bit_length(kCgpqCapacity)>;
+
+using uint_heap_pair_pos_t = ap_uint<bit_length(kCgpqCapacity / 2)>;
+
 struct PushReq {
   uint_bid_t bid;
   TaskOnChip task;

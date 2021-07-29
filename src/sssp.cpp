@@ -944,13 +944,25 @@ void CgpqCore(
   // Parent of pos = pos / 2.
   // Children of pos = pos * 2, pos * 2 + 1.
   ChunkRefPair heap_array[(kCgpqCapacity + 1) / 2];
-#pragma HLS bind_storage variable = heap_array type = RAM_T2P impl = URAM
+#pragma HLS bind_storage variable = heap_array type = RAM_S2P impl = URAM
+#pragma HLS aggregate variable = heap_array bit
   // Extra copy of heap top in registers due to limited read ports.
   ChunkRef heap_root;
-  ap_uint<bit_length(kCgpqCapacity + 1)> heap_pos, heap_size = 0,
-                                                   max_heap_size = 0;
-  ap_int<bit_length(kCgpqCapacity + 1) + 1> heap_pos_prev = -1;
+  // Heap position that should be accessed;
+  uint_heap_pos_t heap_pos;
+  // Current heap size.
+  uint_heap_pos_t heap_size = 0;
+  // Maximum heap size in this execution.
+  uint_heap_pos_t max_heap_size = 0;
+  // Heap element that is being send up or down.
   ChunkRef heap_elem;
+  // Heap position that should be read.
+  uint_heap_pair_pos_t heap_read_pos;
+  // Whether heap was written in the previous iteration.
+  bool is_heap_written = false;
+  // Heap position that was written in the previous iteration.
+  uint_heap_pair_pos_t heap_write_pos;
+  // Heap pair that was read in the previous iteration.
   ChunkRefPair heap_pair_prev;
   bool is_heapifying_up = false;
   bool is_heapifying_up_init = false;
@@ -992,89 +1004,102 @@ spin:
 
 #pragma HLS dependence variable = heap_array inter false
 
-    if (is_heapifying_up_init) {
-      CHECK(is_heapifying_up);
-      CHECK_NE(heap_pos_prev, heap_pos / 2);
-      heap_pair_prev = heap_array[heap_pos / 2];
-      is_heapifying_up_init_next = false;
-      heap_pos_prev = -1;
-    } else if (is_heapifying_up) {
-      CHECK(!is_heapifying_down);
-      const auto heap_pos_next = heap_pos / 2;
-      CHECK_NE(heap_pos_prev, heap_pos_next / 2);
-      auto heap_pair = heap_pair_prev;
-      heap_pair_prev = heap_array[heap_pos_next / 2];
-      const auto heap_elem_next = heap_pair_prev[heap_pos_next % 2];
-      heap_pos_prev = heap_pos / 2;
-      CHECK(ChunkRefPairEq(heap_array[heap_pos / 2], heap_pair));
-      if (heap_pos > 1 && heap_elem_next < heap_elem) {
-        heap_pair[heap_pos % 2] = heap_elem_next;
-        heap_array[heap_pos / 2] = heap_pair;
-        if (heap_pos == 1) {
-          heap_root = heap_elem_next;
-        }
-        heap_pos = heap_pos_next;
+    // If write, this should be written.
+    auto heap_pair = heap_pair_prev;
+
+    // Heap pair that is read from heap array.
+    heap_pair_prev = heap_array[heap_read_pos];
+    if ((is_heapifying_up || is_heapifying_down) && is_heap_written) {
+      CHECK_NE(heap_write_pos, heap_read_pos);
+    }
+
+    // Do modify states here.
+    if (is_heapifying_up) {
+      if (is_heapifying_up_init) {
+        is_heap_written = false;
       } else {
-        heap_pair[heap_pos % 2] = heap_elem;
-        heap_array[heap_pos / 2] = heap_pair;
-        if (heap_pos == 1) {
-          heap_root = heap_elem;
-        }
-        is_heapifying_up_next = false;
-      }
-    } else if (is_heapifying_down_init) {
-      CHECK(is_heapifying_down);
-      CHECK_NE(heap_pos_prev, (heap_size + 1) / 2);
-      heap_elem = heap_array[(heap_size + 1) / 2][(heap_size + 1) % 2];
-      is_heapifying_down_init_next = false;
-      heap_pair_prev[1] = heap_root;
-      heap_pos = 1;
-      heap_pos_prev = -1;
-    } else if (is_heapifying_down) {
-      CHECK(!is_heapifying_up);
-      const auto heap_pos_next_left = heap_pos * 2;
-      const auto heap_pos_next_right = heap_pos * 2 + 1;
-      const bool is_left_valid = heap_pos_next_left < heap_size + 1;
-      const bool is_right_valid = heap_pos_next_right < heap_size + 1;
-      CHECK_NE(heap_pos_prev, heap_pos);
-      auto heap_pair = heap_pair_prev;
-      heap_pair_prev = is_left_valid ? heap_array[heap_pos] : ChunkRefPair();
-      const auto heap_elem_next_left = heap_pair_prev[0];
-      const auto heap_elem_next_right = heap_pair_prev[1];
-      const bool is_left_update_needed =
-          is_left_valid && heap_elem < heap_elem_next_left;
-      const bool is_right_update_needed =
-          is_right_valid && heap_elem < heap_elem_next_right;
-      heap_pos_prev = heap_pos / 2;
-      CHECK(heap_array[heap_pos / 2][1] == heap_pair[1]);
-      if (heap_pos / 2 != 0) {
-        CHECK(heap_array[heap_pos / 2][0] == heap_pair[0]);
-      }
-      const auto heap_pos_curr = heap_pos;
-      if (is_left_update_needed || is_right_update_needed) {
-        if (is_right_valid && heap_elem_next_left < heap_elem_next_right) {
-          heap_pair[heap_pos % 2] = heap_elem_next_right;
+        const auto heap_pos_next = heap_pos / 2;
+        const auto heap_elem_next = heap_pair_prev[heap_pos_next % 2];
+
+        heap_write_pos = heap_pos / 2;
+        is_heap_written = true;
+
+        CHECK(ChunkRefPairEq(heap_array[heap_pos / 2], heap_pair));
+        if (heap_pos > 1 && heap_elem_next < heap_elem) {
+          heap_pair[heap_pos % 2] = heap_elem_next;
           if (heap_pos == 1) {
-            heap_root = heap_elem_next_right;
+            heap_root = heap_elem_next;
           }
-          heap_pos = heap_pos_next_right;
+          heap_pos = heap_pos_next;
         } else {
-          heap_pair[heap_pos % 2] = heap_elem_next_left;
+          heap_pair[heap_pos % 2] = heap_elem;
           if (heap_pos == 1) {
-            heap_root = heap_elem_next_left;
+            heap_root = heap_elem;
           }
-          heap_pos = heap_pos_next_left;
+          is_heapifying_up_next = false;
         }
-      } else {
-        heap_pair[heap_pos % 2] = heap_elem;
-        if (heap_pos == 1) {
-          heap_root = heap_elem;
-        }
-        is_heapifying_down_next = false;
       }
-      heap_array[heap_pos_curr / 2] = heap_pair;
+      is_heapifying_up_init_next = false;
+      heap_read_pos = heap_pos / 4;  // Read parent of heap_pos.
+    } else if (is_heapifying_down) {
+      if (is_heapifying_down_init) {
+        heap_elem = heap_pair_prev[(heap_size + 1) % 2];
+
+        heap_pair_prev[1] = heap_root;
+        heap_pos = 1;
+        is_heap_written = false;
+      } else {
+        CHECK(!is_heapifying_up);
+        const auto heap_pos_next_left = heap_pos * 2;
+        const auto heap_pos_next_right = heap_pos * 2 + 1;
+        const bool is_left_valid = heap_pos_next_left < heap_size + 1;
+        const bool is_right_valid = heap_pos_next_right < heap_size + 1;
+
+        const auto heap_elem_next_left = heap_pair_prev[0];
+        const auto heap_elem_next_right = heap_pair_prev[1];
+        const bool is_left_update_needed =
+            is_left_valid && heap_elem < heap_elem_next_left;
+        const bool is_right_update_needed =
+            is_right_valid && heap_elem < heap_elem_next_right;
+
+        CHECK(heap_array[heap_pos / 2][1] == heap_pair[1]);
+        if (heap_pos / 2 != 0) {
+          CHECK(heap_array[heap_pos / 2][0] == heap_pair[0]);
+        }
+
+        heap_write_pos = heap_pos / 2;
+        is_heap_written = true;
+
+        if (is_left_update_needed || is_right_update_needed) {
+          if (is_right_valid && heap_elem_next_left < heap_elem_next_right) {
+            heap_pair[heap_pos % 2] = heap_elem_next_right;
+            if (heap_pos == 1) {
+              heap_root = heap_elem_next_right;
+            }
+            heap_pos = heap_pos_next_right;
+          } else {
+            heap_pair[heap_pos % 2] = heap_elem_next_left;
+            if (heap_pos == 1) {
+              heap_root = heap_elem_next_left;
+            }
+            heap_pos = heap_pos_next_left;
+          }
+        } else {
+          heap_pair[heap_pos % 2] = heap_elem;
+          if (heap_pos == 1) {
+            heap_root = heap_elem;
+          }
+          is_heapifying_down_next = false;
+        }
+      }
+      is_heapifying_down_init_next = false;
+      heap_read_pos = heap_pos;  // Read children of heap_pos;
     } else {
-      heap_pos_prev = -1;
+      is_heap_written = false;
+    }
+
+    if (is_heap_written) {
+      heap_array[heap_write_pos] = heap_pair;
     }
 
     bool is_input_valid;
@@ -1260,6 +1285,7 @@ spin:
 
       // Heapify up.
       heap_pos = heap_size;
+      heap_read_pos = heap_size / 2;  // Read last element.
       is_heapifying_up_next = is_heapifying_up_init_next = true;
 
       VLOG(5) << "start spilling bucket " << spill_bid << " to ["
@@ -1274,12 +1300,13 @@ spin:
       is_refill_addr_valid = true;
       CHECK_EQ(refill_addr % kChunkSize, 0);
 
-      CHECK_GT(heap_size, 0);
-      --heap_size;
-
       // Heapify down.
       CHECK(!is_heapifying_down_init);
       is_heapifying_down_next = is_heapifying_down_init_next = true;
+      heap_read_pos = heap_size / 2;  // Read last element.
+
+      CHECK_GT(heap_size, 0);
+      --heap_size;
 
       VLOG(5) << "schedule refilling bucket " << refill_bid_next << " from "
               << refill_addr
