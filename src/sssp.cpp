@@ -983,7 +983,7 @@ spin:
         heap_write_pos = heap_pos / 2;
         is_heap_written = true;
 
-        CHECK(ChunkRefPairEq(heap_array[heap_pos / 2], heap_pair));
+        CHECK(heap_array[heap_pos / 2] == heap_pair);
         if (heap_pos > 1 && heap_elem_next < heap_elem) {
           heap_pair[heap_pos % 2] = heap_elem_next;
           if (heap_pos == 1) {

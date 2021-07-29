@@ -2,11 +2,11 @@
 #define TAPA_SSSP_CGPQ_H_
 
 #include <algorithm>
-#include <limits>
-#include <queue>
-#include "sssp.h"
+#include <array>
 
-#include "hls_vector.h"
+#include <ap_int.h>
+
+#include "sssp.h"
 
 // #define TAPA_SSSP_2X_BUFFER
 
@@ -136,10 +136,7 @@ struct ChunkRef {
   }
 };
 
-using ChunkRefPair = hls::vector<ChunkRef, 2>;
-inline bool ChunkRefPairEq(const ChunkRefPair& lhs, const ChunkRefPair& rhs) {
-  return lhs[0] == rhs[0] && lhs[1] == rhs[1];
-}
+using ChunkRefPair = std::array<ChunkRef, 2>;
 
 namespace internal {
 
