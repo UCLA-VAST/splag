@@ -1113,21 +1113,21 @@ spin:
         is_input_valid &&        // there is an input task, and
         !input_meta.IsFull() &&  // chunk is not already full, and
         (!is_refill_valid ||
-         input_bid != refill_bid ||          // if chunk is refilling,
-         kBufferSize - input_meta.GetSize()  // available space
-             >                               // must be greater than
-             refill_remain_count             // #tasks to refill,
-         ) &&                                // and
+         input_bid != refill_bid ||  // if chunk is refilling,
+         input_meta.GetFreeSize()    // available space
+             >                       // must be greater than
+             refill_remain_count     // #tasks to refill,
+         ) &&                        // and
         (!is_refill_next_valid ||
-         input_bid != refill_bid_next ||     // if chunk will refill soon,
-         kBufferSize - input_meta.GetSize()  // available space
-             >                               // must be greater than
-             kChunkSize                      // #tasks to refill,
-         ) &&                                // and
-        (!can_recv_refill ||                 // if reading refill data,
-         input_bid % kChunkPartFac           // the input bucket
-             !=                              // must access a different bank
-             refill_bid % kChunkPartFac      // as the refill bucket.
+         input_bid != refill_bid_next ||  // if chunk will refill soon,
+         input_meta.GetFreeSize()         // available space
+             >                            // must be greater than
+             kChunkSize                   // #tasks to refill,
+         ) &&                             // and
+        (!can_recv_refill ||              // if reading refill data,
+         input_bid % kChunkPartFac        // the input bucket
+             !=                           // must access a different bank
+             refill_bid % kChunkPartFac   // as the refill bucket.
         );
 
     // Pop from chunk buffer and write spill data if
@@ -1195,10 +1195,7 @@ spin:
     ap_uint<kBucketCount> is_push = 0;
 
     if (can_recv_refill) {
-      CHECK_GE(
-          kBufferSize - chunk_meta[refill_bid].GetSize(),  // Available slots.
-          refill_remain_count  // Remaining to refill.
-          )
+      CHECK_GE(chunk_meta[refill_bid].GetFreeSize(), refill_remain_count)
           << "refill_bid: " << refill_bid;
       mem_read_data_q.read(nullptr);
       CHECK(!is_push.bit(refill_bid));
@@ -1224,8 +1221,8 @@ spin:
     ap_uint<kBucketCount> is_pop = 0;
 
     if (can_send_spill) {
-      CHECK_GE(chunk_meta[spill_bid].GetSize(),          // Available tasks.
-               kChunkSize - spill_addr_req % kChunkSize  // Remaining to spill.
+      CHECK_GE(chunk_meta[spill_bid].GetSize(),  // Available tasks.
+               task_to_spill_count               // Remaining to spill.
       );
       mem_write_req_q.try_write({spill_addr_req, spill_task});
 

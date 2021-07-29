@@ -50,6 +50,8 @@ class ChunkMeta {
 
   auto GetSize() const { return size_; }
 
+  auto GetFreeSize() const { return free_size_; }
+
   auto GetReadPos() const { return read_pos_; }
 
   auto GetWritePos() const { return write_pos_; }
@@ -89,22 +91,27 @@ class ChunkMeta {
     CHECK(!IsFull());
     ++write_pos_;
     ++size_;
+    --free_size_;
     is_empty_ = false;
     is_full_ = write_pos_ == read_pos_;
+    CHECK_EQ(size_ + free_size_, kBufferSize);
   }
 
   void Pop() {
     CHECK(!IsEmpty());
     ++read_pos_;
     --size_;
+    ++free_size_;
     is_empty_ = write_pos_ == read_pos_;
     is_full_ = false;
+    CHECK_EQ(size_ + free_size_, kBufferSize);
   }
 
  private:
   uint_pos_t read_pos_ = 0;
   uint_pos_t write_pos_ = 0;
   uint_size_t size_ = 0;
+  uint_size_t free_size_ = kBufferSize;
   bool is_empty_ = true;
   bool is_full_ = false;
 };
