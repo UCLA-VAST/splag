@@ -161,13 +161,23 @@ struct Arbiter {
       const ap_uint<kChunkPartFac> is_output, const uint_bid_t output_bid,
       const ChunkMeta::uint_pos_t output_pos,
       // Outputs.
-      TaskOnChip& spill_task, TaskOnChip& output_task) {
-    Arbiter<begin, len / 2>::ReadChunk(chunk_buf, is_spill, spill_bid,
-                                       spill_pos, is_output, output_bid,
-                                       output_pos, spill_task, output_task);
+      bool& is_spill_written, TaskOnChip& spill_task, bool& is_output_written,
+      TaskOnChip& output_task) {
+    bool is_spill_written_0, is_spill_written_1, is_output_written_0,
+        is_output_written_1;
+    TaskOnChip spill_task_0, spill_task_1, output_task_0, output_task_1;
+    Arbiter<begin, len / 2>::ReadChunk(
+        chunk_buf, is_spill, spill_bid, spill_pos, is_output, output_bid,
+        output_pos, is_spill_written_0, spill_task_0, is_output_written_0,
+        output_task_0);
     Arbiter<begin + len / 2, len - len / 2>::ReadChunk(
         chunk_buf, is_spill, spill_bid, spill_pos, is_output, output_bid,
-        output_pos, spill_task, output_task);
+        output_pos, is_spill_written_1, spill_task_1, is_output_written_1,
+        output_task_1);
+    is_spill_written = is_spill_written_0 || is_spill_written_1;
+    spill_task = is_spill_written_0 ? spill_task_0 : spill_task_1;
+    is_output_written = is_output_written_0 || is_output_written_1;
+    output_task = is_output_written_0 ? output_task_0 : output_task_1;
   }
 };
 
@@ -192,15 +202,18 @@ struct Arbiter<begin, 1> {
       const ap_uint<kChunkPartFac> is_output, const uint_bid_t output_bid,
       const ChunkMeta::uint_pos_t output_pos,
       // Outputs.
-      TaskOnChip& spill_task, TaskOnChip& output_task) {
-    const auto bid = is_spill.bit(begin) ? spill_bid : output_bid;
-    const auto pos = is_spill.bit(begin) ? spill_pos : output_pos;
+      bool& is_spill_written, TaskOnChip& spill_task, bool& is_output_written,
+      TaskOnChip& output_task) {
+    is_spill_written = is_spill.bit(begin);
+    is_output_written = is_output.bit(begin);
+    const auto bid = is_spill_written ? spill_bid : output_bid;
+    const auto pos = is_spill_written ? spill_pos : output_pos;
     const auto task =
         chunk_buf[bid / kChunkPartFac * kChunkPartFac + begin][pos];
-    if (is_spill.bit(begin)) {
+    if (is_spill_written) {
       spill_task = task;
     }
-    if (is_output.bit(begin)) {
+    if (is_output_written) {
       output_task = task;
     }
   }
@@ -230,9 +243,10 @@ inline void ReadChunk(
   ap_uint<kChunkPartFac> is_spill = 0, is_output = 0;
   is_spill.bit(spill_bid % kChunkPartFac) = is_spill_valid;
   is_output.bit(output_bid % kChunkPartFac) = is_output_valid;
+  bool is_spill_written, is_output_written;
   internal::Arbiter<0, kChunkPartFac>::ReadChunk(
       chunk_buf, is_spill, spill_bid, spill_pos, is_output, output_bid,
-      output_pos, spill_task, output_task);
+      output_pos, is_spill_written, spill_task, is_output_written, output_task);
 }
 
 inline void WriteChunk(
