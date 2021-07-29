@@ -1137,17 +1137,12 @@ spin:
 
     // Pop from highest-priority chunk buffer and write output data if
     const bool can_dequeue =
-        is_output_valid &&  // there is a non-empty chunk, and
-        !pop_q.full() &&    // output is available for write, and
-        (!is_spill_valid || output_bid != spill_bid ||  // if chunk is spilling,
-         output_meta.GetSize()                          // available tasks
-             >                                          // must be greater than
-             task_to_spill_count                        // #tasks to spill,
-         ) &&                                           // and
+        is_output_valid &&              // there is a non-empty chunk, and
+        !pop_q.full() &&                // output is available for write, and
         (!is_spill_valid ||             // if there is active spilling,
-         output_bid % kChunkPartFac     // the output bucket
-             !=                         // must access a different bank
-             spill_bid % kChunkPartFac  // as the spill bucket.
+         output_bid % kChunkPartFac     //  the output bucket
+             !=                         //  must access a different bank
+             spill_bid % kChunkPartFac  //  as the spill bucket.
         );
     // Note: to avoid chunk_buf read address being dependent on FIFO fullness,
     // can_dequeue must not depend on the fullness of mem_write_req_q.
