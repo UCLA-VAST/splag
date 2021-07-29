@@ -948,6 +948,8 @@ void CgpqHeap(istream<CgpqHeapReq>& req_q, ostream<cgpq::ChunkRef>& resp_q) {
   uint_heap_pair_pos_t heap_write_pos;
   // Heap pair that was read in the previous iteration.
   ChunkRefPair heap_pair_prev;
+#pragma HLS aggregate variable = heap_pair_prev[0] bit
+#pragma HLS aggregate variable = heap_pair_prev[1] bit
   bool is_heapifying_up = false;
   bool is_heapifying_up_init = false;
   bool is_heapifying_down = false;
@@ -965,6 +967,8 @@ spin:
 
     // If write, this should be written.
     auto heap_pair = heap_pair_prev;
+#pragma HLS aggregate variable = heap_pair[0] bit
+#pragma HLS aggregate variable = heap_pair[1] bit
 
     // Heap pair that is read from heap array.
     heap_pair_prev = heap_array[heap_read_pos];
