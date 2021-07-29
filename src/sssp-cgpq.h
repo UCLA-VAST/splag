@@ -169,22 +169,6 @@ struct Arbiter {
         chunk_buf, is_spill, spill_bid, spill_pos, is_output, output_bid,
         output_pos, spill_task, output_task);
   }
-
-  static void WriteChunk(
-      // Inputs.
-      const ap_uint<kChunkPartFac> is_refill, const uint_bid_t refill_bid,
-      const ChunkMeta::uint_pos_t refill_pos, const TaskOnChip& refill_task,
-      const ap_uint<kChunkPartFac> is_input, const uint_bid_t input_bid,
-      const ChunkMeta::uint_pos_t input_pos, const TaskOnChip& input_task,
-      // Outputs.
-      TaskOnChip (&chunk_buf)[kBucketCount][kBufferSize]) {
-    Arbiter<begin, len / 2>::WriteChunk(is_refill, refill_bid, refill_pos,
-                                        refill_task, is_input, input_bid,
-                                        input_pos, input_task, chunk_buf);
-    Arbiter<begin + len / 2, len - len / 2>::WriteChunk(
-        is_refill, refill_bid, refill_pos, refill_task, is_input, input_bid,
-        input_pos, input_task, chunk_buf);
-  }
 };
 
 template <int begin>
@@ -218,22 +202,6 @@ struct Arbiter<begin, 1> {
     }
     if (is_output.bit(begin)) {
       output_task = task;
-    }
-  }
-
-  static void WriteChunk(
-      // Inputs.
-      const ap_uint<kChunkPartFac> is_refill, const uint_bid_t refill_bid,
-      const ChunkMeta::uint_pos_t refill_pos, const TaskOnChip& refill_task,
-      const ap_uint<kChunkPartFac> is_input, const uint_bid_t input_bid,
-      const ChunkMeta::uint_pos_t input_pos, const TaskOnChip& input_task,
-      // Outputs.
-      TaskOnChip (&chunk_buf)[kBucketCount][kBufferSize]) {
-    const auto bid = is_refill.bit(begin) ? refill_bid : input_bid;
-    const auto pos = is_refill.bit(begin) ? refill_pos : input_pos;
-    const auto task = is_refill.bit(begin) ? refill_task : input_task;
-    if (is_refill.bit(begin) || is_input.bit(begin)) {
-      chunk_buf[bid / kChunkPartFac * kChunkPartFac + begin][pos] = task;
     }
   }
 };
@@ -279,9 +247,15 @@ inline void WriteChunk(
   ap_uint<kChunkPartFac> is_refill = 0, is_input = 0;
   is_refill.bit(refill_bid % kChunkPartFac) = can_recv_refill;
   is_input.bit(input_bid % kChunkPartFac) = can_enqueue;
-  internal::Arbiter<0, kChunkPartFac>::WriteChunk(
-      is_refill, refill_bid, refill_pos, refill_task, is_input, input_bid,
-      input_pos, input_task, chunk_buf);
+  for (int i = 0; i < kChunkPartFac; ++i) {
+#pragma HLS unroll
+    const auto bid = is_refill.bit(i) ? refill_bid : input_bid;
+    const auto pos = is_refill.bit(i) ? refill_pos : input_pos;
+    const auto task = is_refill.bit(i) ? refill_task : input_task;
+    if (is_refill.bit(i) || is_input.bit(i)) {
+      chunk_buf[bid / kChunkPartFac * kChunkPartFac + i][pos] = task;
+    }
+  }
 }
 
 }  // namespace cgpq
