@@ -1150,6 +1150,26 @@ void CgpqCore(
   // Number of data remaining to refill.
   uint_chunk_size_t refill_remain_count;
 
+  int32_t cycle_count = 0;
+
+  // Cannot enqueue because buffer is full.
+  int32_t enqueue_full_count = 0;
+
+  // Cannot enqueue because chunk is refilling and space is insufficient.
+  int32_t enqueue_current_refill_count = 0;
+
+  // Cannot enqueue because chunk is scheduled for refilling.
+  int32_t enqueue_future_refill_count = 0;
+
+  // Cannot enqueue due to bank conflict with refilling.
+  int32_t enqueue_bank_conflict_count = 0;
+
+  // Cannot dequeue because output FIFO is full.
+  int32_t dequeue_full_count = 0;
+
+  // Cannot dequeue due to bank conflict with spilling.
+  int32_t dequeue_bank_conflict_count = 0;
+
 spin:
   for (; done_q.empty();) {
 #pragma HLS pipeline II = 1
@@ -1185,44 +1205,65 @@ spin:
         is_refill_task_valid  // refill data is available for read.
         ;
 
+    const bool is_input_blocked_by_full_buffer = input_meta.IsFull();
+    const bool is_input_blocked_by_current_refill =
+        !(!is_refill_valid || input_bid != refill_bid ||
+          input_meta.GetFreeSize() > refill_remain_count);
+    const bool is_input_blocked_by_future_refill =
+        !(!is_refill_next_valid || input_bid != refill_bid_next ||
+          input_meta.GetFreeSize() > kChunkSize);
+    const bool is_input_blocked_by_bank_conflict =
+        !(!can_recv_refill ||
+          input_bid % kChunkPartFac != refill_bid % kChunkPartFac);
+
     // Read input task and push into chunk buffer if
     const bool can_enqueue =
-        is_input_valid &&        // there is an input task, and
-        !input_meta.IsFull() &&  // chunk is not already full, and
-        (!is_refill_valid ||
-         input_bid != refill_bid ||  // if chunk is refilling,
-         input_meta.GetFreeSize()    // available space
-             >                       // must be greater than
-             refill_remain_count     // #tasks to refill,
-         ) &&                        // and
-        (!is_refill_next_valid ||
-         input_bid != refill_bid_next ||  // if chunk will refill soon,
-         input_meta.GetFreeSize()         // available space
-             >                            // must be greater than
-             kChunkSize                   // #tasks to refill,
-         ) &&                             // and
-        (!can_recv_refill ||              // if reading refill data,
-         input_bid % kChunkPartFac        // the input bucket
-             !=                           // must access a different bank
-             refill_bid % kChunkPartFac   // as the refill bucket.
-        );
+        is_input_valid &&                    // there is an input task, and
+        !is_input_blocked_by_full_buffer &&  // chunk is not already full, and
+
+        // if chunk is refilling, available space must be greater than #tasks to
+        // refill, and
+        !is_input_blocked_by_current_refill &&
+
+        // if chunk will refill soon, available space must be greater than
+        // #tasks to refill, and
+        !is_input_blocked_by_future_refill &&
+
+        // if reading refill data, the input bucket must access a different bank
+        // as the refill bucket.
+        !is_input_blocked_by_bank_conflict;
+
+    if (is_input_valid) {
+      is_input_blocked_by_full_buffer && ++enqueue_full_count;
+      is_input_blocked_by_current_refill && ++enqueue_current_refill_count;
+      is_input_blocked_by_future_refill && ++enqueue_future_refill_count;
+      is_input_blocked_by_bank_conflict && ++enqueue_bank_conflict_count;
+    }
 
     // Pop from chunk buffer and write spill data if
     const bool can_send_spill =
         is_spill_valid &&         // there is active spilling, and
         !mem_write_req_q.full();  // spill data is available for write.
 
-    // Pop from highest-priority chunk buffer and write output data if
-    const bool can_dequeue =
-        is_output_valid &&              // there is a non-empty chunk, and
-        !pop_q.full() &&                // output is available for write, and
-        (!is_spill_valid ||             // if there is active spilling,
-         output_bid % kChunkPartFac     //  the output bucket
-             !=                         //  must access a different bank
-             spill_bid % kChunkPartFac  //  as the spill bucket.
-        );
+    const bool is_output_blocked_by_full_fifo = pop_q.full();
+    const bool is_output_blocked_by_bank_conflict =
+        !(!is_spill_valid ||
+          output_bid % kChunkPartFac != spill_bid % kChunkPartFac);
     // Note: to avoid chunk_buf read address being dependent on FIFO fullness,
     // can_dequeue must not depend on the fullness of mem_write_req_q.
+
+    // Pop from highest-priority chunk buffer and write output data if
+    const bool can_dequeue =
+        is_output_valid &&  // there is a non-empty chunk, and
+        !pop_q.full() &&    // output is available for write, and
+
+        // if there is active spilling, the output bucket as the spill bucket.
+        !is_output_blocked_by_bank_conflict;
+
+    if (is_output_valid) {
+      is_output_blocked_by_full_fifo && ++dequeue_full_count;
+      is_output_blocked_by_bank_conflict && ++dequeue_bank_conflict_count;
+    }
 
     // Start spilling a new chunk if
     const bool can_start_spill =
@@ -1397,12 +1438,21 @@ spin:
       heap_root = heap_resp_q.read(nullptr);
       is_heap_available = true;
     }
+
+    ++cycle_count;
   }
 
   done_q.read(nullptr);
 
   stat_q.write(spill_addr_req / kChunkSize);
   stat_q.write(max_heap_size);
+  stat_q.write(cycle_count);
+  stat_q.write(enqueue_full_count);
+  stat_q.write(enqueue_current_refill_count);
+  stat_q.write(enqueue_future_refill_count);
+  stat_q.write(enqueue_bank_conflict_count);
+  stat_q.write(dequeue_full_count);
+  stat_q.write(dequeue_bank_conflict_count);
 
   CHECK_EQ(heap_size, 0);
 

@@ -635,10 +635,28 @@ int main(int argc, char* argv[]) {
 #ifdef TAPA_SSSP_COARSE_PRIORITY
       const auto spill_count = *(metadata_it++);
       const auto max_heap_size = *(metadata_it++);
+      const auto cycle_count = *(metadata_it++);
+      const auto enqueue_full_count = *(metadata_it++);
+      const auto enqueue_current_refill_count = *(metadata_it++);
+      const auto enqueue_future_refill_count = *(metadata_it++);
+      const auto enqueue_bank_conflict_count = *(metadata_it++);
+      const auto dequeue_full_count = *(metadata_it++);
+      const auto dequeue_bank_conflict_count = *(metadata_it++);
       VLOG(3) << "    spill count  : " << setfill(' ') << setw(10)
               << spill_count << " / " << cgpq_spill.size() / kCgpqChunkSize;
       VLOG(3) << "    max heap size: " << setfill(' ') << setw(10)
               << max_heap_size << " / " << kCgpqCapacity;
+      auto vlog = [&](const char* msg, int64_t var) {
+        VLOG(3) << "    " << msg << ": " << setfill(' ') << setw(10) << var
+                << " / " << cycle_count << " (" << std::fixed
+                << std::setprecision(1) << 100. * var / cycle_count << "%)";
+      };
+      vlog("push blocked by full buffer   ", enqueue_full_count);
+      vlog("push blocked by current refill", enqueue_current_refill_count);
+      vlog("push blocked by future refill ", enqueue_future_refill_count);
+      vlog("push blocked by bank conflict ", enqueue_bank_conflict_count);
+      vlog("pop blocked by full FIFO    ", dequeue_full_count);
+      vlog("pop blocked by bank conflict", dequeue_bank_conflict_count);
 #else   // TAPA_SSSP_COARSE_PRIORITY
 
       // Queue op counts.
