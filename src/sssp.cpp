@@ -917,24 +917,10 @@ spin:
   }
 }
 
-// Coarse-grained priority queue.
-// Implements chunks of buckets and an on-chip heap that manages the chunks.
-void CgpqCore(
-    //
-    istream<bool>& done_q, ostream<PiHeapStat>& stat_q,
-    // Scalar
-    uint_qid_t qid,
-    // Queue requests.
-    istream<PushReq>& push_req_q,
-    // NOOP acknowledgements
-    ostream<bool>& noop_q,
-    // Queue outputs.
-    ostream<TaskOnChip>& pop_q,
-    //
-    ostream<uint_spill_addr_t>& mem_read_addr_q,
-    istream<TaskOnChip>& mem_read_data_q,
-    ostream<packet<uint_spill_addr_t, TaskOnChip>>& mem_write_req_q,
-    istream<bool>& mem_write_resp_q) {
+// On-chip priority queue.
+// Using a binary heap for fewer number of memory banks.
+// Latency of each request << latency of memory for each chunk.
+void CgpqHeap(istream<CgpqHeapReq>& req_q, ostream<cgpq::ChunkRef>& resp_q) {
 #pragma HLS inline recursive
 
   using namespace cgpq;
@@ -951,9 +937,7 @@ void CgpqCore(
   // Heap position that should be accessed;
   uint_heap_pos_t heap_pos;
   // Current heap size.
-  uint_heap_pos_t heap_size = 0;
-  // Maximum heap size in this execution.
-  uint_heap_pos_t max_heap_size = 0;
+  uint_heap_size_t heap_size = 0;
   // Heap element that is being send up or down.
   ChunkRef heap_elem;
   // Heap position that should be read.
@@ -969,33 +953,8 @@ void CgpqCore(
   bool is_heapifying_down = false;
   bool is_heapifying_down_init = false;
 
-  DECL_ARRAY(ChunkMeta, chunk_meta, kBucketCount, ChunkMeta());
-
-  TaskOnChip chunk_buf[kBucketCount][kBufferSize];
-#pragma HLS bind_storage variable = chunk_buf type = RAM_S2P impl = URAM
-#pragma HLS array_partition variable = chunk_buf cyclic factor = \
-    kChunkPartFac dim = 1
-
-  bool is_spill_valid = false;
-  uint_bid_t spill_bid;
-  uint_spill_addr_t spill_addr_req = 0;
-  uint_spill_addr_t spill_addr_resp = 0;
-  ChunkMeta::uint_size_t task_to_spill_count = kChunkSize;
-
-  // Refill requests should read from this address.
-  bool is_refill_addr_valid = false;
-  uint_spill_addr_t refill_addr;
-  // Refill data should write to this bucket.
-  bool is_refill_valid = false;
-  uint_bid_t refill_bid;
-  // Future refill data should write to this bucket.
-  bool is_refill_next_valid = false;
-  uint_bid_t refill_bid_next;
-  // Number of data remaining to refill.
-  uint_chunk_size_t refill_remain_count;
-
 spin:
-  for (; done_q.empty();) {
+  for (;;) {
 #pragma HLS pipeline II = 1
     bool is_heapifying_up_next = is_heapifying_up;
     bool is_heapifying_up_init_next = is_heapifying_up_init;
@@ -1037,6 +996,8 @@ spin:
             heap_root = heap_elem;
           }
           is_heapifying_up_next = false;
+          CHECK(!resp_q.full());  // 1 request at a time.
+          resp_q.try_write(heap_root);
         }
       }
       is_heapifying_up_init_next = false;
@@ -1090,6 +1051,8 @@ spin:
             heap_root = heap_elem;
           }
           is_heapifying_down_next = false;
+          CHECK(!resp_q.full());  // 1 request at a time.
+          resp_q.try_write(heap_root);
         }
       }
       is_heapifying_down_init_next = false;
@@ -1101,6 +1064,91 @@ spin:
     if (is_heap_written) {
       heap_array[heap_write_pos] = heap_pair;
     }
+
+    if (!is_heapifying_up && !is_heapifying_down && !req_q.empty()) {
+      const auto req = req_q.read(nullptr);
+      if (req.is_push) {
+        heap_elem = req.elem;
+        ++heap_size;
+        heap_pos = heap_size;
+        heap_read_pos = heap_size / 2;  // Read last element.
+        is_heapifying_up_next = is_heapifying_up_init_next = true;
+      } else {
+        heap_read_pos = heap_size / 2;  // Read last element.
+        is_heapifying_down_next = is_heapifying_down_init_next = true;
+        CHECK_GT(heap_size, 0);
+        --heap_size;
+      }
+    }
+
+    is_heapifying_up = is_heapifying_up_next;
+    is_heapifying_up_init = is_heapifying_up_init_next;
+    is_heapifying_down = is_heapifying_down_next;
+    is_heapifying_down_init = is_heapifying_down_init_next;
+  }
+}
+
+// Coarse-grained priority queue.
+// Implements chunks of buckets.
+void CgpqCore(
+    //
+    istream<bool>& done_q, ostream<PiHeapStat>& stat_q,
+    // Scalar
+    uint_qid_t qid,
+    // Queue requests.
+    istream<PushReq>& push_req_q,
+    // NOOP acknowledgements
+    ostream<bool>& noop_q,
+    // Queue outputs.
+    ostream<TaskOnChip>& pop_q,
+    //
+    ostream<CgpqHeapReq>& heap_req_q, istream<cgpq::ChunkRef>& heap_resp_q,
+    //
+    ostream<uint_spill_addr_t>& mem_read_addr_q,
+    istream<TaskOnChip>& mem_read_data_q,
+    ostream<packet<uint_spill_addr_t, TaskOnChip>>& mem_write_req_q,
+    istream<bool>& mem_write_resp_q) {
+#pragma HLS inline recursive
+
+  using namespace cgpq;
+
+  // Whether the external priority queue is busy.
+  bool is_heap_available = true;
+  // The current top of heap, valid only if heap is not busy.
+  ChunkRef heap_root;
+  // Current heap size, kept track both in the heap and here as perf counter.
+  uint_heap_size_t heap_size = 0;
+  // Maximum heap size in this execution (as perf counter).
+  uint_heap_size_t max_heap_size = 0;
+
+  DECL_ARRAY(ChunkMeta, chunk_meta, kBucketCount, ChunkMeta());
+
+  TaskOnChip chunk_buf[kBucketCount][kBufferSize];
+#pragma HLS bind_storage variable = chunk_buf type = RAM_S2P impl = URAM
+#pragma HLS array_partition variable = chunk_buf cyclic factor = \
+    kChunkPartFac dim = 1
+
+  bool is_spill_valid = false;
+  uint_bid_t spill_bid;
+  uint_spill_addr_t spill_addr_req = 0;
+  uint_spill_addr_t spill_addr_resp = 0;
+  ChunkMeta::uint_size_t task_to_spill_count = kChunkSize;
+
+  // Refill requests should read from this address.
+  bool is_refill_addr_valid = false;
+  uint_spill_addr_t refill_addr;
+  // Refill data should write to this bucket.
+  bool is_refill_valid = false;
+  uint_bid_t refill_bid;
+  // Future refill data should write to this bucket.
+  bool is_refill_next_valid = false;
+  uint_bid_t refill_bid_next;
+  // Number of data remaining to refill.
+  uint_chunk_size_t refill_remain_count;
+
+spin:
+  for (; done_q.empty();) {
+#pragma HLS pipeline II = 1
 
     bool is_input_valid;
     const auto push_req = push_req_q.peek(is_input_valid);
@@ -1178,7 +1226,7 @@ spin:
         is_full_valid &&             // chunks need spilling, and
         full_meta.IsAlmostFull() &&  // chunk is almost full, and
         !(can_dequeue && full_bid == output_bid) &&  // chunk won't pop, and
-        !is_heapifying_up && !is_heapifying_down     // heap is available.
+        is_heap_available                            // heap is available.
         ;
 
     // Start refilling a new chunk if
@@ -1193,8 +1241,8 @@ spin:
          ) &&                       // and
         chunk_meta[top_bid].IsAlmostEmpty() &&     // chunk is almost empty,
         !(can_enqueue && top_bid == input_bid) &&  // chunk won't push, and
-        !can_start_spill &&
-        !is_heapifying_up && !is_heapifying_down  // heap is available.
+        is_heap_available &&                       // heap is available, and
+        !can_start_spill  // heap won't be occupied by spilling.
         ;
 
     // Send refill data read address if
@@ -1271,22 +1319,22 @@ spin:
       }
     });
 
+    bool is_heap_requested = false;
+    CgpqHeapReq heap_req;
+
     if (can_start_spill) {
       spill_bid = full_bid;
       is_spill_valid = true;
 
-      heap_elem = {
-          .addr = spill_addr_req,
-          .bucket = spill_bid,
+      is_heap_requested = true;
+      heap_req = {
+          .is_push = true,
+          .elem = {.addr = spill_addr_req, .bucket = spill_bid},
       };
+
       ++heap_size;
       max_heap_size = std::max(max_heap_size, heap_size);
       CHECK_LT(heap_size, kCgpqCapacity);
-
-      // Heapify up.
-      heap_pos = heap_size;
-      heap_read_pos = heap_size / 2;  // Read last element.
-      is_heapifying_up_next = is_heapifying_up_init_next = true;
 
       VLOG(5) << "start spilling bucket " << spill_bid << " to ["
               << spill_addr_req
@@ -1300,10 +1348,8 @@ spin:
       is_refill_addr_valid = true;
       CHECK_EQ(refill_addr % kChunkSize, 0);
 
-      // Heapify down.
-      CHECK(!is_heapifying_down_init);
-      is_heapifying_down_next = is_heapifying_down_init_next = true;
-      heap_read_pos = heap_size / 2;  // Read last element.
+      is_heap_requested = true;
+      heap_req.is_push = false;
 
       CHECK_GT(heap_size, 0);
       --heap_size;
@@ -1311,6 +1357,13 @@ spin:
       VLOG(5) << "schedule refilling bucket " << refill_bid_next << " from "
               << refill_addr
               << ", current buffer size: " << chunk_meta[top_bid].GetSize();
+    }
+
+    if (is_heap_requested) {
+      CHECK(is_heap_available);
+      CHECK(!heap_req_q.full());
+      heap_req_q.try_write(heap_req);
+      is_heap_available = false;
     }
 
     if (can_send_refill) {
@@ -1335,10 +1388,11 @@ spin:
       refill_remain_count = kChunkSize;
     }
 
-    is_heapifying_up = is_heapifying_up_next;
-    is_heapifying_up_init = is_heapifying_up_init_next;
-    is_heapifying_down = is_heapifying_down_next;
-    is_heapifying_down_init = is_heapifying_down_init_next;
+    if (!heap_resp_q.empty()) {
+      CHECK(!is_heap_available);
+      heap_root = heap_resp_q.read(nullptr);
+      is_heap_available = true;
+    }
   }
 
   done_q.read(nullptr);
@@ -1392,12 +1446,16 @@ void TaskQueue(
 ) {
 #ifdef TAPA_SSSP_COARSE_PRIORITY
   stream<PushReq> push_req_qi;
+  stream<CgpqHeapReq> heap_req_q;
+  stream<cgpq::ChunkRef> heap_resp_q;
 
   task()
       .invoke<detach>(CgpqBucketGen, push_req_q, push_req_qi)
+      .invoke<detach>(CgpqHeap, heap_req_q, heap_resp_q)
       .invoke<detach>(CgpqCore, done_q, stat_q, qid, push_req_qi, noop_q, pop_q,
-                      cgpq_spill_read_addr_q, cgpq_spill_read_data_q,
-                      cgpq_spill_write_req_q, cgpq_spill_write_resp_q);
+                      heap_req_q, heap_resp_q, cgpq_spill_read_addr_q,
+                      cgpq_spill_read_data_q, cgpq_spill_write_req_q,
+                      cgpq_spill_write_resp_q);
 #else  // TAPA_SSSP_COARSE_PRIORITY
   // Heap rule: child <= parent
   streams<HeapReq, kLevelCount, 1> req_q;

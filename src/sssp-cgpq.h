@@ -32,6 +32,8 @@ using uint_bid_t = ap_uint<bit_length(kBucketCount - 1)>;
 
 using uint_chunk_size_t = ap_uint<bit_length(kChunkSize)>;
 
+using uint_heap_size_t = ap_uint<bit_length(kCgpqCapacity + 1)>;
+
 using uint_heap_pos_t = ap_uint<bit_length(kCgpqCapacity)>;
 
 using uint_heap_pair_pos_t = ap_uint<bit_length(kCgpqCapacity / 2)>;
@@ -284,5 +286,10 @@ inline void WriteChunk(
 }
 
 }  // namespace cgpq
+
+struct CgpqHeapReq {
+  bool is_push;
+  cgpq::ChunkRef elem;
+};
 
 #endif  // TAPA_SSSP_CGPQ_H_
