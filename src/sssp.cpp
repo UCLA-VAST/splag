@@ -1150,6 +1150,7 @@ void CgpqCore(
   // Number of data remaining to refill.
   uint_chunk_size_t refill_remain_count;
 
+  bool is_started = false;
   int32_t cycle_count = 0;
 
   // Cannot enqueue because buffer is full.
@@ -1439,7 +1440,12 @@ spin:
       is_heap_available = true;
     }
 
-    ++cycle_count;
+    if (is_started) {
+      ++cycle_count;
+    }
+    if (can_enqueue) {
+      is_started = true;
+    }
   }
 
   done_q.read(nullptr);
