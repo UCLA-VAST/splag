@@ -5,21 +5,16 @@ project(sssp)
 
 find_package(gflags REQUIRED)
 find_package(TAPA REQUIRED)
-find_package(OpenMP)
 
 add_library(sssp_kernel)
 target_sources(sssp_kernel PRIVATE src/sssp.cpp)
-target_compile_features(sssp_kernel PUBLIC cxx_std_11)
+target_compile_features(sssp_kernel PUBLIC cxx_std_17)
 target_link_libraries(sssp_kernel PUBLIC tapa::tapa)
 
 add_executable(sssp)
 target_sources(sssp PRIVATE src/sssp-host.cpp)
 target_compile_features(sssp PRIVATE cxx_std_17)
 target_link_libraries(sssp PRIVATE sssp_kernel tapa::tapa gflags)
-if(OpenMP_CXX_FOUND)
-  target_link_libraries(sssp PRIVATE OpenMP::OpenMP_CXX)
-  target_link_libraries(sssp_kernel PRIVATE OpenMP::OpenMP_CXX)
-endif()
 
 find_package(SDx REQUIRED)
 add_tapa_target(
