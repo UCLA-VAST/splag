@@ -202,6 +202,13 @@ struct CleanUp {
 
 #define UNUSED (void)
 
+/// Return @c value with an assertion that @c value % @c mod == @c rem.
+inline int assert_mod(int value, int mod, int rem) {
+#pragma HLS inline
+  CHECK_EQ(value % mod, rem);
+  return value / mod * mod + rem;
+}
+
 template <typename T, int N, typename UnaryFunction>
 inline void for_each(const T (&array)[N], UnaryFunction f) {
   for (int i = 0; i < N; ++i) {
@@ -566,6 +573,34 @@ spin:
   for (;;) {
 #pragma HLS pipeline II = 1
     data_out_q[id_q.read()].write(data_in_q.read());
+  }
+}
+
+template <uint64_t in_n, uint64_t out_n>
+void TaskArbiterTemplate(tapa::istreams<TaskOnChip, in_n>& in_q,
+                         tapa::ostreams<TaskOnChip, out_n>& out_q) {
+  static_assert(in_n % out_n == 0 || out_n % in_n == 0);
+
+spin:
+  for (int base = 0;; ++base) {
+#pragma HLS pipeline II = 1
+    if constexpr (in_n > out_n) {  // #input >= #output.
+      RANGE(oid, out_n, {
+        const auto iid = assert_mod(base % in_n, out_n, oid);
+        if (!in_q[iid].empty() && !out_q[oid].full()) {
+          out_q[oid].try_write(in_q[iid].read(nullptr));
+        }
+      });
+    } else {  //  #input < #output.
+      RANGE(iid, in_n, {
+        if (TaskOnChip task; in_q[iid].try_peek(task)) {
+          const auto oid = assert_mod(task.vid() % out_n, in_n, iid);
+          if (out_q[oid].try_write(task)) {
+            in_q[iid].read(nullptr);
+          }
+        }
+      });
+    }
   }
 }
 

@@ -1757,23 +1757,7 @@ const int kSwitchOutputCount = kSubIntervalCount;
 void SwitchOutputArbiter(
     tapa::istreams<TaskOnChip, kShardCount>& in_q,
     tapa::ostreams<TaskOnChip, kSwitchOutputCount>& out_q) {
-  static_assert(kSwitchOutputCount % kShardCount == 0,
-                "current implementation requires that sub-interval count is a "
-                "multiple of shard count");
-  DECL_ARRAY(TaskOnChip, update, kShardCount, TaskOnChip());
-  DECL_ARRAY(bool, update_valid, kShardCount, false);
-
-spin:
-  for (;;) {
-#pragma HLS pipeline II = 1
-    RANGE(sid, kShardCount, {
-      UNUSED SET(update_valid[sid], in_q[sid].try_read(update[sid]));
-      const auto soid =
-          update[sid].vid() % kSwitchOutputCount / kShardCount * kShardCount +
-          sid;
-      UNUSED RESET(update_valid[sid], out_q[soid].try_write(update[sid]));
-    });
-  }
+  TaskArbiterTemplate(in_q, out_q);
 }
 
 void EdgeMem(istream<bool>& done_q, ostream<int64_t>& stat_q,
@@ -2148,44 +2132,12 @@ spin:
 
 void QueueOutputArbiter(tapa::istreams<TaskOnChip, kQueueCount>& in_q,
                         tapa::ostreams<TaskOnChip, kSubIntervalCount>& out_q) {
-  static_assert(kQueueCount % kSubIntervalCount == 0,
-                "current implementation requires that queue count is a "
-                "multiple of interval count");
-spin:
-  for (uint_qid_t qid_base = 0;; ++qid_base) {
-#pragma HLS pipeline II = 1
-    RANGE(iid, kSubIntervalCount, {
-      const auto qid =
-          qid_base % kQueueCount / kSubIntervalCount * kSubIntervalCount + iid;
-      if (!in_q[qid].empty() && !out_q[iid].full()) {
-        out_q[iid].try_write(in_q[qid].read(nullptr));
-      }
-    });
-  }
+  TaskArbiterTemplate(in_q, out_q);
 }
 
 void VertexOutputArbiter(tapa::istreams<TaskOnChip, kSubIntervalCount>& in_q,
                          tapa::ostreams<TaskOnChip, kQueueCount>& out_q) {
-  static_assert(kQueueCount % kSubIntervalCount == 0,
-                "current implementation requires that queue count is a "
-                "multiple of interval count");
-  DECL_ARRAY(TaskOnChip, task, kSubIntervalCount, TaskOnChip());
-  DECL_ARRAY(bool, task_valid, kSubIntervalCount, false);
-
-spin:
-  for (;;) {
-#pragma HLS pipeline II = 1
-    RANGE(iid, kSubIntervalCount, {
-      UNUSED SET(task_valid[iid], in_q[iid].try_read(task[iid]));
-      const auto vid = task[iid].vid();
-      if (task_valid[iid]) {
-        CHECK_EQ(vid % kSubIntervalCount, iid);
-      }
-      const auto qid =
-          vid % kQueueCount / kSubIntervalCount * kSubIntervalCount + iid;
-      UNUSED RESET(task_valid[iid], out_q[qid].try_write(task[iid]));
-    });
-  }
+  TaskArbiterTemplate(in_q, out_q);
 }
 
 #ifdef TAPA_SSSP_IMMEDIATE_RELAX
