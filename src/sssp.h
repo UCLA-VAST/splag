@@ -439,4 +439,7 @@ constexpr int kCgpqLevel = 15;
 
 constexpr int kCgpqCapacity = (1 << kCgpqLevel) - 1;
 
+using uint_spill_addr_t =
+    ap_uint<bit_length(kCgpqCapacity) + log2(kCgpqChunkSize)>;
+
 #endif  // TAPA_SSSP_H_

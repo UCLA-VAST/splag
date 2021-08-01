@@ -26,8 +26,6 @@ constexpr int kBufferSize = kChunkSize;
 
 constexpr int kChunkPartFac = kBucketCount / (4096 / kBufferSize);
 
-using uint_spill_addr_t = ap_uint<24>;
-
 using uint_bid_t = ap_uint<bit_length(kBucketCount - 1)>;
 
 using uint_chunk_size_t = ap_uint<bit_length(kChunkSize)>;

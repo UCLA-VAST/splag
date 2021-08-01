@@ -429,7 +429,7 @@ int main(int argc, char* argv[]) {
   for (auto& interval : vertices) {
     interval.resize(tapa::round_up_div<kIntervalCount>(vertex_count));
   }
-  aligned_vector<SpilledTask> cgpq_spill(1 << 24);
+  aligned_vector<SpilledTask> cgpq_spill(1 << uint_spill_addr_t::width);
   aligned_vector<HeapElemPacked> heap_array(
       GetAddrOfOffChipHeapElem(kLevelCount - 1,
                                GetCapOfLevel(kLevelCount - 1) - 1,

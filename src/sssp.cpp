@@ -27,7 +27,6 @@ using tapa::streams;
 using tapa::task;
 
 using cgpq::PushReq;
-using cgpq::uint_spill_addr_t;
 
 static_assert(kQueueCount % kShardCount == 0,
               "current implementation requires that queue count is a multiple "
