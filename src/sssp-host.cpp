@@ -116,7 +116,7 @@ vector<int64_t> SampleVertices(const vector<int64_t>& degree_no_self_loop) {
   vector<int64_t> sample_vertices;
   sample_vertices.reserve(64);
   for (int64_t i = 0; i < vertex_count; ++i) {
-    if (degree_no_self_loop[i] > 0) population_vertices.push_back(i);
+    if (degree_no_self_loop[i] > 1) population_vertices.push_back(i);
   }
   std::sample(population_vertices.begin(), population_vertices.end(),
               std::back_inserter(sample_vertices), 64, std::mt19937());
