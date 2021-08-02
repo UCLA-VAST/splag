@@ -43,7 +43,6 @@ DEFINE_bool(
     "randomly shuffle edges for each vertex; may be overridden by --sort");
 DEFINE_int64(coarsen, 0, "remove vertices whose degree <= this value");
 DEFINE_string(bitstream, "", "path to bitstream file, run csim if empty");
-DEFINE_double(min_distance, 0.01, "min distance for bucket calculation");
 DEFINE_double(max_distance, 1, "max distance for bucket calculation");
 
 template <typename T>
@@ -497,6 +496,18 @@ int main(int argc, char* argv[]) {
       vertex.degree = index.count;
     }
 
+    float root_min_distance = std::numeric_limits<float>::max();
+    float root_max_distance = std::numeric_limits<float>::min();
+    const auto& vertex = vertices[root % kIntervalCount][root / kIntervalCount];
+    for (int64_t i = vertex.offset; i < vertex.offset + vertex.degree; ++i) {
+      const auto edge = edges[root % kShardCount][i];
+      root_min_distance = std::min(float(root_min_distance), edge.weight);
+      root_max_distance = std::max(float(root_max_distance), edge.weight);
+    }
+    LOG(INFO) << "min distance of root's neighbors: " << root_min_distance;
+    LOG(INFO) << "max distance of root's neighbors: " << root_max_distance;
+    LOG(INFO) << "threshold for generating buckets: " << FLAGS_max_distance;
+
     const double elapsed_time =
         1e-9 *
         tapa::invoke_in_new_process(
@@ -510,7 +521,7 @@ int main(int argc, char* argv[]) {
             tapa::read_only_mmaps<Edge, kShardCount>(edges),
             tapa::read_write_mmaps<Vertex, kIntervalCount>(vertices),
 #ifdef TAPA_SSSP_COARSE_PRIORITY
-            float(FLAGS_min_distance), float(FLAGS_max_distance),
+            root_min_distance, float(FLAGS_max_distance),
             tapa::placeholder_mmap<SpilledTask>(cgpq_spill)
 #else   // TAPA_SSSP_COARSE_PRIORITY
             tapa::read_only_mmap<HeapElemPacked>(heap_array),
@@ -526,11 +537,16 @@ int main(int argc, char* argv[]) {
 
     vector<Vid> parents(vertex_count);
     vector<float> distances(vertex_count);
+    float max_distance = std::numeric_limits<float>::min();
     for (int64_t vid = 0; vid < vertex_count; ++vid) {
       const auto& vertex = vertices[vid % kIntervalCount][vid / kIntervalCount];
       parents[vid] = vertex.parent;
       distances[vid] = vertex.distance;
+      if (vertex.parent != kNullVid) {
+        max_distance = std::max(float(max_distance), vertex.distance);
+      }
     }
+    LOG(INFO) << "overall max distance (from root): " << max_distance;
 
     int64_t connected_edge_count = 0;
     for (int64_t vid = 0; vid < vertex_count; ++vid) {
