@@ -43,6 +43,8 @@ DEFINE_bool(
     "randomly shuffle edges for each vertex; may be overridden by --sort");
 DEFINE_int64(coarsen, 0, "remove vertices whose degree <= this value");
 DEFINE_string(bitstream, "", "path to bitstream file, run csim if empty");
+DEFINE_double(min_distance, 0.01, "min distance for bucket calculation");
+DEFINE_double(max_distance, 1, "max distance for bucket calculation");
 
 template <typename T>
 bool IsValid(int64_t root, PackedEdgesView edges, WeightsView weights,
@@ -305,6 +307,7 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
           tapa::mmaps<Edge, kShardCount> edges,
           tapa::mmaps<Vertex, kIntervalCount> vertices,
 #ifdef TAPA_SSSP_COARSE_PRIORITY
+          float min_distance, float max_distance,
           tapa::mmap<SpilledTask> cgpq_spill
 #else   // TAPA_SSSP_COARSE_PRIORITY
           tapa::mmap<HeapElemPacked> heap_array,
@@ -507,6 +510,7 @@ int main(int argc, char* argv[]) {
             tapa::read_only_mmaps<Edge, kShardCount>(edges),
             tapa::read_write_mmaps<Vertex, kIntervalCount>(vertices),
 #ifdef TAPA_SSSP_COARSE_PRIORITY
+            float(FLAGS_min_distance), float(FLAGS_max_distance),
             tapa::placeholder_mmap<SpilledTask>(cgpq_spill)
 #else   // TAPA_SSSP_COARSE_PRIORITY
             tapa::read_only_mmap<HeapElemPacked>(heap_array),

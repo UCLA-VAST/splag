@@ -887,11 +887,9 @@ void CgpqSpillMem(
   ReadWriteMem(read_addr_q, read_data_q, write_req_q, write_resp_q, mem);
 }
 
-void CgpqBucketGen(istream<TaskOnChip>& in_q, ostream<PushReq>& out_q) {
+void CgpqBucketGen(float min_distance, float max_distance,
+                   istream<TaskOnChip>& in_q, ostream<PushReq>& out_q) {
   using namespace cgpq;
-
-  const float min_distance = 0.01;
-  const float max_distance = 1;
 
 spin:
   for (;;) {
@@ -1486,6 +1484,8 @@ void TaskQueue(
     ostream<TaskOnChip>& pop_q,
 #ifdef TAPA_SSSP_COARSE_PRIORITY
     //
+    float min_distance, float max_distance,
+    //
     ostream<uint_spill_addr_t>& cgpq_spill_read_addr_q,
     istream<TaskOnChip>& cgpq_spill_read_data_q,
     ostream<packet<uint_spill_addr_t, TaskOnChip>>& cgpq_spill_write_req_q,
@@ -1509,7 +1509,8 @@ void TaskQueue(
   stream<cgpq::ChunkRef> heap_resp_q;
 
   task()
-      .invoke<detach>(CgpqBucketGen, push_req_q, push_req_qi)
+      .invoke<detach>(CgpqBucketGen, min_distance, max_distance, push_req_q,
+                      push_req_qi)
       .invoke<detach>(CgpqHeap, heap_req_q, heap_resp_q)
       .invoke<detach>(CgpqCore, done_q, stat_q, qid, push_req_qi, noop_q, pop_q,
                       heap_req_q, heap_resp_q, cgpq_spill_read_addr_q,
@@ -2326,6 +2327,7 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
           tapa::mmaps<Vertex, kIntervalCount> vertices,
 // For queues.
 #ifdef TAPA_SSSP_COARSE_PRIORITY
+          float min_distance, float max_distance,
           tapa::mmap<SpilledTask> cgpq_spill
 #else   // TAPA_SSSP_COARSE_PRIORITY
           tapa::mmap<HeapElemPacked> heap_array,
@@ -2420,6 +2422,8 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
           TaskQueue, queue_done_q, queue_stat_q, seq(), queue_push_q,
           queue_noop_qi, queue_pop_q,
 #ifdef TAPA_SSSP_COARSE_PRIORITY
+          min_distance, max_distance,
+          //
           cgpq_spill_read_addr_q, cgpq_spill_read_data_q,
           cgpq_spill_write_req_q, cgpq_spill_write_resp_q
 #else   // TAPA_SSSP_COARSE_PRIORITY
