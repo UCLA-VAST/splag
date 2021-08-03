@@ -889,7 +889,8 @@ void CgpqSpillMem(
 }
 
 void CgpqBucketGen(float min_distance, float max_distance,
-                   istream<TaskOnChip>& in_q, ostream<PushReq>& out_q) {
+                   istream<bool>& done_q, istream<TaskOnChip>& in_q,
+                   ostream<PushReq>& out_q) {
   using namespace cgpq;
 
   const auto norm =
@@ -902,7 +903,7 @@ void CgpqBucketGen(float min_distance, float max_distance,
                      );
 
 spin:
-  for (;;) {
+  for (; done_q.empty();) {
 #pragma HLS pipeline II = 1
     if (!in_q.empty()) {
       const auto task = in_q.read(nullptr);
@@ -922,6 +923,8 @@ spin:
       out_q.write({.bid = bid, .task = task});
     }
   }
+
+  done_q.read(nullptr);
 }
 
 // On-chip priority queue.
@@ -1474,6 +1477,10 @@ spin:
   }
 }
 
+void DuplicateDone(istream<bool>& in_q, ostreams<bool, 2>& out_q) {
+  Duplicate(in_q, out_q);
+}
+
 // Each push request puts the task in the queue if there isn't a task for the
 // same vertex in the queue, or decreases the priority of the existing task
 // using the new value. Whether a new task is created is returned in the
@@ -1517,13 +1524,15 @@ void TaskQueue(
   stream<PushReq> push_req_qi;
   stream<CgpqHeapReq> heap_req_q;
   stream<cgpq::ChunkRef> heap_resp_q;
+  streams<bool, 2> done_qi;
 
   task()
-      .invoke<detach>(CgpqBucketGen, min_distance, max_distance, push_req_q,
-                      push_req_qi)
+      .invoke<detach>(DuplicateDone, done_q, done_qi)
+      .invoke<join>(CgpqBucketGen, min_distance, max_distance, done_qi[0],
+                    push_req_q, push_req_qi)
       .invoke<detach>(CgpqHeap, heap_req_q, heap_resp_q)
-      .invoke<detach>(CgpqCore, done_q, stat_q, qid, push_req_qi, noop_q, pop_q,
-                      heap_req_q, heap_resp_q, cgpq_spill_read_addr_q,
+      .invoke<detach>(CgpqCore, done_qi[1], stat_q, qid, push_req_qi, noop_q,
+                      pop_q, heap_req_q, heap_resp_q, cgpq_spill_read_addr_q,
                       cgpq_spill_read_data_q, cgpq_spill_write_req_q,
                       cgpq_spill_write_resp_q);
 #else  // TAPA_SSSP_COARSE_PRIORITY
@@ -2428,21 +2437,24 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
       .invoke<detach>(TaskArbiter, task_init_q, queue_pop_q, task_req_qi,
 #endif  // TAPA_SSSP_IMMEDIATE_RELAX
                       task_resp_qi)
-      .invoke<detach, kQueueCount>(
-          TaskQueue, queue_done_q, queue_stat_q, seq(), queue_push_q,
-          queue_noop_qi, queue_pop_q,
+      .invoke<join, kQueueCount>(TaskQueue, queue_done_q, queue_stat_q, seq(),
+                                 queue_push_q, queue_noop_qi, queue_pop_q,
 #ifdef TAPA_SSSP_COARSE_PRIORITY
-          min_distance, max_distance,
-          //
-          cgpq_spill_read_addr_q, cgpq_spill_read_data_q,
-          cgpq_spill_write_req_q, cgpq_spill_write_resp_q
+                                 min_distance, max_distance,
+                                 //
+                                 cgpq_spill_read_addr_q, cgpq_spill_read_data_q,
+                                 cgpq_spill_write_req_q, cgpq_spill_write_resp_q
 #else   // TAPA_SSSP_COARSE_PRIORITY
-          piheap_array_read_addr_q, piheap_array_read_data_q,
-          piheap_array_write_req_q, piheap_array_write_resp_q,
-          piheap_index_read_addr_q, piheap_index_read_data_q,
-          piheap_index_write_req_q, piheap_index_write_resp_q
+                                 piheap_array_read_addr_q,
+                                 piheap_array_read_data_q,
+                                 piheap_array_write_req_q,
+                                 piheap_array_write_resp_q,
+                                 piheap_index_read_addr_q,
+                                 piheap_index_read_data_q,
+                                 piheap_index_write_req_q,
+                                 piheap_index_write_resp_q
 #endif  // TAPA_SSSP_COARSE_PRIORITY
-          )
+                                 )
       .invoke<detach>(QueueNoopMerger, queue_noop_qi, queue_noop_q)
 #ifdef TAPA_SSSP_IMMEDIATE_RELAX
       .invoke<detach>(QueueOutputArbiter, queue_pop_q, vertex_in_q)

@@ -604,4 +604,15 @@ spin:
   }
 }
 
+template <typename T, uint64_t N>
+void Duplicate(tapa::istream<T>& in_q, tapa::ostreams<T, N>& out_q) {
+spin:
+  for (;;) {
+#pragma HLS pipeline II = 1
+    if (!in_q.empty()) {
+      RANGE(i, N, out_q[i].write(in_q.read(nullptr)));
+    }
+  }
+}
+
 #endif  // TAPA_SSSP_KERNEL_H_
