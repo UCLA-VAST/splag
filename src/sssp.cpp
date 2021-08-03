@@ -1,4 +1,5 @@
 #include <cassert>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 
@@ -891,21 +892,30 @@ void CgpqBucketGen(float min_distance, float max_distance,
                    istream<TaskOnChip>& in_q, ostream<PushReq>& out_q) {
   using namespace cgpq;
 
+  const auto norm =
+      kBucketCount / (
+#ifdef TAPA_SSSP_CGPQ_LOG_BUCKET
+                         std::log(max_distance) - std::log(min_distance)
+#else
+                         max_distance - min_distance
+#endif
+                     );
+
 spin:
   for (;;) {
+#pragma HLS pipeline II = 1
     if (!in_q.empty()) {
       const auto task = in_q.read(nullptr);
       const uint_bid_t bid = std::max(
           std::min(
-              int(
+              int((
 #ifdef TAPA_SSSP_CGPQ_LOG_BUCKET
-                  (log(task.vertex().distance + 1) - log(min_distance + 1)) /
-                  (log(max_distance + 1) - log(min_distance + 1))
+                      std::log(task.vertex().distance) - std::log(min_distance)
 #else
-                  (task.vertex().distance - min_distance) /
-                  (max_distance - min_distance)
+                      task.vertex().distance - min_distance
 #endif
-                  * kBucketCount),
+                          ) *
+                  norm),
               kBucketCount - 1),
           0);
 
