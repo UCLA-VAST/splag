@@ -1114,7 +1114,7 @@ void CgpqCore(
     // NOOP acknowledgements
     ostream<bool>& noop_q,
     // Queue outputs.
-    ostream<TaskOnChip>& pop_q,
+    ostream<TaskOnChip>& pop_q0, ostream<TaskOnChip>& pop_q1,
     //
     ostream<CgpqHeapReq>& heap_req_q, istream<cgpq::ChunkRef>& heap_resp_q,
     //
@@ -1258,7 +1258,10 @@ spin:
         is_spill_valid &&         // there is active spilling, and
         !mem_write_req_q.full();  // spill data is available for write.
 
-    const bool is_output_blocked_by_full_fifo = pop_q.full();
+    ap_uint<kOutputPortCount> is_output_full = 0;
+    is_output_full.bit(0) = pop_q0.full();
+    is_output_full.bit(1) = pop_q1.full();
+    const bool is_output_blocked_by_full_fifo = is_output_full.and_reduce();
     const bool is_output_blocked_by_bank_conflict =
         is_spill_valid &&
         output_bid % kBucketPartFac == spill_bid % kBucketPartFac;
@@ -1311,8 +1314,7 @@ spin:
         !mem_read_addr_q.full()            // address output is not full.
         ;
 
-    TaskOnChip output_task;
-    SpilledTask spill_task;
+    SpilledTask spill_task, output_task;
     ReadChunk(chunk_buf, is_spill_valid, spill_bid, spill_meta.GetReadPos(),
               is_output_valid, output_bid, output_meta.GetReadPos(), spill_task,
               output_task);
@@ -1357,7 +1359,19 @@ spin:
     }
 
     if (can_dequeue) {
-      pop_q.try_write(output_task);
+      ap_uint<log2(kPosPartFac)> pos = output_meta.GetReadPos();
+      const auto size = output_meta.GetSize();
+      int output_count = 0;
+      if (output_count < size && !is_output_full.bit(0)) {
+        pop_q0.try_write(output_task[pos]);
+        ++pos;
+        ++output_count;
+      }
+      if (output_count < size && !is_output_full.bit(1)) {
+        pop_q1.try_write(output_task[pos]);
+        ++pos;
+        ++output_count;
+      }
     }
 
     {
@@ -1377,8 +1391,19 @@ spin:
         if (is_refill.bit(i) || is_input.bit(i)) {
           chunk_meta[i].Push(is_refill.bit(i) ? kSpilledTaskVecLen : 1);
         }
+
         if (is_spill.bit(i) || is_output.bit(i)) {
-          chunk_meta[i].Pop(is_spill.bit(i) ? kSpilledTaskVecLen : 1);
+          ap_uint<bit_length(kPosPartFac)> n = kSpilledTaskVecLen;
+          if (is_output.bit(i)) {
+            n = 0;
+            RANGE(i, decltype(is_output_full)::width,
+                  n += !is_output_full.bit(i));
+            const auto size = output_meta.GetSize();
+            if (n > size) {
+              n = size;
+            }
+          }
+          chunk_meta[i].Pop(n);
         }
       });
     }
@@ -1506,7 +1531,7 @@ void TaskQueue(
     // NOOP acknowledgements
     ostream<bool>& noop_q,
     // Queue outputs.
-    ostream<TaskOnChip>& pop_q,
+    ostream<TaskOnChip>& pop_q0, ostream<TaskOnChip>& pop_q1,
 #ifdef TAPA_SSSP_COARSE_PRIORITY
     //
     float min_distance, float max_distance,
@@ -1540,9 +1565,9 @@ void TaskQueue(
                     push_req_q, push_req_qi)
       .invoke<detach>(CgpqHeap, heap_req_q, heap_resp_q)
       .invoke<detach>(CgpqCore, done_qi[1], stat_q, qid, push_req_qi, noop_q,
-                      pop_q, heap_req_q, heap_resp_q, cgpq_spill_read_addr_q,
-                      cgpq_spill_read_data_q, cgpq_spill_write_req_q,
-                      cgpq_spill_write_resp_q);
+                      pop_q0, pop_q1, heap_req_q, heap_resp_q,
+                      cgpq_spill_read_addr_q, cgpq_spill_read_data_q,
+                      cgpq_spill_write_req_q, cgpq_spill_write_resp_q);
 #else  // TAPA_SSSP_COARSE_PRIORITY
   // Heap rule: child <= parent
   streams<HeapReq, kLevelCount, 1> req_q;
@@ -2216,6 +2241,20 @@ void QueueOutputArbiter(tapa::istreams<TaskOnChip, kQueueCount>& in_q,
   TaskArbiterTemplate(in_q, out_q);
 }
 
+void QueueOutputMerger(tapa::istream<TaskOnChip>& in_q0,
+                       tapa::istream<TaskOnChip>& in_q1,
+                       tapa::ostream<TaskOnChip>& out_q) {
+spin:
+  for (;;) {
+#pragma HLS pipeline II = 1
+    if (!in_q0.empty()) {
+      out_q.write(in_q0.read(nullptr));
+    } else if (!in_q1.empty()) {
+      out_q.write(in_q1.read(nullptr));
+    }
+  }
+}
+
 void VertexOutputArbiter(tapa::istreams<TaskOnChip, kSubIntervalCount>& in_q,
                          tapa::ostreams<TaskOnChip, kQueueCount>& out_q) {
   TaskArbiterTemplate(in_q, out_q);
@@ -2473,7 +2512,8 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
 
   stream<TaskOnChip, 2> task_init_q;
   stream<int64_t, 2> task_stat_q;
-  streams<TaskOnChip, kQueueCount, 2> queue_pop_q("task_resp");
+  streams<TaskOnChip, kQueueCount, 2> queue_pop_q0("queue_pop_q0");
+  streams<TaskOnChip, kQueueCount, 2> queue_pop_q1("queue_pop_q1");
 
   // For edges.
   streams<Vid, kShardCount, 2> edge_read_addr_q("edge_read_addr");
@@ -2491,7 +2531,9 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   streams<TaskOnChip, kShardCount, 32> xbar_q2;
 #endif  // TAPA_SSSP_SHARD_COUNT
 
-  streams<TaskOnChip, kSubIntervalCount, 32> vertex_in_q;
+  streams<TaskOnChip, kSubIntervalCount, 32> vertex_in_q0;
+  streams<TaskOnChip, kSubIntervalCount, 32> vertex_in_q1;
+  streams<TaskOnChip, kSubIntervalCount, 2> vertex_in_q;
   //   Connect the vertex readers and updaters.
   streams<bool, kSubIntervalCount, 2> update_noop_qi1;
   streams<Vid, kSubIntervalCount, 2> vertex_read_addr_q;
@@ -2534,7 +2576,8 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
 #endif  // TAPA_SSSP_IMMEDIATE_RELAX
                       task_resp_qi)
       .invoke<join, kQueueCount>(TaskQueue, queue_done_q, queue_stat_q, seq(),
-                                 queue_push_q, queue_noop_qi, queue_pop_q,
+                                 queue_push_q, queue_noop_qi, queue_pop_q0,
+                                 queue_pop_q1,
 #ifdef TAPA_SSSP_COARSE_PRIORITY
                                  min_distance, max_distance,
                                  //
@@ -2553,7 +2596,10 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
                                  )
       .invoke<detach>(QueueNoopMerger, queue_noop_qi, queue_noop_q)
 #ifdef TAPA_SSSP_IMMEDIATE_RELAX
-      .invoke<detach>(QueueOutputArbiter, queue_pop_q, vertex_in_q)
+      .invoke<detach>(QueueOutputArbiter, queue_pop_q0, vertex_in_q0)
+      .invoke<detach>(QueueOutputArbiter, queue_pop_q1, vertex_in_q1)
+      .invoke<detach, kSubIntervalCount>(QueueOutputMerger, vertex_in_q0,
+                                         vertex_in_q1, vertex_in_q)
 #else   // TAPA_SSSP_IMMEDIATE_RELAX
       .invoke<detach>(VertexOutputArbiter, vertex_out_q, queue_push_q)
 #endif  // TAPA_SSSP_IMMEDIATE_RELAX

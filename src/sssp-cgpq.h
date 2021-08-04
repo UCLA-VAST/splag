@@ -31,6 +31,8 @@ constexpr int kPosPartFac = kSpilledTaskVecLen;
 
 constexpr int kBucketPartFac = 4;
 
+constexpr int kOutputPortCount = 2;
+
 using uint_bid_t = ap_uint<bit_length(kBucketCount - 1)>;
 
 using uint_chunk_size_t = ap_uint<bit_length(kChunkSize)>;
@@ -96,7 +98,7 @@ class ChunkMeta {
 #endif  // TAPA_SSSP_2X_BUFFER
   }
 
-  void Push(uint_size_t n) {
+  void Push(ap_uint<bit_length(kPosPartFac)> n) {
     CHECK(!IsFull());
     write_pos_ += n;
     size_ += n;
@@ -106,7 +108,7 @@ class ChunkMeta {
     CHECK_EQ(size_ + free_size_, kBufferSize);
   }
 
-  void Pop(uint_size_t n) {
+  void Pop(ap_uint<bit_length(kPosPartFac)> n) {
     CHECK(!IsEmpty());
     read_pos_ += n;
     size_ -= n;
@@ -174,12 +176,11 @@ struct Arbiter {
       const ap_uint<kBucketPartFac> is_output, const uint_bid_t output_bid,
       const ChunkMeta::uint_pos_t output_pos,
       // Outputs.
-      bool& is_spill_written, std::array<TaskOnChip, kPosPartFac>& spill_task,
-      bool& is_output_written, TaskOnChip& output_task) {
+      bool& is_spill_written, SpilledTask& spill_task, bool& is_output_written,
+      SpilledTask& output_task) {
     bool is_spill_written_0, is_spill_written_1, is_output_written_0,
         is_output_written_1;
-    std::array<TaskOnChip, kPosPartFac> spill_task_0, spill_task_1;
-    TaskOnChip output_task_0, output_task_1;
+    SpilledTask spill_task_0, spill_task_1, output_task_0, output_task_1;
     Arbiter<begin, len / 2>::ReadChunk(
         chunk_buf, is_spill, spill_bid, spill_pos, is_output, output_bid,
         output_pos, is_spill_written_0, spill_task_0, is_output_written_0,
@@ -216,8 +217,8 @@ struct Arbiter<begin, 1> {
       const ap_uint<kBucketPartFac> is_output, const uint_bid_t output_bid,
       const ChunkMeta::uint_pos_t output_pos,
       // Outputs.
-      bool& is_spill_written, std::array<TaskOnChip, kPosPartFac>& spill_task,
-      bool& is_output_written, TaskOnChip& output_task) {
+      bool& is_spill_written, SpilledTask& spill_task, bool& is_output_written,
+      SpilledTask& output_task) {
     is_spill_written = is_spill.bit(begin);
     is_output_written = is_output.bit(begin);
     const auto bid = is_spill_written ? spill_bid : output_bid;
@@ -234,7 +235,7 @@ struct Arbiter<begin, 1> {
       spill_task = tasks;
     }
     if (is_output_written) {
-      output_task = tasks[pos % kPosPartFac];
+      output_task = tasks;
     }
   }
 };
@@ -258,7 +259,7 @@ inline void ReadChunk(
     const ChunkMeta::uint_pos_t spill_pos, const bool is_output_valid,
     const uint_bid_t output_bid, const ChunkMeta::uint_pos_t output_pos,
     // Outputs.
-    std::array<TaskOnChip, kPosPartFac>& spill_task, TaskOnChip& output_task) {
+    SpilledTask& spill_task, SpilledTask& output_task) {
 #pragma HLS inline recursive
   ap_uint<kBucketPartFac> is_spill = 0, is_output = 0;
   is_spill.bit(spill_bid % kBucketPartFac) = is_spill_valid;
