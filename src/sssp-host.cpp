@@ -43,7 +43,6 @@ DEFINE_bool(
     "randomly shuffle edges for each vertex; may be overridden by --sort");
 DEFINE_int64(coarsen, 0, "remove vertices whose degree <= this value");
 DEFINE_string(bitstream, "", "path to bitstream file, run csim if empty");
-DEFINE_double(max_distance, 1, "max distance for bucket calculation");
 
 template <typename T>
 bool IsValid(int64_t root, PackedEdgesView edges, WeightsView weights,
@@ -506,7 +505,6 @@ int main(int argc, char* argv[]) {
     }
     LOG(INFO) << "min distance of root's neighbors: " << root_min_distance;
     LOG(INFO) << "max distance of root's neighbors: " << root_max_distance;
-    LOG(INFO) << "threshold for generating buckets: " << FLAGS_max_distance;
 
     const double elapsed_time =
         1e-9 *
@@ -521,7 +519,7 @@ int main(int argc, char* argv[]) {
             tapa::read_only_mmaps<Edge, kShardCount>(edges),
             tapa::read_write_mmaps<Vertex, kIntervalCount>(vertices),
 #ifdef TAPA_SSSP_COARSE_PRIORITY
-            root_min_distance, float(FLAGS_max_distance),
+            root_min_distance, root_min_distance + 0.5f,
             tapa::placeholder_mmap<SpilledTask>(cgpq_spill)
 #else   // TAPA_SSSP_COARSE_PRIORITY
             tapa::read_only_mmap<HeapElemPacked>(heap_array),
