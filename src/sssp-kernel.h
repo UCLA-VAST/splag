@@ -610,7 +610,8 @@ spin:
   for (;;) {
 #pragma HLS pipeline II = 1
     if (!in_q.empty()) {
-      RANGE(i, N, out_q[i].write(in_q.read(nullptr)));
+      const auto done = in_q.read(nullptr);
+      RANGE(i, N, out_q[i].write(done));
     }
   }
 }
