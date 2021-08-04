@@ -1140,7 +1140,7 @@ void CgpqCore(
   TaskOnChip chunk_buf[kBucketCount][kBufferSize];
 #pragma HLS bind_storage variable = chunk_buf type = RAM_S2P impl = URAM
 #pragma HLS array_partition variable = chunk_buf cyclic factor = \
-    kChunkPartFac dim = 1
+    kBucketPartFac dim = 1
 
   bool is_spill_valid = false;
   uint_bid_t spill_bid;
@@ -1225,7 +1225,7 @@ spin:
           input_meta.GetFreeSize() > kChunkSize);
     const bool is_input_blocked_by_bank_conflict =
         !(!can_recv_refill ||
-          input_bid % kChunkPartFac != refill_bid % kChunkPartFac);
+          input_bid % kBucketPartFac != refill_bid % kBucketPartFac);
 
     // Read input task and push into chunk buffer if
     const bool can_enqueue =
@@ -1259,7 +1259,7 @@ spin:
     const bool is_output_blocked_by_full_fifo = pop_q.full();
     const bool is_output_blocked_by_bank_conflict =
         !(!is_spill_valid ||
-          output_bid % kChunkPartFac != spill_bid % kChunkPartFac);
+          output_bid % kBucketPartFac != spill_bid % kBucketPartFac);
     // Note: to avoid chunk_buf read address being dependent on FIFO fullness,
     // can_dequeue must not depend on the fullness of mem_write_req_q.
 
