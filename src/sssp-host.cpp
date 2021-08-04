@@ -674,7 +674,8 @@ int main(int argc, char* argv[]) {
       const auto dequeue_full_count = *(metadata_it++);
       const auto dequeue_bank_conflict_count = *(metadata_it++);
       VLOG(3) << "    spill count  : " << setfill(' ') << setw(10)
-              << spill_count << " / " << cgpq_spill.size() / kCgpqChunkSize;
+              << spill_count << " / "
+              << cgpq_spill.size() / (kCgpqChunkSize / kSpilledTaskVecLen);
       VLOG(3) << "    max heap size: " << setfill(' ') << setw(10)
               << max_heap_size << " / " << kCgpqCapacity;
       auto vlog = [&](const char* msg, int64_t var) {

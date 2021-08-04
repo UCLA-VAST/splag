@@ -3,6 +3,7 @@
 
 #include <cstddef>
 
+#include <array>
 #include <iostream>
 #include <limits>
 
@@ -435,7 +436,9 @@ constexpr int kHeapOnChipWidth = 8;  // #children per on-heap element.
 
 constexpr int kHeapOffChipWidth = 16;  // #children per off-heap element.
 
-using SpilledTask = TaskOnChip;
+constexpr int kSpilledTaskVecLen = 4;  // = 512 bit / 128 bit.
+
+using SpilledTask = std::array<TaskOnChip, kSpilledTaskVecLen>;
 
 constexpr int kCgpqChunkSize = 1024;
 
@@ -443,7 +446,7 @@ constexpr int kCgpqLevel = 15;
 
 constexpr int kCgpqCapacity = (1 << kCgpqLevel) - 1;
 
-using uint_spill_addr_t =
-    ap_uint<bit_length(kCgpqCapacity) + log2(kCgpqChunkSize)>;
+using uint_spill_addr_t = ap_uint<bit_length(kCgpqCapacity) +
+                                  log2(kCgpqChunkSize / kSpilledTaskVecLen)>;
 
 #endif  // TAPA_SSSP_H_

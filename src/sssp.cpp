@@ -1119,8 +1119,8 @@ void CgpqCore(
     ostream<CgpqHeapReq>& heap_req_q, istream<cgpq::ChunkRef>& heap_resp_q,
     //
     ostream<uint_spill_addr_t>& mem_read_addr_q,
-    istream<TaskOnChip>& mem_read_data_q,
-    ostream<packet<uint_spill_addr_t, TaskOnChip>>& mem_write_req_q,
+    istream<SpilledTask>& mem_read_data_q,
+    ostream<packet<uint_spill_addr_t, SpilledTask>>& mem_write_req_q,
     istream<bool>& mem_write_resp_q) {
 #pragma HLS inline recursive
 
@@ -1141,6 +1141,8 @@ void CgpqCore(
 #pragma HLS bind_storage variable = chunk_buf type = RAM_S2P impl = URAM
 #pragma HLS array_partition variable = chunk_buf cyclic factor = \
     kBucketPartFac dim = 1
+#pragma HLS array_partition variable = chunk_buf cyclic factor = \
+    kPosPartFac dim = 2
 
   bool is_spill_valid = false;
   uint_bid_t spill_bid;
@@ -1218,14 +1220,14 @@ spin:
 
     const bool is_input_blocked_by_full_buffer = input_meta.IsFull();
     const bool is_input_blocked_by_current_refill =
-        !(!is_refill_valid || input_bid != refill_bid ||
-          input_meta.GetFreeSize() > refill_remain_count);
+        is_refill_valid && input_bid == refill_bid &&
+        input_meta.GetFreeSize() <= refill_remain_count;
     const bool is_input_blocked_by_future_refill =
-        !(!is_refill_next_valid || input_bid != refill_bid_next ||
-          input_meta.GetFreeSize() > kChunkSize);
+        is_refill_next_valid && input_bid == refill_bid_next &&
+        input_meta.GetFreeSize() <= kChunkSize;
     const bool is_input_blocked_by_bank_conflict =
-        !(!can_recv_refill ||
-          input_bid % kBucketPartFac != refill_bid % kBucketPartFac);
+        can_recv_refill &&
+        input_bid % kBucketPartFac == refill_bid % kBucketPartFac;
 
     // Read input task and push into chunk buffer if
     const bool can_enqueue =
@@ -1258,15 +1260,17 @@ spin:
 
     const bool is_output_blocked_by_full_fifo = pop_q.full();
     const bool is_output_blocked_by_bank_conflict =
-        !(!is_spill_valid ||
-          output_bid % kBucketPartFac != spill_bid % kBucketPartFac);
+        is_spill_valid &&
+        output_bid % kBucketPartFac == spill_bid % kBucketPartFac;
     // Note: to avoid chunk_buf read address being dependent on FIFO fullness,
     // can_dequeue must not depend on the fullness of mem_write_req_q.
 
     // Pop from highest-priority chunk buffer and write output data if
     const bool can_dequeue =
         is_output_valid &&  // there is a non-empty chunk, and
-        !pop_q.full() &&    // output is available for write, and
+
+        // output is available for write, and
+        !is_output_blocked_by_full_fifo &&
 
         // if there is active spilling, the output bucket as the spill bucket.
         !is_output_blocked_by_bank_conflict;
@@ -1307,7 +1311,8 @@ spin:
         !mem_read_addr_q.full()            // address output is not full.
         ;
 
-    TaskOnChip spill_task, output_task;
+    TaskOnChip output_task;
+    SpilledTask spill_task;
     ReadChunk(chunk_buf, is_spill_valid, spill_bid, spill_meta.GetReadPos(),
               is_output_valid, output_bid, output_meta.GetReadPos(), spill_task,
               output_task);
@@ -1315,16 +1320,13 @@ spin:
                refill_task, can_enqueue, input_bid, input_meta.GetWritePos(),
                input_task, chunk_buf);
 
-    ap_uint<kBucketCount> is_push = 0;
-
     if (can_recv_refill) {
       CHECK_GE(chunk_meta[refill_bid].GetFreeSize(), refill_remain_count)
           << "refill_bid: " << refill_bid;
       mem_read_data_q.read(nullptr);
-      CHECK(!is_push.bit(refill_bid));
-      is_push.bit(refill_bid) = true;
 
-      --refill_remain_count;
+      CHECK_EQ(refill_remain_count % kPosPartFac, 0);
+      refill_remain_count -= kPosPartFac;
       VLOG(5) << "refilling bucket " << refill_bid << " ("
               << refill_remain_count << " to go)";
       if (refill_remain_count == 0) {
@@ -1334,14 +1336,10 @@ spin:
 
     if (can_enqueue) {
       push_req_q.read(nullptr);
-      CHECK(!is_push.bit(input_bid));
-      is_push.bit(input_bid) = true;
 
       VLOG(5) << "enqueue " << push_req.task << " to bucket " << input_bid
               << " (which already has " << input_meta.GetSize() << " tasks)";
     }
-
-    ap_uint<kBucketCount> is_pop = 0;
 
     if (can_send_spill) {
       CHECK_GE(chunk_meta[spill_bid].GetSize(),  // Available tasks.
@@ -1349,10 +1347,9 @@ spin:
       );
       mem_write_req_q.try_write({spill_addr_req, spill_task});
 
-      CHECK(!is_pop.bit(spill_bid));
-      is_pop.bit(spill_bid) = true;
       ++spill_addr_req;
-      --task_to_spill_count;
+      CHECK_EQ(task_to_spill_count % kPosPartFac, 0);
+      task_to_spill_count -= kPosPartFac;
       if (task_to_spill_count == 0) {
         is_spill_valid = false;
         task_to_spill_count = kChunkSize;
@@ -1361,18 +1358,30 @@ spin:
 
     if (can_dequeue) {
       pop_q.try_write(output_task);
-      CHECK(!is_pop.bit(output_bid));
-      is_pop.bit(output_bid) = true;
     }
 
-    RANGE(i, kBucketCount, {
-      if (is_push.bit(i)) {
-        chunk_meta[i].Push();
-      }
-      if (is_pop.bit(i)) {
-        chunk_meta[i].Pop();
-      }
-    });
+    {
+      ap_uint<kBucketCount> is_refill = 0;
+      is_refill.bit(refill_bid) = can_recv_refill;
+
+      ap_uint<kBucketCount> is_input = 0;
+      is_input.bit(input_bid) = can_enqueue;
+
+      ap_uint<kBucketCount> is_spill = 0;
+      is_spill.bit(spill_bid) = can_send_spill;
+
+      ap_uint<kBucketCount> is_output = 0;
+      is_output.bit(output_bid) = can_dequeue;
+
+      RANGE(i, kBucketCount, {
+        if (is_refill.bit(i) || is_input.bit(i)) {
+          chunk_meta[i].Push(is_refill.bit(i) ? kSpilledTaskVecLen : 1);
+        }
+        if (is_spill.bit(i) || is_output.bit(i)) {
+          chunk_meta[i].Pop(is_spill.bit(i) ? kSpilledTaskVecLen : 1);
+        }
+      });
+    }
 
     bool is_heap_requested = false;
     CgpqHeapReq heap_req;
@@ -1401,7 +1410,7 @@ spin:
       is_refill_next_valid = true;
       refill_addr = heap_root.addr;
       is_refill_addr_valid = true;
-      CHECK_EQ(refill_addr % kChunkSize, 0);
+      CHECK_EQ(refill_addr % kVecCountPerChunk, 0);
 
       is_heap_requested = true;
       heap_req.is_push = false;
@@ -1426,7 +1435,7 @@ spin:
 
       mem_read_addr_q.try_write(refill_addr);
       ++refill_addr;
-      if (refill_addr % kChunkSize == 0) {
+      if (refill_addr % kVecCountPerChunk == 0) {
         is_refill_addr_valid = false;
       }
     }
@@ -1459,7 +1468,7 @@ spin:
 
   done_q.read(nullptr);
 
-  stat_q.write(spill_addr_req / kChunkSize);
+  stat_q.write(spill_addr_req / kVecCountPerChunk);
   stat_q.write(max_heap_size);
   stat_q.write(cycle_count);
   stat_q.write(enqueue_full_count);
@@ -1503,8 +1512,8 @@ void TaskQueue(
     float min_distance, float max_distance,
     //
     ostream<uint_spill_addr_t>& cgpq_spill_read_addr_q,
-    istream<TaskOnChip>& cgpq_spill_read_data_q,
-    ostream<packet<uint_spill_addr_t, TaskOnChip>>& cgpq_spill_write_req_q,
+    istream<SpilledTask>& cgpq_spill_read_data_q,
+    ostream<packet<uint_spill_addr_t, SpilledTask>>& cgpq_spill_write_req_q,
     istream<bool>& cgpq_spill_write_resp_q
 #else   // TAPA_SSSP_COARSE_PRIORITY
     //
@@ -2444,8 +2453,8 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
 
 #ifdef TAPA_SSSP_COARSE_PRIORITY
   stream<uint_spill_addr_t> cgpq_spill_read_addr_q;
-  stream<TaskOnChip> cgpq_spill_read_data_q;
-  stream<packet<uint_spill_addr_t, TaskOnChip>> cgpq_spill_write_req_q;
+  stream<SpilledTask> cgpq_spill_read_data_q;
+  stream<packet<uint_spill_addr_t, SpilledTask>> cgpq_spill_write_req_q;
   stream<bool> cgpq_spill_write_resp_q;
 #else   // TAPA_SSSP_COARSE_PRIORITY
   streams<Vid, kQueueCount, 2> piheap_array_read_addr_q;

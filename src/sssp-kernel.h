@@ -202,11 +202,17 @@ struct CleanUp {
 
 #define UNUSED (void)
 
+/// Return @c value with an assumption that @c value % @c mod == @c rem.
+inline int assume_mod(int value, int mod, int rem) {
+#pragma HLS inline
+  return value / mod * mod + rem;
+}
+
 /// Return @c value with an assertion that @c value % @c mod == @c rem.
 inline int assert_mod(int value, int mod, int rem) {
 #pragma HLS inline
   CHECK_EQ(value % mod, rem);
-  return value / mod * mod + rem;
+  return assume_mod(value, mod, rem);
 }
 
 template <typename T, int N, typename UnaryFunction>
