@@ -425,7 +425,7 @@ int main(int argc, char* argv[]) {
   aligned_vector<int64_t> metadata(9 + kSubIntervalCount * kVertexUniStatCount +
                                    kShardCount * kEdgeUnitStatCount +
                                    kQueueCount * kQueueStatCount +
-                                   kSwitchCount * kSwitchStatCount);
+                                   kSwitchCount * kSwitchStatCount + kPeCount);
   array<aligned_vector<Vertex>, kIntervalCount> vertices;
   for (auto& interval : vertices) {
     interval.resize(tapa::round_up_div<kIntervalCount>(vertex_count));
@@ -835,6 +835,14 @@ int main(int argc, char* argv[]) {
                 << setw(10) << stall_count << " ( " << fixed << setprecision(1)
                 << setw(5) << 100. * stall_count / total_count << "%)";
       }
+    }
+
+    for (int peid = 0; peid < kPeCount; ++peid) {
+      const auto active_count = *(metadata_it++);
+      VLOG(3) << "  PE[" << setfill(' ') << setw(3) << peid
+              << "]: active: " << setw(10) << active_count << " (" << fixed
+              << setprecision(1) << setw(4) << 100. * active_count / cycle_count
+              << "%)";
     }
 
     if (!IsValid(root, edges_view, weights_view, indexed_weights,

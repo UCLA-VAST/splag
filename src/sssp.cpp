@@ -2166,7 +2166,7 @@ const int kTaskInputCount = kQueueCount;
 #endif  // TAPA_SSSP_IMMEDIATE_RELAX
 
 void TaskArbiter(  //
-    istream<TaskOnChip>& task_init_q,
+    istream<TaskOnChip>& task_init_q, ostream<int64_t>& task_stat_q,
     istreams<TaskOnChip, kTaskInputCount>& task_in_q,
     ostreams<TaskOnChip, kPeCount>& task_req_q,
     istreams<Vid, kPeCount>& task_resp_q) {
@@ -2189,9 +2189,18 @@ exec:
     task_req_q[tid_init].write(task_init);
     is_pe_active[tid_init][0] = true;
 
+    DECL_ARRAY(int64_t, pe_active_count, kPeCount, 0);
+
   spin:
-    for (; task_init_q.empty();) {
+    for (; !task_init_q.eos(nullptr);) {
 #pragma HLS pipeline II = 1
+
+      // Increment performance counters.
+      RANGE(peid, kPeCount, {
+        if (is_pe_active[peid % kTaskInputCount][peid / kTaskInputCount]) {
+          ++pe_active_count[peid];
+        }
+      });
 
       // Issue task requests.
       RANGE(tid, kTaskInputCount, {
@@ -2217,6 +2226,12 @@ exec:
         }
       });
     }
+
+    task_init_q.try_open();
+  stat:
+    for (ap_uint<bit_length(kPeCount)> peid = 0; peid < kPeCount; ++peid) {
+      task_stat_q.write(pe_active_count[peid]);
+    }
   }
 }
 
@@ -2238,6 +2253,8 @@ void Dispatcher(
 #endif  // TAPA_SSSP_SHARD_COUNT
     // Task initialization.
     ostream<TaskOnChip>& task_init_q,
+    // Task stats of PEs.
+    istream<int64_t>& task_stat_q,
     // Task count.
     istream<uint_vertex_noop_t>& vertex_noop_q,
     istream<uint_queue_noop_t>& queue_noop_q,
@@ -2297,6 +2314,7 @@ spin:
 #if TAPA_SSSP_SHARD_COUNT > 1
   RANGE(swid, kSwitchCount, switch_done_q[swid].write(false));
 #endif  // TAPA_SSSP_SHARD_COUNT
+  task_init_q.close();
 
   metadata[0] = visited_edge_count;
   metadata[1] = push_count;
@@ -2339,6 +2357,14 @@ switch_stat:
     }
   }
 #endif  // TAPA_SSSP_SHARD_COUNT
+
+task_stat:
+  for (ap_uint<bit_length(kPeCount)> peid = 0; peid < kPeCount; ++peid) {
+    metadata[9 + kShardCount * kEdgeUnitStatCount +
+             kSubIntervalCount * kVertexUniStatCount +
+             kQueueCount * kQueueStatCount + kSwitchCount * kSwitchStatCount +
+             peid] = task_stat_q.read();
+  }
 }
 
 void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
@@ -2379,6 +2405,7 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   streams<Vid, kPeCount, 2> task_resp_qi("task_resp_i");
 
   stream<TaskOnChip, 2> task_init_q;
+  stream<int64_t, 2> task_stat_q;
   streams<TaskOnChip, kQueueCount, 2> queue_pop_q("task_resp");
 
   // For edges.
@@ -2424,17 +2451,19 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   stream<TaskCount, 2> task_count_q;
 
   tapa::task()
-      .invoke<join>(Dispatcher, root, metadata, vertex_cache_done_q,
-                    vertex_cache_stat_q, edge_done_q, edge_stat_q, queue_done_q,
-                    queue_stat_q,
+      .invoke(
+          Dispatcher, root, metadata, vertex_cache_done_q, vertex_cache_stat_q,
+          edge_done_q, edge_stat_q, queue_done_q, queue_stat_q,
 #if TAPA_SSSP_SHARD_COUNT > 1
-                    switch_done_q, switch_stat_q,
+          switch_done_q, switch_stat_q,
 #endif  // TAPA_SSSP_SHARD_COUNT
-                    task_init_q, vertex_noop_q, queue_noop_q, task_count_q)
+          task_init_q, task_stat_q, vertex_noop_q, queue_noop_q, task_count_q)
 #ifdef TAPA_SSSP_IMMEDIATE_RELAX
-      .invoke<detach>(TaskArbiter, task_init_q, vertex_out_q, task_req_qi,
+      .invoke<detach>(TaskArbiter, task_init_q, task_stat_q, vertex_out_q,
+                      task_req_qi,
 #else   // TAPA_SSSP_IMMEDIATE_RELAX
-      .invoke<detach>(TaskArbiter, task_init_q, queue_pop_q, task_req_qi,
+      .invoke<detach>(TaskArbiter, task_init_q, task_stat_q, queue_pop_q,
+                      task_req_qi,
 #endif  // TAPA_SSSP_IMMEDIATE_RELAX
                       task_resp_qi)
       .invoke<join, kQueueCount>(TaskQueue, queue_done_q, queue_stat_q, seq(),
