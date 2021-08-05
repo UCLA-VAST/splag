@@ -612,20 +612,31 @@ int main(int argc, char* argv[]) {
             "#req_miss  ",  //
             "#req_busy  ",  //
             "#idle      ",  //
+            "#stall     ",  //
         };
-        int64_t op_counts[sizeof(kVertexUnitOpNamesAligned) /
-                          sizeof(kVertexUnitOpNamesAligned[0])];
+        constexpr int kVertexOpStatCount = sizeof(kVertexUnitOpNamesAligned) /
+                                           sizeof(kVertexUnitOpNamesAligned[0]);
+        const auto kVertexCacheII = 2;
+        int64_t op_counts[kVertexOpStatCount];
         int64_t total_op_count = 0;
-        for (int i = 0; i < sizeof(op_counts) / sizeof(op_counts[0]); ++i) {
+        for (int i = 0; i < kVertexOpStatCount - 1; ++i) {
           op_counts[i] = *(metadata_it++);
           total_op_count += op_counts[i];
         }
-        for (int i = 0; i < sizeof(op_counts) / sizeof(op_counts[0]); ++i) {
-          VLOG_IF(3, total_op_count)
-              << "    " << kVertexUnitOpNamesAligned[i] << ": "
-              << std::setfill(' ') << std::setw(10) << op_counts[i] << " ("
-              << std::fixed << std::setprecision(1)
-              << 100. * op_counts[i] / total_op_count << "%)";
+
+        // Stall count is calculated from cycle_count reported by Dispatcher and
+        // II of VertexCache.
+        op_counts[kVertexOpStatCount - 1] =
+            cycle_count / kVertexCacheII - total_op_count;
+
+        // Include stalled cycles in total_op_count.
+        total_op_count = cycle_count / kVertexCacheII;
+
+        for (int i = 0; i < kVertexOpStatCount; ++i) {
+          VLOG_IF(3, op_counts[i])
+              << "    " << kVertexUnitOpNamesAligned[i] << ": " << setfill(' ')
+              << setw(10) << op_counts[i] << " (" << fixed << setprecision(1)
+              << setw(4) << 100. * op_counts[i] / total_op_count << "%)";
         }
       }
     }
