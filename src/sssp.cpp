@@ -2368,6 +2368,7 @@ spin:
 vertex_cache_stat:
   for (int i = 0; i < kSubIntervalCount; ++i) {
     for (int j = 0; j < kVertexUniStatCount; ++j) {
+#pragma HLS pipeline II = 1
       metadata[9 + i * kVertexUniStatCount + j] = vertex_cache_stat_q[i].read();
     }
   }
@@ -2375,6 +2376,7 @@ vertex_cache_stat:
 edge_stat:
   for (int i = 0; i < kShardCount; ++i) {
     for (int j = 0; j < kEdgeUnitStatCount; ++j) {
+#pragma HLS pipeline II = 1
       metadata[9 + kSubIntervalCount * kVertexUniStatCount +
                i * kEdgeUnitStatCount + j] = edge_stat_q[i].read();
     }
@@ -2383,6 +2385,7 @@ edge_stat:
 queue_stat:
   for (int i = 0; i < kQueueCount; ++i) {
     for (int j = 0; j < kQueueStatCount; ++j) {
+#pragma HLS pipeline II = 1
       metadata[9 + kShardCount * kEdgeUnitStatCount +
                kSubIntervalCount * kVertexUniStatCount + i * kQueueStatCount +
                j] = queue_stat_q[i].read();
@@ -2393,6 +2396,7 @@ queue_stat:
 switch_stat:
   for (int i = 0; i < kSwitchCount; ++i) {
     for (int j = 0; j < kSwitchStatCount; ++j) {
+#pragma HLS pipeline II = 1
       metadata[9 + kShardCount * kEdgeUnitStatCount +
                kSubIntervalCount * kVertexUniStatCount +
                kQueueCount * kQueueStatCount + i * kSwitchStatCount + j] =
@@ -2403,6 +2407,7 @@ switch_stat:
 
 task_stat:
   for (ap_uint<bit_length(kPeCount)> peid = 0; peid < kPeCount; ++peid) {
+#pragma HLS pipeline II = 1
     metadata[9 + kShardCount * kEdgeUnitStatCount +
              kSubIntervalCount * kVertexUniStatCount +
              kQueueCount * kQueueStatCount + kSwitchCount * kSwitchStatCount +
