@@ -1,10 +1,10 @@
 #ifndef TAPA_SSSP_KERNEL_H_
 #define TAPA_SSSP_KERNEL_H_
 
+#include <ap_int.h>
+
 #include <algorithm>
 #include <type_traits>
-
-#include <ap_int.h>
 
 #include "sssp.h"
 
@@ -285,9 +285,10 @@ struct arbiter {
                                                                 idx_right);
     idx = is_left_non_empty ^ is_right_non_empty
               ? is_left_non_empty ? idx_left : idx_right
-              : priority.range(begin + len / 2 - 1, begin).or_reduce()
-                    ? idx_left
-                    : idx_right;
+          : ap_uint<len / 2>(priority.range(begin + len / 2 - 1, begin))
+                  .or_reduce()
+              ? idx_left
+              : idx_right;
     return is_left_non_empty || is_right_non_empty;
   }
 
