@@ -1938,28 +1938,66 @@ exec:
 
     bool is_started = false;
 
+    TaskOnChip task = nullptr;
+    bool is_task_valid = false;
+
+    using uint_cache_index_t = ap_uint<log2(kVertexCacheSize)>;
+    uint_cache_index_t prev_index = 0;
+    VertexCacheEntry prev_entry = {
+        .is_valid = false,
+        .is_reading = false,
+        .is_writing = false,
+        .is_dirty = false,
+    };
+
   spin:
     for (; done_q.empty();) {
-#pragma HLS pipeline II = 2
-      if (!write_resp_q.empty() && !write_vid_in_q.empty()) {
+#pragma HLS pipeline II = 1
+#pragma HLS dependence variable = cache inter true distance = 2
+
+      const bool is_write_resp_valid = !write_resp_q.empty();
+      bool is_write_vid_valid;
+      const auto write_vid = write_vid_in_q.peek(is_write_vid_valid);
+      const bool is_write_ack_valid = is_write_resp_valid && is_write_vid_valid;
+
+      const bool is_read_data_valid = !read_data_q.empty();
+      bool is_read_vid_valid;
+      const auto read_vid = read_vid_in_q.peek(is_read_vid_valid);
+      const bool is_read_ack_valid = is_read_data_valid && is_read_vid_valid;
+
+      const auto vid = is_write_ack_valid  ? write_vid
+                       : is_read_ack_valid ? read_vid
+                                           : task.vid();
+
+      // curr_index = vid / kSubIntervalCount but HLS seems to have trouble
+      // optimizing this, thus the following.
+      constexpr int kSubIntervalWidth = log2(kSubIntervalCount);
+      const uint_cache_index_t curr_index = uint_vid_t(vid).range(
+          uint_cache_index_t::width + kSubIntervalWidth - 1, kSubIntervalWidth);
+
+      // Forward when there is a read-after-write dependence from preivous 1
+      // iteration.
+      auto entry = curr_index == prev_index ? prev_entry : cache[curr_index];
+      bool is_entry_updated = false;
+
+      if (is_write_ack_valid) {
         ++write_resp_count;
 
         write_resp_q.read(nullptr);
-        const auto vid = write_vid_in_q.read(nullptr);
-        const auto entry = cache[vid / kSubIntervalCount % kVertexCacheSize];
+        write_vid_in_q.read(nullptr);
         CHECK(entry.is_valid);
         CHECK_NE(entry.task.vid(), vid);
         CHECK(entry.is_writing);
-        cache[vid / kSubIntervalCount % kVertexCacheSize].is_writing = false;
+        entry.is_writing = false;
+        is_entry_updated = true;
         CHECK_GT(active_write_count, 0);
         --active_write_count;
-      } else if (!read_data_q.empty() && !read_vid_in_q.empty()) {
+      } else if (is_read_ack_valid) {
         ++read_resp_count;
 
         const auto vertex = read_data_q.read(nullptr);
-        const auto vid = read_vid_in_q.read(nullptr);
+        read_vid_in_q.read(nullptr);
         VLOG(5) << "vmem[" << vid << "] -> " << vertex;
-        auto entry = cache[vid / kSubIntervalCount % kVertexCacheSize];
         CHECK(entry.is_valid);
         CHECK_EQ(entry.task.vid(), vid);
         CHECK(entry.is_reading);
@@ -1976,18 +2014,15 @@ exec:
           GenPush(entry);
           ++write_hit;
         }
-        cache[vid / kSubIntervalCount % kVertexCacheSize] = entry;
-      } else if (!req_q.empty()) {
+        is_entry_updated = true;
+      } else if (is_task_valid) {
         is_started = true;
 
-        const auto task = req_q.peek(nullptr);
-        const auto vid = task.vid();
-        auto entry = cache[vid / kSubIntervalCount % kVertexCacheSize];
-        bool is_entry_updated = false;
         if (entry.is_valid && entry.task.vid() == task.vid()) {  // Hit.
           ++req_hit_count;
 
-          req_q.read(nullptr);
+          // req_q.read(nullptr);
+          is_task_valid = false;
           VLOG(5) << "task     <- " << task;
 
           // Update cache if new task has higher priority.
@@ -2014,7 +2049,8 @@ exec:
                       write_vid_out_q.full()))) {  // Miss.
           ++req_miss_count;
 
-          req_q.read(nullptr);
+          // req_q.read(nullptr);
+          is_task_valid = false;
           VLOG(5) << "task     <- " << task;
 
           // Issue DRAM read request.
@@ -2049,12 +2085,19 @@ exec:
           ++req_busy_count;
         }
 
-        if (is_entry_updated) {
-          cache[vid / kSubIntervalCount % kVertexCacheSize] = entry;
-          VLOG(5) << "v$$$[" << vid << "] <- " << entry.task;
-        }
       } else if (is_started) {
         ++idle_count;
+      }
+
+      if (is_entry_updated) {
+        cache[curr_index] = entry;
+        VLOG(5) << "v$$$[" << vid << "] <- " << entry.task;
+      }
+      prev_index = curr_index;
+      prev_entry = entry;
+
+      if (!is_task_valid) {
+        is_task_valid = req_q.try_read(task);
       }
     }
 

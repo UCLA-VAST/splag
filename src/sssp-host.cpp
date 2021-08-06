@@ -616,7 +616,7 @@ int main(int argc, char* argv[]) {
         };
         constexpr int kVertexOpStatCount = sizeof(kVertexUnitOpNamesAligned) /
                                            sizeof(kVertexUnitOpNamesAligned[0]);
-        const auto kVertexCacheII = 2;
+        const auto kVertexCacheII = 1;
         int64_t op_counts[kVertexOpStatCount];
         int64_t total_op_count = 0;
         for (int i = 0; i < kVertexOpStatCount - 1; ++i) {

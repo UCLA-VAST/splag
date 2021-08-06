@@ -1,6 +1,8 @@
 #ifndef TAPA_SSSP_H_
 #define TAPA_SSSP_H_
 
+#include <cstddef>
+
 #include <iostream>
 #include <limits>
 
@@ -207,6 +209,8 @@ constexpr int kQueueStatCount = kPiHeapStatTotalCount;
 class TaskOnChip {
  public:
   TaskOnChip() {}
+
+  TaskOnChip(std::nullptr_t) { data = 0; }
 
   TaskOnChip(const Task& task) {
     set_vid(task.vid);
