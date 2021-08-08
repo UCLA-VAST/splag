@@ -429,7 +429,7 @@ constexpr int kSwitchCount = kShardCount / 2 * log2(kShardCount);
 constexpr int kSwitchStatCount = 5;
 
 constexpr int kIntervalCount = 1;  // #vertex partitions.
-constexpr int kSubIntervalCount = kIntervalCount * 2;
+constexpr int kSubIntervalCount = kIntervalCount * 1;
 
 constexpr int kHeapOnChipWidth = 8;  // #children per on-heap element.
 
