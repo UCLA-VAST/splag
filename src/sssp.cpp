@@ -1930,8 +1930,10 @@ exec:
     auto& read_resp_count = perf_counters[5];
     auto& req_hit_count = perf_counters[6];
     auto& req_miss_count = perf_counters[7];
-    auto& req_busy_count = perf_counters[8];
-    auto& idle_count = perf_counters[9];
+    auto& entry_busy_count = perf_counters[8];
+    auto& read_busy_count = perf_counters[9];
+    auto& write_busy_count = perf_counters[10];
+    auto& idle_count = perf_counters[11];
 
     const int kMaxActiveWriteCount = 63;
     int8_t active_write_count = 0;
@@ -2018,7 +2020,16 @@ exec:
       } else if (is_task_valid) {
         is_started = true;
 
-        if (entry.is_valid && entry.task.vid() == task.vid()) {  // Hit.
+        const bool is_hit = entry.is_valid && entry.task.vid() == task.vid();
+
+        const bool is_entry_busy =
+            entry.is_valid && (entry.is_reading || entry.is_writing);
+        const bool is_read_busy = read_addr_q.full() || read_vid_out_q.full();
+        const bool is_write_busy =
+            entry.is_valid && entry.is_dirty &&
+            (write_req_q.full() || write_vid_out_q.full());
+
+        if (is_hit) {
           ++req_hit_count;
 
           // req_q.read(nullptr);
@@ -2041,12 +2052,7 @@ exec:
           }
 
           ++read_hit;
-        } else if (!(entry.is_valid &&
-                     (entry.is_reading || entry.is_writing)) &&
-                   !read_addr_q.full() && !read_vid_out_q.full() &&
-                   !(entry.is_valid && entry.is_dirty &&
-                     (write_req_q.full() ||
-                      write_vid_out_q.full()))) {  // Miss.
+        } else if (!is_entry_busy && !is_read_busy && !is_write_busy) {
           ++req_miss_count;
 
           // req_q.read(nullptr);
@@ -2081,8 +2087,13 @@ exec:
           is_entry_updated = true;
 
           ++read_miss;
-        } else {  // Otherwise, wait until entry is not reading.
-          ++req_busy_count;
+        } else if (is_entry_busy) {
+          ++entry_busy_count;
+        } else if (is_read_busy) {
+          ++read_busy_count;
+        } else {
+          CHECK(is_write_busy);
+          ++write_busy_count;
         }
 
       } else if (is_started) {

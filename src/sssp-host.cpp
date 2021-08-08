@@ -610,7 +610,9 @@ int main(int argc, char* argv[]) {
             "#read_resp ",  //
             "#req_hit   ",  //
             "#req_miss  ",  //
-            "#req_busy  ",  //
+            "#entry_busy",  //
+            "#read_busy ",  //
+            "#write_busy",  //
             "#idle      ",  //
             "#stall     ",  //
         };
