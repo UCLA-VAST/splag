@@ -9,7 +9,7 @@
 #include "sssp-kernel.h"
 #include "sssp.h"
 
-// #define TAPA_SSSP_2X_BUFFER
+#define TAPA_SSSP_2X_BUFFER
 
 #define TAPA_SSSP_CGPQ_LOG_BUCKET
 
