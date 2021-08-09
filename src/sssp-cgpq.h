@@ -31,8 +31,6 @@ constexpr int kPosPartFac = kSpilledTaskVecLen;
 
 constexpr int kBucketPartFac = 4;
 
-constexpr int kOutputPortCount = 2;
-
 using uint_bid_t = ap_uint<bit_length(kBucketCount - 1)>;
 
 using uint_chunk_size_t = ap_uint<bit_length(kChunkSize)>;
@@ -58,6 +56,7 @@ class ChunkMeta {
  public:
   using uint_pos_t = ap_uint<bit_length(kBufferSize - 1)>;
   using uint_size_t = ap_uint<bit_length(kBufferSize)>;
+  using uint_delta_t = ap_uint<bit_length(kSpilledTaskVecLen)>;
 
   auto GetSize() const { return size_; }
 
@@ -98,24 +97,37 @@ class ChunkMeta {
 #endif  // TAPA_SSSP_2X_BUFFER
   }
 
-  void Push(ap_uint<bit_length(kPosPartFac)> n) {
+  void Push(uint_delta_t n, int bid) {
     CHECK(!IsFull());
+    CHECK_GE(free_size_, n);
+
     write_pos_ += n;
     size_ += n;
     free_size_ -= n;
     is_empty_ = false;
     is_full_ = write_pos_ == read_pos_;
+
     CHECK_EQ(size_ + free_size_, kBufferSize);
+    VLOG(5) << std::setfill(' ') << "push[" << std::setw(2) << bid
+            << "]: " << std::setw(4) << size_ - n << " -> " << std::setw(4)
+            << size_;
   }
 
-  void Pop(ap_uint<bit_length(kPosPartFac)> n) {
+  void Pop(int bid) {
     CHECK(!IsEmpty());
-    read_pos_ += n;
-    size_ -= n;
-    free_size_ += n;
+    CHECK_GE(size_, kSpilledTaskVecLen);
+    CHECK_EQ(read_pos_ % kSpilledTaskVecLen, 0);
+
+    read_pos_ += kSpilledTaskVecLen;
+    size_ -= kSpilledTaskVecLen;
+    free_size_ += kSpilledTaskVecLen;
     is_empty_ = write_pos_ == read_pos_;
     is_full_ = false;
+
     CHECK_EQ(size_ + free_size_, kBufferSize);
+    VLOG(5) << std::setfill(' ') << "pop [" << std::setw(2) << bid
+            << "]: " << std::setw(4) << size_ + kSpilledTaskVecLen << " -> "
+            << std::setw(4) << size_;
   }
 
  private:
@@ -224,19 +236,13 @@ struct Arbiter<begin, 1> {
     const auto bid = is_spill_written ? spill_bid : output_bid;
     const auto pos = is_spill_written ? spill_pos : output_pos;
 
-    // Read [pos : pos+kPosPartFac).
-    std::array<TaskOnChip, kPosPartFac> tasks;
+    // Read chunk_buf[bid][pos : pos+kPosPartFac).
     RANGE(j, kPosPartFac, {
-      tasks[j] = chunk_buf[assume_mod(bid, kBucketPartFac, begin)][assume_mod(
-          ChunkMeta::uint_pos_t(pos + (kPosPartFac - 1 - j)), kPosPartFac, j)];
+      spill_task[j] = output_task[j] =
+          chunk_buf[assume_mod(bid, kBucketPartFac, begin)][assume_mod(
+              ChunkMeta::uint_pos_t(pos + (kPosPartFac - 1 - j)), kPosPartFac,
+              j)];
     });
-
-    if (is_spill_written) {
-      spill_task = tasks;
-    }
-    if (is_output_written) {
-      output_task = tasks;
-    }
   }
 };
 

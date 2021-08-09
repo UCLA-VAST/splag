@@ -1115,6 +1115,7 @@ void CgpqCore(
     ostream<bool>& noop_q,
     // Queue outputs.
     ostream<TaskOnChip>& pop_q0, ostream<TaskOnChip>& pop_q1,
+    ostream<TaskOnChip>& pop_q2, ostream<TaskOnChip>& pop_q3,
     //
     ostream<CgpqHeapReq>& heap_req_q, istream<cgpq::ChunkRef>& heap_resp_q,
     //
@@ -1182,6 +1183,10 @@ void CgpqCore(
 
   // Cannot dequeue due to bank conflict with spilling.
   int32_t dequeue_bank_conflict_count = 0;
+
+  // Cannot dequeue due to alignment, which means the dequeue bucket is being
+  // refilled or enqueued at the same piece of aligned memory space.
+  int32_t dequeue_alignment_count = 0;
 
 spin:
   for (; done_q.empty();) {
@@ -1258,15 +1263,18 @@ spin:
         is_spill_valid &&         // there is active spilling, and
         !mem_write_req_q.full();  // spill data is available for write.
 
-    ap_uint<kOutputPortCount> is_output_full = 0;
-    is_output_full.bit(0) = pop_q0.full();
-    is_output_full.bit(1) = pop_q1.full();
-    const bool is_output_blocked_by_full_fifo = is_output_full.and_reduce();
+    const bool is_output_blocked_by_full_fifo =
+        (pop_q0.full() || pop_q1.full()) || (pop_q2.full() || pop_q3.full());
     const bool is_output_blocked_by_bank_conflict =
         is_spill_valid &&
         output_bid % kBucketPartFac == spill_bid % kBucketPartFac;
     // Note: to avoid chunk_buf read address being dependent on FIFO fullness,
     // can_dequeue must not depend on the fullness of mem_write_req_q.
+
+    const bool is_output_unaligned = output_meta.GetSize() < kSpilledTaskVecLen;
+    const bool is_output_blocked_by_alignment =
+        is_output_unaligned && ((can_recv_refill && output_bid == refill_bid) ||
+                                (can_enqueue && output_bid == input_bid));
 
     // Pop from highest-priority chunk buffer and write output data if
     const bool can_dequeue =
@@ -1275,12 +1283,18 @@ spin:
         // output is available for write, and
         !is_output_blocked_by_full_fifo &&
 
-        // if there is active spilling, the output bucket as the spill bucket.
-        !is_output_blocked_by_bank_conflict;
+        // if there is active spilling, the output bucket and the spill bucket
+        // must operate on different banks, and
+        !is_output_blocked_by_bank_conflict &&
+
+        // if available output count is less than vector length, must not refill
+        // or enqueue the same bucket.
+        !is_output_blocked_by_alignment;
 
     if (is_output_valid) {
       is_output_blocked_by_full_fifo && ++dequeue_full_count;
       is_output_blocked_by_bank_conflict && ++dequeue_bank_conflict_count;
+      is_output_blocked_by_alignment && ++dequeue_alignment_count;
     }
 
     // Start spilling a new chunk if
@@ -1359,18 +1373,15 @@ spin:
     }
 
     if (can_dequeue) {
-      ap_uint<log2(kPosPartFac)> pos = output_meta.GetReadPos();
-      const auto size = output_meta.GetSize();
-      int output_count = 0;
-      if (output_count < size && !is_output_full.bit(0)) {
-        pop_q0.try_write(output_task[pos]);
-        ++pos;
-        ++output_count;
-      }
-      if (output_count < size && !is_output_full.bit(1)) {
-        pop_q1.try_write(output_task[pos]);
-        ++pos;
-        ++output_count;
+      if (output_meta.GetSize() > 0) pop_q0.try_write(output_task[0]);
+      if (output_meta.GetSize() > 1) pop_q1.try_write(output_task[1]);
+      if (output_meta.GetSize() > 2) pop_q2.try_write(output_task[2]);
+      if (output_meta.GetSize() > 3) pop_q3.try_write(output_task[3]);
+
+      for (int i = 0; i < kSpilledTaskVecLen; ++i) {
+        VLOG_IF(5, i < output_meta.GetSize())
+            << "dequeue " << output_task[i] << " from bucket " << output_bid
+            << " (which has " << output_meta.GetSize() << " tasks)";
       }
     }
 
@@ -1381,6 +1392,9 @@ spin:
       ap_uint<kBucketCount> is_input = 0;
       is_input.bit(input_bid) = can_enqueue;
 
+      ap_uint<kBucketCount> is_align = 0;
+      is_align.bit(output_bid) = can_dequeue && is_output_unaligned;
+
       ap_uint<kBucketCount> is_spill = 0;
       is_spill.bit(spill_bid) = can_send_spill;
 
@@ -1388,22 +1402,20 @@ spin:
       is_output.bit(output_bid) = can_dequeue;
 
       RANGE(i, kBucketCount, {
-        if (is_refill.bit(i) || is_input.bit(i)) {
-          chunk_meta[i].Push(is_refill.bit(i) ? kSpilledTaskVecLen : 1);
+        if (is_refill.bit(i) || is_input.bit(i) || is_align.bit(i)) {
+          ChunkMeta::uint_delta_t n;
+          if (is_refill.bit(i)) {
+            n = kSpilledTaskVecLen;
+          } else if (is_input.bit(i)) {
+            n = 1;
+          } else {
+            n = kSpilledTaskVecLen - output_meta.GetSize();
+          }
+          chunk_meta[i].Push(n, i);
         }
 
         if (is_spill.bit(i) || is_output.bit(i)) {
-          ap_uint<bit_length(kPosPartFac)> n = kSpilledTaskVecLen;
-          if (is_output.bit(i)) {
-            n = 0;
-            RANGE(i, decltype(is_output_full)::width,
-                  n += !is_output_full.bit(i));
-            const auto size = output_meta.GetSize();
-            if (n > size) {
-              n = size;
-            }
-          }
-          chunk_meta[i].Pop(n);
+          chunk_meta[i].Pop(i);
         }
       });
     }
@@ -1532,6 +1544,7 @@ void TaskQueue(
     ostream<bool>& noop_q,
     // Queue outputs.
     ostream<TaskOnChip>& pop_q0, ostream<TaskOnChip>& pop_q1,
+    ostream<TaskOnChip>& pop_q2, ostream<TaskOnChip>& pop_q3,
 #ifdef TAPA_SSSP_COARSE_PRIORITY
     //
     float min_distance, float max_distance,
@@ -1565,7 +1578,7 @@ void TaskQueue(
                     push_req_q, push_req_qi)
       .invoke<detach>(CgpqHeap, heap_req_q, heap_resp_q)
       .invoke<detach>(CgpqCore, done_qi[1], stat_q, qid, push_req_qi, noop_q,
-                      pop_q0, pop_q1, heap_req_q, heap_resp_q,
+                      pop_q0, pop_q1, pop_q2, pop_q3, heap_req_q, heap_resp_q,
                       cgpq_spill_read_addr_q, cgpq_spill_read_data_q,
                       cgpq_spill_write_req_q, cgpq_spill_write_resp_q);
 #else  // TAPA_SSSP_COARSE_PRIORITY
@@ -2243,14 +2256,28 @@ void QueueOutputArbiter(tapa::istreams<TaskOnChip, kQueueCount>& in_q,
 
 void QueueOutputMerger(tapa::istream<TaskOnChip>& in_q0,
                        tapa::istream<TaskOnChip>& in_q1,
+                       tapa::istream<TaskOnChip>& in_q2,
+                       tapa::istream<TaskOnChip>& in_q3,
                        tapa::ostream<TaskOnChip>& out_q) {
 spin:
   for (;;) {
 #pragma HLS pipeline II = 1
-    if (!in_q0.empty()) {
-      out_q.write(in_q0.read(nullptr));
-    } else if (!in_q1.empty()) {
-      out_q.write(in_q1.read(nullptr));
+    const bool is_q0_valid = !in_q0.empty();
+    const bool is_q1_valid = !in_q1.empty();
+    const bool is_q2_valid = !in_q2.empty();
+    const bool is_q3_valid = !in_q3.empty();
+    if (is_q0_valid || is_q1_valid) {
+      if (is_q0_valid) {
+        out_q.write(in_q0.read(nullptr));
+      } else {
+        out_q.write(in_q1.read(nullptr));
+      }
+    } else if (is_q2_valid || is_q3_valid) {
+      if (is_q2_valid) {
+        out_q.write(in_q2.read(nullptr));
+      } else {
+        out_q.write(in_q3.read(nullptr));
+      }
     }
   }
 }
@@ -2514,6 +2541,8 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   stream<int64_t, 2> task_stat_q;
   streams<TaskOnChip, kQueueCount, 2> queue_pop_q0("queue_pop_q0");
   streams<TaskOnChip, kQueueCount, 2> queue_pop_q1("queue_pop_q1");
+  streams<TaskOnChip, kQueueCount, 2> queue_pop_q2("queue_pop_q2");
+  streams<TaskOnChip, kQueueCount, 2> queue_pop_q3("queue_pop_q3");
 
   // For edges.
   streams<Vid, kShardCount, 2> edge_read_addr_q("edge_read_addr");
@@ -2533,6 +2562,8 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
 
   streams<TaskOnChip, kSubIntervalCount, 32> vertex_in_q0;
   streams<TaskOnChip, kSubIntervalCount, 32> vertex_in_q1;
+  streams<TaskOnChip, kSubIntervalCount, 32> vertex_in_q2;
+  streams<TaskOnChip, kSubIntervalCount, 32> vertex_in_q3;
   streams<TaskOnChip, kSubIntervalCount, 2> vertex_in_q;
   //   Connect the vertex readers and updaters.
   streams<bool, kSubIntervalCount, 2> update_noop_qi1;
@@ -2577,7 +2608,7 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
                       task_resp_qi)
       .invoke<join, kQueueCount>(TaskQueue, queue_done_q, queue_stat_q, seq(),
                                  queue_push_q, queue_noop_qi, queue_pop_q0,
-                                 queue_pop_q1,
+                                 queue_pop_q1, queue_pop_q2, queue_pop_q3,
 #ifdef TAPA_SSSP_COARSE_PRIORITY
                                  min_distance, max_distance,
                                  //
@@ -2598,8 +2629,11 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
 #ifdef TAPA_SSSP_IMMEDIATE_RELAX
       .invoke<detach>(QueueOutputArbiter, queue_pop_q0, vertex_in_q0)
       .invoke<detach>(QueueOutputArbiter, queue_pop_q1, vertex_in_q1)
+      .invoke<detach>(QueueOutputArbiter, queue_pop_q2, vertex_in_q2)
+      .invoke<detach>(QueueOutputArbiter, queue_pop_q3, vertex_in_q3)
       .invoke<detach, kSubIntervalCount>(QueueOutputMerger, vertex_in_q0,
-                                         vertex_in_q1, vertex_in_q)
+                                         vertex_in_q1, vertex_in_q2,
+                                         vertex_in_q3, vertex_in_q)
 #else   // TAPA_SSSP_IMMEDIATE_RELAX
       .invoke<detach>(VertexOutputArbiter, vertex_out_q, queue_push_q)
 #endif  // TAPA_SSSP_IMMEDIATE_RELAX
