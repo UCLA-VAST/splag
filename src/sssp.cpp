@@ -2490,8 +2490,8 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   streams<Vertex, kSubIntervalCount, 2> vertex_read_data_q;
   streams<packet<Vid, Vertex>, kSubIntervalCount, 2> vertex_write_req_q;
   streams<bool, kSubIntervalCount, 2> vertex_write_resp_q;
-  streams<Vid, kSubIntervalCount, 16> read_vid_q;
-  streams<Vid, kSubIntervalCount, 16> write_vid_q;
+  streams<Vid, kSubIntervalCount, 32> read_vid_q;
+  streams<Vid, kSubIntervalCount, 32> write_vid_q;
   streams<bool, kSubIntervalCount, 2> vertex_cache_done_q;
   streams<int32_t, kSubIntervalCount, 2> vertex_cache_stat_q;
 
