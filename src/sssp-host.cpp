@@ -672,7 +672,9 @@ int main(int argc, char* argv[]) {
       const auto enqueue_future_refill_count = *(metadata_it++);
       const auto enqueue_bank_conflict_count = *(metadata_it++);
       const auto dequeue_full_count = *(metadata_it++);
+      const auto dequeue_spilling_count = *(metadata_it++);
       const auto dequeue_bank_conflict_count = *(metadata_it++);
+      const auto dequeue_alignment_count = *(metadata_it++);
       VLOG(3) << "    spill count  : " << setfill(' ') << setw(10)
               << spill_count << " / "
               << cgpq_spill.size() / (kCgpqChunkSize / kSpilledTaskVecLen);
@@ -688,7 +690,9 @@ int main(int argc, char* argv[]) {
       vlog("push blocked by future refill ", enqueue_future_refill_count);
       vlog("push blocked by bank conflict ", enqueue_bank_conflict_count);
       vlog("pop blocked by full FIFO    ", dequeue_full_count);
+      vlog("pop blocked by spill        ", dequeue_spilling_count);
       vlog("pop blocked by bank conflict", dequeue_bank_conflict_count);
+      vlog("pop blocked by alignment    ", dequeue_alignment_count);
 #else   // TAPA_SSSP_COARSE_PRIORITY
 
       // Queue op counts.

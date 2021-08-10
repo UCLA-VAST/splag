@@ -1181,6 +1181,9 @@ void CgpqCore(
   // Cannot dequeue because output FIFO is full.
   int32_t dequeue_full_count = 0;
 
+  // Cannot dequeue because chunk is spilling and element is insufficient.
+  int32_t dequeue_spilling_count = 0;
+
   // Cannot dequeue due to bank conflict with spilling.
   int32_t dequeue_bank_conflict_count = 0;
 
@@ -1271,6 +1274,11 @@ spin:
     // Note: to avoid chunk_buf read address being dependent on FIFO fullness,
     // can_dequeue must not depend on the fullness of mem_write_req_q.
 
+    const bool is_output_blocked_by_spilling =
+        is_spill_valid && output_bid == spill_bid &&
+        output_meta.GetSize() / kPosPartFac <=
+            task_to_spill_count / kPosPartFac;
+
     const bool is_output_unaligned = output_meta.GetSize() < kSpilledTaskVecLen;
     const bool is_output_blocked_by_alignment =
         is_output_unaligned && ((can_recv_refill && output_bid == refill_bid) ||
@@ -1283,6 +1291,10 @@ spin:
         // output is available for write, and
         !is_output_blocked_by_full_fifo &&
 
+        // if chunk is spilling, available elements must be greater than #tasks
+        // to spill, and
+        !is_output_blocked_by_spilling &&
+
         // if there is active spilling, the output bucket and the spill bucket
         // must operate on different banks, and
         !is_output_blocked_by_bank_conflict &&
@@ -1293,6 +1305,7 @@ spin:
 
     if (is_output_valid) {
       is_output_blocked_by_full_fifo && ++dequeue_full_count;
+      is_output_blocked_by_spilling && ++dequeue_spilling_count;
       is_output_blocked_by_bank_conflict && ++dequeue_bank_conflict_count;
       is_output_blocked_by_alignment && ++dequeue_alignment_count;
     }
@@ -1513,7 +1526,9 @@ spin:
   stat_q.write(enqueue_future_refill_count);
   stat_q.write(enqueue_bank_conflict_count);
   stat_q.write(dequeue_full_count);
+  stat_q.write(dequeue_spilling_count);
   stat_q.write(dequeue_bank_conflict_count);
+  stat_q.write(dequeue_alignment_count);
 
   CHECK_EQ(heap_size, 0);
 
