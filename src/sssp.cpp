@@ -1278,9 +1278,8 @@ spin:
 
     // Start spilling a new chunk if
     const bool can_start_spill =
-        !is_spill_valid &&           // there is no active spilling, and
-        is_full_valid &&             // chunks need spilling, and
-        full_meta.IsAlmostFull() &&  // chunk is almost full, and
+        !is_spill_valid &&  // there is no active spilling, and
+        is_full_valid &&    // chunks need spilling, and
         !(can_dequeue && full_bid == output_bid) &&  // chunk won't pop, and
         is_heap_available                            // heap is available.
         ;

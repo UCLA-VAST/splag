@@ -197,7 +197,7 @@ struct Arbiter<begin, 1> {
                         uint_bid_t& full_bid, ChunkMeta& full_meta) {
     output_meta = full_meta = chunk_meta[begin];
     is_output_valid = !output_meta.IsEmpty();
-    is_full_valid = full_meta.IsFull();
+    is_full_valid = full_meta.IsAlmostFull();
     output_bid = begin;
     full_bid = begin;
   }
