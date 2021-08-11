@@ -276,41 +276,6 @@ inline void ReadChunk(
       output_pos, is_spill_written, spill_task, is_output_written, output_task);
 }
 
-inline void WriteChunk(
-    // Inputs.
-    const bool can_recv_refill, const uint_bid_t refill_bid,
-    const ChunkMeta::uint_pos_t refill_pos, const SpilledTask& refill_task,
-    const bool can_enqueue, const uint_bid_t input_bid,
-    const ChunkMeta::uint_pos_t input_pos, const TaskOnChip& input_task,
-    // Outputs.
-    TaskOnChip (&chunk_buf)[kBucketCount][kBufferSize]) {
-#pragma HLS inline recursive
-  ap_uint<kBucketPartFac> is_refill = 0, is_input = 0;
-  is_refill.bit(refill_bid % kBucketPartFac) = can_recv_refill;
-  is_input.bit(input_bid % kBucketPartFac) = can_enqueue;
-  for (int i = 0; i < kBucketPartFac; ++i) {
-#pragma HLS unroll
-    const auto bid = is_refill.bit(i) ? refill_bid : input_bid;
-    const auto pos = is_refill.bit(i) ? refill_pos : input_pos;
-
-    auto tasks = refill_task;
-    if (is_input.bit(i)) {
-      tasks[pos % kPosPartFac] = input_task;
-    }
-
-    ap_uint<kPosPartFac> is_written = is_refill.bit(i) ? -1 : 0;
-    is_written.bit(pos % kPosPartFac) = is_refill.bit(i) || is_input.bit(i);
-
-    RANGE(j, kPosPartFac, {
-      if (is_written.bit(j)) {
-        chunk_buf[assert_mod(bid, kBucketPartFac, i)]
-                 [assume_mod(ChunkMeta::uint_pos_t(pos + (kPosPartFac - 1 - j)),
-                             kPosPartFac, j)] = tasks[j];
-      }
-    });
-  }
-}
-
 }  // namespace cgpq
 
 struct CgpqHeapReq {

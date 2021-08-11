@@ -1345,9 +1345,33 @@ spin:
     ReadChunk(chunk_buf, is_spill_valid, spill_bid, spill_meta.GetReadPos(),
               is_output_valid, output_bid, output_meta.GetReadPos(), spill_task,
               output_task);
-    WriteChunk(can_recv_refill, refill_bid, refill_meta.GetWritePos(),
-               refill_task, can_enqueue, input_bid, input_meta.GetWritePos(),
-               input_task, chunk_buf);
+    {
+      ap_uint<kBucketPartFac> is_refill = 0, is_input = 0;
+      is_refill.bit(refill_bid % kBucketPartFac) = can_recv_refill;
+      is_input.bit(input_bid % kBucketPartFac) = can_enqueue;
+      for (int i = 0; i < kBucketPartFac; ++i) {
+#pragma HLS unroll
+        const auto bid = is_refill.bit(i) ? refill_bid : input_bid;
+        const auto pos = is_refill.bit(i) ? refill_meta.GetWritePos()
+                                          : input_meta.GetWritePos();
+
+        auto tasks = refill_task;
+        if (is_input.bit(i)) {
+          tasks[pos % kPosPartFac] = input_task;
+        }
+
+        ap_uint<kPosPartFac> is_written = is_refill.bit(i) ? -1 : 0;
+        is_written.bit(pos % kPosPartFac) = is_refill.bit(i) || is_input.bit(i);
+
+        RANGE(j, kPosPartFac, {
+          if (is_written.bit(j)) {
+            chunk_buf[assert_mod(bid, kBucketPartFac, i)][assume_mod(
+                ChunkMeta::uint_pos_t(pos + (kPosPartFac - 1 - j)), kPosPartFac,
+                j)] = tasks[j];
+          }
+        });
+      }
+    }
 
     if (can_recv_refill) {
       CHECK_GE(chunk_meta[refill_bid].GetFreeSize(), refill_remain_count)
