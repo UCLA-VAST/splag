@@ -202,6 +202,12 @@ struct CleanUp {
 
 #define UNUSED (void)
 
+/// Expands to a variable that is initialized with its own @c name as a string.
+///
+/// @param name Name of the variable.
+/// @return     Variable initialized with @c name as a string.
+#define VAR(name) name(#name)
+
 /// Return @c value with an assumption that @c value % @c mod == @c rem.
 inline int assume_mod(int value, int mod, int rem) {
 #pragma HLS inline
