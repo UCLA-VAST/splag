@@ -927,6 +927,18 @@ spin:
   done_q.read(nullptr);
 }
 
+void CgpqBucketArbiter(istream<PushReq>& in_q,
+                       ostreams<PushReq, kCgpqPushPortCount>& out_q) {
+spin:
+  for (;;) {
+#pragma HLS pipeline II = 1
+    if (!in_q.empty()) {
+      const auto req = in_q.read(nullptr);
+      out_q[req.bid % kCgpqPushPortCount].write(req);
+    }
+  }
+}
+
 // On-chip priority queue.
 // Using a binary heap for fewer number of memory banks.
 // Latency of each request << latency of memory for each chunk.
@@ -1110,7 +1122,7 @@ void CgpqCore(
     // Scalar
     uint_qid_t qid,
     // Queue requests.
-    istream<PushReq>& push_req_q,
+    istreams<PushReq, kCgpqPushPortCount>& push_req_q,
     // NOOP acknowledgements
     ostream<bool>& noop_q,
     // Queue outputs.
@@ -1167,16 +1179,16 @@ void CgpqCore(
   int32_t cycle_count = 0;
 
   // Cannot enqueue because buffer is full.
-  int32_t enqueue_full_count = 0;
+  DECL_ARRAY(int32_t, enqueue_full_count, kCgpqPushPortCount, 0);
 
   // Cannot enqueue because chunk is refilling and space is insufficient.
-  int32_t enqueue_current_refill_count = 0;
+  DECL_ARRAY(int32_t, enqueue_current_refill_count, kCgpqPushPortCount, 0);
 
   // Cannot enqueue because chunk is scheduled for refilling.
-  int32_t enqueue_future_refill_count = 0;
+  DECL_ARRAY(int32_t, enqueue_future_refill_count, kCgpqPushPortCount, 0);
 
   // Cannot enqueue due to bank conflict with refilling.
-  int32_t enqueue_bank_conflict_count = 0;
+  DECL_ARRAY(int32_t, enqueue_bank_conflict_count, kCgpqPushPortCount, 0);
 
   // Cannot dequeue because output FIFO is full.
   int32_t dequeue_full_count = 0;
@@ -1195,15 +1207,25 @@ spin:
   for (; done_q.empty();) {
 #pragma HLS pipeline II = 1
 
-    bool is_input_valid;
-    const auto push_req = push_req_q.peek(is_input_valid);
-    const auto input_task = push_req.task;
+    bool is_active = false;  // Log an empty line only if active.
+
+    DECL_ARRAY(bool, is_input_valid, kCgpqPushPortCount, bool());
+    DECL_ARRAY(uint_bid_t, input_bid, kCgpqPushPortCount, uint_bid_t());
+    DECL_ARRAY(TaskOnChip, input_task, kCgpqPushPortCount, TaskOnChip());
+    DECL_ARRAY(ChunkMeta, input_meta, kCgpqPushPortCount, ChunkMeta());
+    RANGE(i, kCgpqPushPortCount, {
+      const auto push_req = push_req_q[i].peek(is_input_valid[i]);
+      if (is_input_valid[i]) {
+        CHECK_EQ(push_req.bid % kCgpqPushPortCount, i);
+      }
+      // Keep invariant input_bid[i] % kPushPortCoutn == i.
+      input_bid[i] = assume_mod(push_req.bid, kCgpqPushPortCount, i);
+      input_task[i] = push_req.task;
+      input_meta[i] = chunk_meta[input_bid[i]];
+    });
 
     bool is_refill_task_valid;
     const auto refill_task = mem_read_data_q.peek(is_refill_task_valid);
-
-    const auto input_bid = push_req.bid;
-    const auto input_meta = chunk_meta[input_bid];
 
     const auto spill_meta = chunk_meta[spill_bid];
     const auto refill_meta = chunk_meta[refill_bid];
@@ -1226,40 +1248,63 @@ spin:
         is_refill_task_valid  // refill data is available for read.
         ;
 
-    const bool is_input_blocked_by_full_buffer = input_meta.IsFull();
-    const bool is_input_blocked_by_current_refill =
-        is_refill_valid && input_bid == refill_bid &&
-        input_meta.GetFreeSize() <= refill_remain_count;
-    const bool is_input_blocked_by_future_refill =
-        is_refill_next_valid && input_bid == refill_bid_next &&
-        input_meta.GetFreeSize() <= kChunkSize;
-    const bool is_input_blocked_by_bank_conflict =
-        can_recv_refill &&
-        input_bid % kBucketPartFac == refill_bid % kBucketPartFac;
+    DECL_ARRAY(bool, is_input_blocked_by_full_buffer, kCgpqPushPortCount,
+               false);
+    DECL_ARRAY(bool, is_input_blocked_by_current_refill, kCgpqPushPortCount,
+               false);
+    DECL_ARRAY(bool, is_input_blocked_by_future_refill, kCgpqPushPortCount,
+               false);
+    DECL_ARRAY(bool, is_input_blocked_by_bank_conflict, kCgpqPushPortCount,
+               false);
+    DECL_ARRAY(bool, can_enqueue, kCgpqPushPortCount, false);
 
-    // Read input task and push into chunk buffer if
-    const bool can_enqueue =
-        is_input_valid &&                    // there is an input task, and
-        !is_input_blocked_by_full_buffer &&  // chunk is not already full, and
+    RANGE(i, kCgpqPushPortCount, {
+      is_input_blocked_by_full_buffer[i] = input_meta[i].IsFull();
+      is_input_blocked_by_current_refill[i] =
+          is_refill_valid && input_bid[i] == refill_bid &&
+          input_meta[i].GetFreeSize() <= refill_remain_count;
+      is_input_blocked_by_future_refill[i] =
+          is_refill_next_valid && input_bid[i] == refill_bid_next &&
+          input_meta[i].GetFreeSize() <= kChunkSize;
+      is_input_blocked_by_bank_conflict[i] =
+          can_recv_refill &&
+          input_bid[i] % kBucketPartFac == refill_bid % kBucketPartFac;
 
-        // if chunk is refilling, available space must be greater than #tasks to
-        // refill, and
-        !is_input_blocked_by_current_refill &&
+      // Read input task and push into chunk buffer if
+      can_enqueue[i] =
+          // there is an input task, and
+          is_input_valid[i] &&
 
-        // if chunk will refill soon, available space must be greater than
-        // #tasks to refill, and
-        !is_input_blocked_by_future_refill &&
+          // chunk is not already full, and
+          !is_input_blocked_by_full_buffer[i] &&
 
-        // if reading refill data, the input bucket must access a different bank
-        // as the refill bucket.
-        !is_input_blocked_by_bank_conflict;
+          // if chunk is refilling, available space must be greater than #tasks
+          // to refill, and
+          !is_input_blocked_by_current_refill[i] &&
 
-    if (is_input_valid) {
-      is_input_blocked_by_full_buffer && ++enqueue_full_count;
-      is_input_blocked_by_current_refill && ++enqueue_current_refill_count;
-      is_input_blocked_by_future_refill && ++enqueue_future_refill_count;
-      is_input_blocked_by_bank_conflict && ++enqueue_bank_conflict_count;
-    }
+          // if chunk will refill soon, available space must be greater than
+          // #tasks to refill, and
+          !is_input_blocked_by_future_refill[i] &&
+
+          // if reading refill data, the input bucket must access a different
+          // bank as the refill bucket.
+          !is_input_blocked_by_bank_conflict[i];
+
+      if (is_input_valid[i]) {
+        if (is_input_blocked_by_full_buffer[i]) {
+          ++enqueue_full_count[i];
+        }
+        if (is_input_blocked_by_current_refill[i]) {
+          ++enqueue_current_refill_count[i];
+        }
+        if (is_input_blocked_by_future_refill[i]) {
+          ++enqueue_future_refill_count[i];
+        }
+        if (is_input_blocked_by_bank_conflict[i]) {
+          ++enqueue_bank_conflict_count[i];
+        }
+      }
+    });
 
     // Pop from chunk buffer and write spill data if
     const bool can_send_spill =
@@ -1279,10 +1324,14 @@ spin:
         output_meta.GetSize() / kPosPartFac <=
             task_to_spill_count / kPosPartFac;
 
+    bool is_output_bid_same_as_input = false;
+    RANGE(i, kCgpqPushPortCount,
+          is_output_bid_same_as_input |=
+          (can_enqueue[i] && output_bid == input_bid[i]));
     const bool is_output_unaligned = output_meta.GetSize() < kSpilledTaskVecLen;
     const bool is_output_blocked_by_alignment =
         is_output_unaligned && ((can_recv_refill && output_bid == refill_bid) ||
-                                (can_enqueue && output_bid == input_bid));
+                                is_output_bid_same_as_input);
 
     // Pop from highest-priority chunk buffer and write output data if
     const bool can_dequeue =
@@ -1318,6 +1367,11 @@ spin:
         is_heap_available                            // heap is available.
         ;
 
+    bool is_top_bid_same_as_input = false;
+    RANGE(i, kCgpqPushPortCount,
+          is_top_bid_same_as_input |=
+          (can_enqueue[i] && top_bid == input_bid[i]));
+
     // Start refilling a new chunk if
     const bool can_schedule_refill =
         !is_refill_addr_valid &&  // there is no active refilling, and
@@ -1328,9 +1382,9 @@ spin:
         (!is_output_valid ||        // either on-chip chunk is empty, or
          output_bid >= top_bid      // off-chip chunk has higher priority,
          ) &&                       // and
-        chunk_meta[top_bid].IsAlmostEmpty() &&     // chunk is almost empty,
-        !(can_enqueue && top_bid == input_bid) &&  // chunk won't push, and
-        is_heap_available &&                       // heap is available, and
+        chunk_meta[top_bid].IsAlmostEmpty() &&  // chunk is almost empty,
+        !is_top_bid_same_as_input &&            // chunk won't push, and
+        is_heap_available &&                    // heap is available, and
         !can_start_spill  // heap won't be occupied by spilling.
         ;
 
@@ -1348,16 +1402,20 @@ spin:
     {
       ap_uint<kBucketPartFac> is_refill = 0, is_input = 0;
       is_refill.bit(refill_bid % kBucketPartFac) = can_recv_refill;
-      is_input.bit(input_bid % kBucketPartFac) = can_enqueue;
+      RANGE(i, kCgpqPushPortCount,
+            is_input.bit(input_bid[i] % kBucketPartFac) = can_enqueue[i]);
+
       for (int i = 0; i < kBucketPartFac; ++i) {
 #pragma HLS unroll
-        const auto bid = is_refill.bit(i) ? refill_bid : input_bid;
-        const auto pos = is_refill.bit(i) ? refill_meta.GetWritePos()
-                                          : input_meta.GetWritePos();
+        const auto bid =
+            is_refill.bit(i) ? refill_bid : input_bid[i % kCgpqPushPortCount];
+        const auto pos = is_refill.bit(i)
+                             ? refill_meta.GetWritePos()
+                             : input_meta[i % kCgpqPushPortCount].GetWritePos();
 
         auto tasks = refill_task;
         if (is_input.bit(i)) {
-          tasks[pos % kPosPartFac] = input_task;
+          tasks[pos % kPosPartFac] = input_task[i % kCgpqPushPortCount];
         }
 
         ap_uint<kPosPartFac> is_written = is_refill.bit(i) ? -1 : 0;
@@ -1368,6 +1426,13 @@ spin:
             chunk_buf[assert_mod(bid, kBucketPartFac, i)][assume_mod(
                 ChunkMeta::uint_pos_t(pos + (kPosPartFac - 1 - j)), kPosPartFac,
                 j)] = tasks[j];
+
+            VLOG(5) << "chunk_buf[" << assert_mod(bid, kBucketPartFac, i)
+                    << "]["
+                    << assume_mod(
+                           ChunkMeta::uint_pos_t(pos + (kPosPartFac - 1 - j)),
+                           kPosPartFac, j)
+                    << "] <- " << tasks[j];
           }
         });
       }
@@ -1385,14 +1450,21 @@ spin:
       if (refill_remain_count == 0) {
         is_refill_valid = false;
       }
+
+      is_active = true;
     }
 
-    if (can_enqueue) {
-      push_req_q.read(nullptr);
+    RANGE(i, kCgpqPushPortCount, {
+      if (can_enqueue[i]) {
+        push_req_q[i].read(nullptr);
 
-      VLOG(5) << "enqueue " << push_req.task << " to bucket " << input_bid
-              << " (which already has " << input_meta.GetSize() << " tasks)";
-    }
+        VLOG(5) << "enqueue " << input_task[i] << " to bucket " << input_bid[i]
+                << " (which has " << input_meta[i].GetSize()
+                << " tasks before)";
+
+        is_active = true;
+      }
+    });
 
     if (can_send_spill) {
       CHECK_GE(chunk_meta[spill_bid].GetSize(),  // Available tasks.
@@ -1407,6 +1479,8 @@ spin:
         is_spill_valid = false;
         task_to_spill_count = kChunkSize;
       }
+
+      is_active = true;
     }
 
     if (can_dequeue) {
@@ -1418,8 +1492,10 @@ spin:
       for (int i = 0; i < kSpilledTaskVecLen; ++i) {
         VLOG_IF(5, i < output_meta.GetSize())
             << "dequeue " << output_task[i] << " from bucket " << output_bid
-            << " (which has " << output_meta.GetSize() << " tasks)";
+            << " (which has " << output_meta.GetSize() << " tasks before)";
       }
+
+      is_active = true;
     }
 
     {
@@ -1427,7 +1503,7 @@ spin:
       is_refill.bit(refill_bid) = can_recv_refill;
 
       ap_uint<kBucketCount> is_input = 0;
-      is_input.bit(input_bid) = can_enqueue;
+      RANGE(i, kCgpqPushPortCount, is_input.bit(input_bid[i]) = can_enqueue[i]);
 
       ap_uint<kBucketCount> is_align = 0;
       is_align.bit(output_bid) = can_dequeue && is_output_unaligned;
@@ -1477,6 +1553,8 @@ spin:
       VLOG(5) << "start spilling bucket " << spill_bid << " to ["
               << spill_addr_req
               << "], current buffer size: " << full_meta.GetSize();
+
+      is_active = true;
     }
 
     if (can_schedule_refill) {
@@ -1495,6 +1573,8 @@ spin:
       VLOG(5) << "schedule refilling bucket " << refill_bid_next << " from "
               << refill_addr
               << ", current buffer size: " << chunk_meta[top_bid].GetSize();
+
+      is_active = true;
     }
 
     if (is_heap_requested) {
@@ -1502,6 +1582,8 @@ spin:
       CHECK(!heap_req_q.full());
       heap_req_q.try_write(heap_req);
       is_heap_available = false;
+
+      is_active = true;
     }
 
     if (can_send_refill) {
@@ -1512,11 +1594,15 @@ spin:
       if (refill_addr % kVecCountPerChunk == 0) {
         is_refill_addr_valid = false;
       }
+
+      is_active = true;
     }
 
     if (!mem_write_resp_q.empty()) {
       mem_write_resp_q.read(nullptr);
       ++spill_addr_resp;
+
+      is_active = true;
     }
 
     if (!is_refill_valid) {
@@ -1530,14 +1616,19 @@ spin:
       CHECK(!is_heap_available);
       heap_root = heap_resp_q.read(nullptr);
       is_heap_available = true;
+
+      is_active = true;
     }
 
     if (is_started) {
       ++cycle_count;
     }
-    if (can_enqueue) {
+
+    if (any_of(can_enqueue)) {
       is_started = true;
     }
+
+    VLOG_IF(5, is_active);
   }
 
   done_q.read(nullptr);
@@ -1545,10 +1636,12 @@ spin:
   stat_q.write(spill_addr_req / kVecCountPerChunk);
   stat_q.write(max_heap_size);
   stat_q.write(cycle_count);
-  stat_q.write(enqueue_full_count);
-  stat_q.write(enqueue_current_refill_count);
-  stat_q.write(enqueue_future_refill_count);
-  stat_q.write(enqueue_bank_conflict_count);
+  RANGE(i, kCgpqPushPortCount, {
+    stat_q.write(enqueue_full_count[i]);
+    stat_q.write(enqueue_current_refill_count[i]);
+    stat_q.write(enqueue_future_refill_count[i]);
+    stat_q.write(enqueue_bank_conflict_count[i]);
+  });
   stat_q.write(dequeue_full_count);
   stat_q.write(dequeue_spilling_count);
   stat_q.write(dequeue_bank_conflict_count);
@@ -1610,13 +1703,15 @@ void TaskQueue(
   stream<CgpqHeapReq> heap_req_q;
   stream<cgpq::ChunkRef> heap_resp_q;
   streams<bool, 2> done_qi;
+  streams<PushReq, kCgpqPushPortCount> VAR(push_req_qii);
 
   task()
       .invoke<detach>(DuplicateDone, done_q, done_qi)
       .invoke<join>(CgpqBucketGen, min_distance, max_distance, done_qi[0],
                     push_req_q, push_req_qi)
+      .invoke<detach>(CgpqBucketArbiter, push_req_qi, push_req_qii)
       .invoke<detach>(CgpqHeap, heap_req_q, heap_resp_q)
-      .invoke<detach>(CgpqCore, done_qi[1], stat_q, qid, push_req_qi, noop_q,
+      .invoke<detach>(CgpqCore, done_qi[1], stat_q, qid, push_req_qii, noop_q,
                       pop_q0, pop_q1, pop_q2, pop_q3, heap_req_q, heap_resp_q,
                       cgpq_spill_read_addr_q, cgpq_spill_read_data_q,
                       cgpq_spill_write_req_q, cgpq_spill_write_resp_q);

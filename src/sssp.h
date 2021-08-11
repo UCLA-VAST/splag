@@ -202,7 +202,8 @@ constexpr int kPiHeapStatTaskCount =
     sizeof(kPiHeapStatCount) / sizeof(kPiHeapStatCount[0]);
 
 #ifdef TAPA_SSSP_COARSE_PRIORITY
-constexpr int kQueueStatCount = 11;
+constexpr int kCgpqPushPortCount = 2;
+constexpr int kQueueStatCount = 7 + 4 * kCgpqPushPortCount;
 #else   // TAPA_SSSP_COARSE_PRIORITY
 constexpr int kQueueStatCount = kPiHeapStatTotalCount;
 #endif  // TAPA_SSSP_COARSE_PRIORITY

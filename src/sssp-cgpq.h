@@ -242,6 +242,12 @@ struct Arbiter<begin, 1> {
           chunk_buf[assume_mod(bid, kBucketPartFac, begin)][assume_mod(
               ChunkMeta::uint_pos_t(pos + (kPosPartFac - 1 - j)), kPosPartFac,
               j)];
+
+      VLOG_IF(5, is_spill_written || is_output_written)
+          << "chunk_buf[" << assert_mod(bid, kBucketPartFac, begin) << "]["
+          << assume_mod(ChunkMeta::uint_pos_t(pos + (kPosPartFac - 1 - j)),
+                        kPosPartFac, j)
+          << "] -> " << spill_task[j];
     });
   }
 };
