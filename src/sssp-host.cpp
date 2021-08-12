@@ -126,7 +126,8 @@ vector<int64_t> SampleVertices(const vector<int64_t>& degree_no_self_loop) {
 // degrees of the coarsened graph for sampling vertices.
 deque<std::pair<Vid, unordered_map<Vid, float>>> Coarsen(
     vector<unordered_map<Vid, float>> indexed_weights, const int64_t edge_count,
-    vector<int64_t>& degrees, array<aligned_vector<Edge>, kShardCount>& edges) {
+    vector<int64_t>& degrees, array<aligned_vector<Edge>, kShardCount>& edges,
+    vector<Index>& indices) {
   const int64_t vertex_count = degrees.size();
   CHECK_EQ(vertex_count, indexed_weights.size());
   unordered_map<int64_t, unordered_set<Vid>> degree_map;
@@ -229,18 +230,16 @@ deque<std::pair<Vid, unordered_map<Vid, float>>> Coarsen(
       << 100. * std::abs(edge_count_delta) / edge_count << "% of " << edge_count
       << ") edges";
 
-  const int64_t vertex_count_per_edge_partition =
-      tapa::round_up_div<kShardCount>(vertex_count);
   array<Eid, kShardCount> offset;
   for (int i = 0; i < kShardCount; ++i) {
-    edges[i].resize(vertex_count_per_edge_partition);
-    offset[i] = vertex_count_per_edge_partition;
+    offset[i] = tapa::round_up_div<kShardCount>(vertex_count);
   }
+
+  indices.resize(vertex_count);
   for (Vid vid = 0; vid < vertex_count; ++vid) {
     const Vid count = degrees[vid];
     const auto sid = vid % kShardCount;
-    edges[sid][vid / kShardCount] =
-        bit_cast<Edge>(Index{.offset = offset[sid], .count = count});
+    indices[vid] = {.offset = offset[sid], .count = count};
     offset[sid] += count;
   }
 
@@ -251,7 +250,7 @@ deque<std::pair<Vid, unordered_map<Vid, float>>> Coarsen(
       Vid v1 = k;
       for (auto [src, dst] : {std::tie(v0, v1), std::tie(v1, v0)}) {
         const auto src_sid = src % kShardCount;
-        const auto index = bit_cast<Index>(edges[src_sid][src / kShardCount]);
+        const auto index = indices[src];
         edges[src_sid][index.offset + vertex_counts[src]] = {
             .dst = Vid(dst),
             .weight = weight,
@@ -262,9 +261,7 @@ deque<std::pair<Vid, unordered_map<Vid, float>>> Coarsen(
   }
 
   for (Vid vid = 0; vid < vertex_count; ++vid) {
-    CHECK_EQ(
-        vertex_counts[vid],
-        bit_cast<Index>(edges[vid % kShardCount][vid / kShardCount]).count);
+    CHECK_EQ(vertex_counts[vid], indices[vid].count);
   }
 
   return coarsen_records;
@@ -401,14 +398,15 @@ int main(int argc, char* argv[]) {
 
   // Allocate and fill edges for the kernel.
   array<aligned_vector<Edge>, kShardCount> edges;
+  vector<Index> indices;
   const auto coarsen_records =
-      Coarsen(indexed_weights, edge_count, degree_no_self_loop, edges);
+      Coarsen(indexed_weights, edge_count, degree_no_self_loop, edges, indices);
 
   if (FLAGS_sort || FLAGS_shuffle) {
     for (auto& shard : edges) {
       for (Vid vid = 0; vid < tapa::round_up_div<kShardCount>(vertex_count);
            ++vid) {
-        const auto index = bit_cast<Index>(shard[vid]);
+        const auto index = indices[vid];
         const auto first = shard.begin() + index.offset;
         const auto last = first + index.count;
         if (FLAGS_sort) {
@@ -488,8 +486,7 @@ int main(int argc, char* argv[]) {
     vertices[root % kIntervalCount][root / kIntervalCount] = {
         .parent = Vid(root), .distance = 0.f};
     for (int64_t vid = 0; vid < vertex_count; ++vid) {
-      const auto index =
-          bit_cast<Index>(edges[vid % kShardCount][vid / kShardCount]);
+      const auto index = indices[vid];
       auto& vertex = vertices[vid % kIntervalCount][vid / kIntervalCount];
       vertex.offset = index.offset;
       vertex.degree = index.count;
