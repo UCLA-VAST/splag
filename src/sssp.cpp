@@ -14,6 +14,7 @@
 #include "sssp-piheap.h"
 #include "sssp.h"
 
+using tapa::async_mmap;
 using tapa::detach;
 using tapa::istream;
 using tapa::istreams;
@@ -1830,10 +1831,10 @@ void TaskQueue(
 #endif  // TAPA_SSSP_COARSE_PRIORITY
 }
 
-#if TAPA_SSSP_SHARD_COUNT >= 2
+#if TAPA_SSSP_SWITCH_PORT_COUNT >= 2
 void Switch(
     //
-    ap_uint<log2(kShardCount)> b,
+    ap_uint<log2(kShardCount) + log2(kEdgeVecLen)> b,
     //
     istream<bool>& done_q, ostream<int64_t>& stat_q,
     //
@@ -1923,7 +1924,7 @@ spin:
   stat_q.write(conflict_0_cycle_count);
   stat_q.write(conflict_1_cycle_count);
 }
-#endif  // TAPA_SSSP_SHARD_COUNT
+#endif  // TAPA_SSSP_SWITCH_PORT_COUNT
 
 void EdgeReqArbiter(tapa::istreams<EdgeReq, kPeCount>& req_q,
                     tapa::ostreams<SourceVertex, kShardCount>& src_q,
@@ -1954,14 +1955,14 @@ const int kSwitchOutputCount = kSubIntervalCount;
 #endif  // TAPA_SSSP_IMMEDIATE_RELAX
 
 void SwitchOutputArbiter(
-    tapa::istreams<TaskOnChip, kShardCount>& in_q,
+    tapa::istreams<TaskOnChip, kShardCount * kEdgeVecLen>& in_q,
     tapa::ostreams<TaskOnChip, kSwitchOutputCount>& out_q) {
   TaskArbiterTemplate(in_q, out_q);
 }
 
 void EdgeMem(istream<bool>& done_q, ostream<int64_t>& stat_q,
-             tapa::istream<Vid>& read_addr_q, tapa::ostream<Edge>& read_data_q,
-             tapa::async_mmap<Edge> mem) {
+             istream<Vid>& read_addr_q, ostream<EdgeVec>& read_data_q,
+             async_mmap<EdgeVec> mem) {
   int64_t total_cycle_count = 0;
   int64_t active_cycle_count = 0;
   int64_t mem_stall_cycle_count = 0;
@@ -2009,8 +2010,8 @@ spin:
     if (i == 0 && !task_in_q.empty()) {
       const auto task = task_in_q.read(nullptr);
       req = {task.vertex().offset, {task.vid(), task.vertex().distance}};
-      i = task.vertex().degree;
-      task_count_q.write(i);
+      task_count_q.write(task.vertex().degree);
+      i = tapa::round_up_div<kEdgeVecLen>(task.vertex().degree);
     }
 
     if (i > 0) {
@@ -2025,18 +2026,39 @@ spin:
   }
 }
 
-void ProcElemS1(istream<SourceVertex>& src_in_q,
-                istream<Edge>& edges_read_data_q,
-                ostream<TaskOnChip>& update_out_q) {
+void DistGen(istream<SourceVertex>& src_in_q,
+             istream<EdgeVec>& edges_read_data_q,
+             ostream<TaskVec>& update_out_q) {
 spin:
   for (;;) {
 #pragma HLS pipeline II = 1
     if (!src_in_q.empty() && !edges_read_data_q.empty()) {
       const auto src = src_in_q.read(nullptr);
-      const auto edge = edges_read_data_q.read(nullptr);
-      update_out_q.write(Task{
-          .vid = edge.dst,
-          .vertex = {src.parent, src.distance + edge.weight},
+      const auto edge_v = edges_read_data_q.read(nullptr);
+      TaskVec task_v;
+      RANGE(i, kEdgeVecLen, {
+        task_v[i] = Task{
+            .vid = edge_v[i].dst,
+            .vertex = {src.parent, src.distance + edge_v[i].weight},
+        };
+      });
+      update_out_q.write(task_v);
+    }
+  }
+}
+
+void TaskAdapter(istream<TaskVec>& in_q,
+                 ostreams<TaskOnChip, kEdgeVecLen>& out_q) {
+spin:
+  for (;;) {
+#pragma HLS pipeline II = 1
+    if (!in_q.empty()) {
+      const auto task_v = in_q.read(nullptr);
+      RANGE(i, kEdgeVecLen, {
+        if (bit_cast<uint32_t>(task_v[i].vertex().distance) !=
+            bit_cast<uint32_t>(kInfDistance)) {
+          out_q[i].write(task_v[i]);
+        }
       });
     }
   }
@@ -2509,10 +2531,10 @@ void Dispatcher(
     istreams<int64_t, kShardCount>& edge_stat_q,
     ostreams<bool, kQueueCount>& queue_done_q,
     istreams<PiHeapStat, kQueueCount>& queue_stat_q,
-#if TAPA_SSSP_SHARD_COUNT > 1
+#if TAPA_SSSP_SWITCH_PORT_COUNT > 1
     ostreams<bool, kSwitchCount>& switch_done_q,
     istreams<int64_t, kSwitchCount>& switch_stat_q,
-#endif  // TAPA_SSSP_SHARD_COUNT
+#endif  // TAPA_SSSP_SWITCH_PORT_COUNT
     // Task initialization.
     ostream<TaskOnChip>& task_init_q,
     // Task stats of PEs.
@@ -2573,9 +2595,9 @@ spin:
   RANGE(iid, kSubIntervalCount, vertex_cache_done_q[iid].write(false));
   RANGE(sid, kShardCount, edge_done_q[sid].write(false));
   RANGE(qid, kQueueCount, queue_done_q[qid].write(false));
-#if TAPA_SSSP_SHARD_COUNT > 1
+#if TAPA_SSSP_SWITCH_PORT_COUNT > 1
   RANGE(swid, kSwitchCount, switch_done_q[swid].write(false));
-#endif  // TAPA_SSSP_SHARD_COUNT
+#endif  // TAPA_SSSP_SWITCH_PORT_COUNT
   task_init_q.close();
 
   metadata[0] = visited_edge_count;
@@ -2611,7 +2633,7 @@ queue_stat:
     }
   }
 
-#if TAPA_SSSP_SHARD_COUNT > 1
+#if TAPA_SSSP_SWITCH_PORT_COUNT > 1
 switch_stat:
   for (int i = 0; i < kSwitchCount; ++i) {
     for (int j = 0; j < kSwitchStatCount; ++j) {
@@ -2622,7 +2644,7 @@ switch_stat:
           switch_stat_q[i].read();
     }
   }
-#endif  // TAPA_SSSP_SHARD_COUNT
+#endif  // TAPA_SSSP_SWITCH_PORT_COUNT
 
 task_stat:
   for (ap_uint<bit_length(kPeCount)> peid = 0; peid < kPeCount; ++peid) {
@@ -2635,7 +2657,7 @@ task_stat:
 }
 
 void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
-          tapa::mmaps<Edge, kShardCount> edges,
+          tapa::mmaps<EdgeVec, kShardCount> edges,
           tapa::mmaps<Vertex, kIntervalCount> vertices,
 // For queues.
 #ifdef TAPA_SSSP_COARSE_PRIORITY
@@ -2680,19 +2702,21 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
 
   // For edges.
   streams<Vid, kShardCount, 2> edge_read_addr_q("edge_read_addr");
-  streams<Edge, kShardCount, 2> edge_read_data_q("edge_read_data");
+  streams<EdgeVec, kShardCount, 2> VAR(edge_read_data_q);
   streams<EdgeReq, kPeCount, kPeCount / kShardCount * 8> edge_req_q("edge_req");
   streams<SourceVertex, kShardCount, 64> src_q("source_vertices");
 
+  streams<TaskVec, kShardCount, 2> VAR(xbar_qv);
+
   // For vertices.
   // Route updates via a kShardCount x kShardCount network.
-  streams<TaskOnChip, kShardCount, 32> xbar_q0;
-#if TAPA_SSSP_SHARD_COUNT >= 2
-  streams<TaskOnChip, kShardCount, 32> xbar_q1;
-#endif  // TAPA_SSSP_SHARD_COUNT
-#if TAPA_SSSP_SHARD_COUNT >= 4
-  streams<TaskOnChip, kShardCount, 32> xbar_q2;
-#endif  // TAPA_SSSP_SHARD_COUNT
+  streams<TaskOnChip, kShardCount * kEdgeVecLen, 32> xbar_q0;
+#if TAPA_SSSP_SWITCH_PORT_COUNT >= 2
+  streams<TaskOnChip, kShardCount * kEdgeVecLen, 32> xbar_q1;
+#endif  // TAPA_SSSP_SWITCH_PORT_COUNT
+#if TAPA_SSSP_SWITCH_PORT_COUNT >= 4
+  streams<TaskOnChip, kShardCount * kEdgeVecLen, 32> xbar_q2;
+#endif  // TAPA_SSSP_SWITCH_PORT_COUNT
 
   streams<TaskOnChip, kSubIntervalCount, 32> vertex_in_q0;
   streams<TaskOnChip, kSubIntervalCount, 32> vertex_in_q1;
@@ -2728,9 +2752,9 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
       .invoke(
           Dispatcher, root, metadata, vertex_cache_done_q, vertex_cache_stat_q,
           edge_done_q, edge_stat_q, queue_done_q, queue_stat_q,
-#if TAPA_SSSP_SHARD_COUNT > 1
+#if TAPA_SSSP_SWITCH_PORT_COUNT > 1
           switch_done_q, switch_stat_q,
-#endif  // TAPA_SSSP_SHARD_COUNT
+#endif  // TAPA_SSSP_SWITCH_PORT_COUNT
           task_init_q, task_stat_q, vertex_noop_q, queue_noop_q, task_count_q)
 #ifdef TAPA_SSSP_IMMEDIATE_RELAX
       .invoke<detach>(TaskArbiter, task_init_q, task_stat_q, vertex_out_q,
@@ -2794,27 +2818,27 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   // For vertices.
   // Route updates via a kShardCount x kShardCount network.
   // clang-format off
-#if TAPA_SSSP_SHARD_COUNT >= 2
+#if TAPA_SSSP_SWITCH_PORT_COUNT >= 2
       .invoke<join>(Switch, 0, switch_done_q[0], switch_stat_q[0], xbar_q0[0], xbar_q0[1], xbar_q1[0], xbar_q1[1])
-#endif // TAPA_SSSP_SHARD_COUNT
-#if TAPA_SSSP_SHARD_COUNT >= 4
+#endif // TAPA_SSSP_SWITCH_PORT_COUNT
+#if TAPA_SSSP_SWITCH_PORT_COUNT >= 4
       .invoke<join>(Switch, 0, switch_done_q[1], switch_stat_q[1], xbar_q0[2], xbar_q0[3], xbar_q1[2], xbar_q1[3])
       .invoke<join>(Switch, 1, switch_done_q[2], switch_stat_q[2], xbar_q1[0], xbar_q1[2], xbar_q2[0], xbar_q2[2])
       .invoke<join>(Switch, 1, switch_done_q[3], switch_stat_q[3], xbar_q1[1], xbar_q1[3], xbar_q2[1], xbar_q2[3])
-#endif // TAPA_SSSP_SHARD_COUNT
+#endif // TAPA_SSSP_SWITCH_PORT_COUNT
       // clang-format on
 
       // Distribute updates amount sub-intervals.
       .invoke<detach>(SwitchOutputArbiter,
-#if TAPA_SSSP_SHARD_COUNT == 1
+#if TAPA_SSSP_SWITCH_PORT_COUNT == 1
                       xbar_q0
-#elif TAPA_SSSP_SHARD_COUNT == 2
+#elif TAPA_SSSP_SWITCH_PORT_COUNT == 2
                       xbar_q1
-#elif TAPA_SSSP_SHARD_COUNT == 4
+#elif TAPA_SSSP_SWITCH_PORT_COUNT == 4
                       xbar_q2
-#else  // TAPA_SSSP_SHARD_COUNT
-#error "invalid TAPA_SSSP_SHARD_COUNT"
-#endif  // TAPA_SSSP_SHARD_COUNT
+#else  // TAPA_SSSP_SWITCH_PORT_COUNT
+#error "invalid TAPA_SSSP_SWITCH_PORT_COUNT"
+#endif  // TAPA_SSSP_SWITCH_PORT_COUNT
                       ,
 #ifdef TAPA_SSSP_IMMEDIATE_RELAX
                       queue_push_q)
@@ -2836,6 +2860,6 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
       .invoke<detach, kPeCount>(ProcElemS0, task_req_qi, task_resp_qi,
                                 task_count_qi, edge_req_q)
       .invoke<detach>(TaskCountMerger, task_count_qi, task_count_q)
-      .invoke<detach, kShardCount>(ProcElemS1, src_q, edge_read_data_q,
-                                   xbar_q0);
+      .invoke<detach, kShardCount>(DistGen, src_q, edge_read_data_q, xbar_qv)
+      .invoke<detach, kShardCount>(TaskAdapter, xbar_qv, xbar_q0);
 }

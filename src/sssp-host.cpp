@@ -306,7 +306,7 @@ void Refine(
 }
 
 void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
-          tapa::mmaps<Edge, kShardCount> edges,
+          tapa::mmaps<EdgeVec, kShardCount> edges,
           tapa::mmaps<Vertex, kIntervalCount> vertices,
 #ifdef TAPA_SSSP_COARSE_PRIORITY
           float min_distance, float max_distance,
@@ -494,9 +494,10 @@ int main(int argc, char* argv[]) {
         .parent = Vid(root), .distance = 0.f};
     for (int64_t vid = 0; vid < vertex_count; ++vid) {
       const auto index = indices[vid];
+      CHECK_EQ(index.offset % kEdgeVecLen, 0) << "edges should be aligned";
       auto& vertex = vertices[vid % kIntervalCount][vid / kIntervalCount];
-      vertex.offset = index.offset;
-      vertex.degree = index.count;
+      vertex.offset = index.offset / kEdgeVecLen;
+      vertex.degree = index.count;  // Needed to keep track of #task.
     }
 
     float root_min_distance = std::numeric_limits<float>::max();
@@ -520,7 +521,8 @@ int main(int argc, char* argv[]) {
                     vertices[root % kIntervalCount][root / kIntervalCount],
             },
             tapa::write_only_mmap<int64_t>(metadata),
-            tapa::read_only_mmaps<Edge, kShardCount>(edges),
+            tapa::read_only_mmaps<Edge, kShardCount>(edges)
+                .vectorized<kEdgeVecLen>(),
             tapa::read_write_mmaps<Vertex, kIntervalCount>(vertices),
 #ifdef TAPA_SSSP_COARSE_PRIORITY
             root_min_distance, root_min_distance + 0.5f,

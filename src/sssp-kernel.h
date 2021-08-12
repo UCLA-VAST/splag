@@ -25,9 +25,7 @@ struct SourceVertex {
 
 using EdgeReq = tapa::packet<Eid, SourceVertex>;
 
-using TaskReq = tapa::packet<uint_pe_qid_t, TaskOnChip>;
-
-using TaskResp = tapa::packet<uint_pe_qid_t, Vid>;
+using TaskVec = tapa::vec_t<TaskOnChip, kEdgeVecLen>;
 
 struct TaskCount {
   ap_uint<bit_length(kPeCount)> old_task_count;

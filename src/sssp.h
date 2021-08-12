@@ -427,7 +427,19 @@ static_assert(
     kPeCount % kShardCount == 0,
     "current implementation assumes PE count is a multiple of shard count");
 
-constexpr int kSwitchCount = kShardCount / 2 * log2(kShardCount);
+#ifndef TAPA_SSSP_EDGE_VEC_LEN
+#define TAPA_SSSP_EDGE_VEC_LEN 2
+#endif
+
+#define TAPA_SSSP_SWITCH_PORT_COUNT \
+  (TAPA_SSSP_SHARD_COUNT * TAPA_SSSP_EDGE_VEC_LEN)
+
+constexpr int kEdgeVecLen = TAPA_SSSP_EDGE_VEC_LEN;
+
+using EdgeVec = tapa::vec_t<Edge, kEdgeVecLen>;
+
+constexpr int kSwitchCount =
+    kShardCount * kEdgeVecLen / 2 * log2(kShardCount * kEdgeVecLen);
 constexpr int kSwitchStatCount = 5;
 
 constexpr int kIntervalCount = 4;  // #vertex partitions.
@@ -440,8 +452,6 @@ constexpr int kHeapOffChipWidth = 16;  // #children per off-heap element.
 constexpr int kSpilledTaskVecLen = 4;  // = 512 bit / 128 bit.
 
 using SpilledTask = std::array<TaskOnChip, kSpilledTaskVecLen>;
-
-constexpr int kEdgeVecLen = 2;
 
 constexpr int kCgpqChunkSize = 1024;
 
