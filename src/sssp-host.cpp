@@ -501,9 +501,9 @@ int main(int argc, char* argv[]) {
 
     float root_min_distance = std::numeric_limits<float>::max();
     float root_max_distance = std::numeric_limits<float>::min();
-    const auto& vertex = vertices[root % kIntervalCount][root / kIntervalCount];
-    for (int64_t i = vertex.offset; i < vertex.offset + vertex.degree; ++i) {
-      const auto edge = edges[root % kShardCount][i];
+    const auto& root_index = indices[root];
+    for (int64_t i = 0; i < root_index.count; ++i) {
+      const auto edge = edges[root % kShardCount][root_index.offset + i];
       root_min_distance = std::min(float(root_min_distance), edge.weight);
       root_max_distance = std::max(float(root_max_distance), edge.weight);
     }
