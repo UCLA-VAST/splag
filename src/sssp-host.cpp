@@ -230,17 +230,13 @@ deque<std::pair<Vid, unordered_map<Vid, float>>> Coarsen(
       << 100. * std::abs(edge_count_delta) / edge_count << "% of " << edge_count
       << ") edges";
 
-  array<Eid, kShardCount> offset;
-  for (int i = 0; i < kShardCount; ++i) {
-    offset[i] = tapa::round_up_div<kShardCount>(vertex_count);
-  }
-
+  array<Eid, kShardCount> offset = {};
   indices.resize(vertex_count);
   for (Vid vid = 0; vid < vertex_count; ++vid) {
     const Vid count = degrees[vid];
     const auto sid = vid % kShardCount;
     indices[vid] = {.offset = offset[sid], .count = count};
-    offset[sid] += count;
+    offset[sid] += tapa::round_up<kEdgeVecLen>(count);
   }
 
   for (int i = 0; i < kShardCount; ++i) edges[i].resize(offset[i]);
@@ -261,7 +257,18 @@ deque<std::pair<Vid, unordered_map<Vid, float>>> Coarsen(
   }
 
   for (Vid vid = 0; vid < vertex_count; ++vid) {
-    CHECK_EQ(vertex_counts[vid], indices[vid].count);
+    const auto& index = indices[vid];
+    CHECK_EQ(vertex_counts[vid], index.count);
+    CHECK_EQ(index.offset % kEdgeVecLen, 0);
+
+    // Fill in null edges.
+    for (int64_t i = index.count; i < tapa::round_up<kEdgeVecLen>(index.count);
+         ++i) {
+      edges[vid % kShardCount][index.offset + i] = {
+          .dst = kNullVid,
+          .weight = kInfDistance,
+      };
+    }
   }
 
   return coarsen_records;

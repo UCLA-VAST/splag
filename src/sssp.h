@@ -441,6 +441,8 @@ constexpr int kSpilledTaskVecLen = 4;  // = 512 bit / 128 bit.
 
 using SpilledTask = std::array<TaskOnChip, kSpilledTaskVecLen>;
 
+constexpr int kEdgeVecLen = 2;
+
 constexpr int kCgpqChunkSize = 1024;
 
 constexpr int kCgpqLevel = 15;
