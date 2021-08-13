@@ -1699,11 +1699,11 @@ void TaskQueue(
 #endif  // TAPA_SSSP_COARSE_PRIORITY
 ) {
 #ifdef TAPA_SSSP_COARSE_PRIORITY
-  stream<PushReq> push_req_qi;
-  stream<CgpqHeapReq> heap_req_q;
-  stream<cgpq::ChunkRef> heap_resp_q;
-  streams<bool, 2> done_qi;
-  streams<PushReq, kCgpqPushPortCount> VAR(push_req_qii);
+  stream<PushReq, 2> push_req_qi;
+  stream<CgpqHeapReq, 2> heap_req_q;
+  stream<cgpq::ChunkRef, 2> heap_resp_q;
+  streams<bool, 2, 2> done_qi;
+  streams<PushReq, kCgpqPushPortCount, 2> VAR(push_req_qii);
 
   task()
       .invoke<detach>(DuplicateDone, done_q, done_qi)
@@ -2652,10 +2652,10 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   streams<PiHeapStat, kQueueCount, 2> queue_stat_q;
 
 #ifdef TAPA_SSSP_COARSE_PRIORITY
-  stream<uint_spill_addr_t> cgpq_spill_read_addr_q;
-  stream<SpilledTask> cgpq_spill_read_data_q;
-  stream<packet<uint_spill_addr_t, SpilledTask>> cgpq_spill_write_req_q;
-  stream<bool> cgpq_spill_write_resp_q;
+  stream<uint_spill_addr_t, 2> cgpq_spill_read_addr_q;
+  stream<SpilledTask, 2> cgpq_spill_read_data_q;
+  stream<packet<uint_spill_addr_t, SpilledTask>, 2> cgpq_spill_write_req_q;
+  stream<bool, 2> cgpq_spill_write_resp_q;
 #else   // TAPA_SSSP_COARSE_PRIORITY
   streams<Vid, kQueueCount, 2> piheap_array_read_addr_q;
   streams<HeapElemPacked, kQueueCount, 2> piheap_array_read_data_q;
