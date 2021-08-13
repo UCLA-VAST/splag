@@ -416,7 +416,7 @@ inline std::ostream& operator<<(std::ostream& os, const HeapIndexEntry& obj) {
 }
 
 // Platform-specific constants and types.
-constexpr int kPeCount = 4;
+constexpr int kPeCount = 8;
 
 #ifndef TAPA_SSSP_SHARD_COUNT
 #define TAPA_SSSP_SHARD_COUNT 1
@@ -430,7 +430,7 @@ static_assert(
 constexpr int kSwitchCount = kShardCount / 2 * log2(kShardCount);
 constexpr int kSwitchStatCount = 5;
 
-constexpr int kIntervalCount = 1;  // #vertex partitions.
+constexpr int kIntervalCount = 4;  // #vertex partitions.
 constexpr int kSubIntervalCount = kIntervalCount * 1;
 
 constexpr int kHeapOnChipWidth = 8;  // #children per on-heap element.
