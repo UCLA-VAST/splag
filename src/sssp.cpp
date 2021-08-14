@@ -2746,7 +2746,7 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
 // For queues.
 #ifdef TAPA_SSSP_COARSE_PRIORITY
           float min_distance, float max_distance,
-          tapa::mmap<SpilledTask> cgpq_spill
+          tapa::mmaps<SpilledTask, kQueueCount> cgpq_spill
 #else   // TAPA_SSSP_COARSE_PRIORITY
           tapa::mmap<HeapElemPacked> heap_array,
           tapa::mmap<HeapIndexEntry> heap_index
@@ -2757,10 +2757,11 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   streams<PiHeapStat, kQueueCount, 2> queue_stat_q;
 
 #ifdef TAPA_SSSP_COARSE_PRIORITY
-  stream<uint_spill_addr_t, 2> cgpq_spill_read_addr_q;
-  stream<SpilledTask, 2> cgpq_spill_read_data_q;
-  stream<packet<uint_spill_addr_t, SpilledTask>, 2> cgpq_spill_write_req_q;
-  stream<bool, 2> cgpq_spill_write_resp_q;
+  streams<uint_spill_addr_t, kQueueCount, 2> VAR(cgpq_spill_read_addr_q);
+  streams<SpilledTask, kQueueCount, 2> VAR(cgpq_spill_read_data_q);
+  streams<packet<uint_spill_addr_t, SpilledTask>, kQueueCount, 2> VAR(
+      cgpq_spill_write_req_q);
+  streams<bool, kQueueCount, 2> VAR(cgpq_spill_write_resp_q);
 #else   // TAPA_SSSP_COARSE_PRIORITY
   streams<Vid, kQueueCount, 2> piheap_array_read_addr_q;
   streams<HeapElemPacked, kQueueCount, 2> piheap_array_read_data_q;

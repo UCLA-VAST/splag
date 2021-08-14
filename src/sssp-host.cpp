@@ -310,7 +310,7 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
           tapa::mmaps<Vertex, kIntervalCount> vertices,
 #ifdef TAPA_SSSP_COARSE_PRIORITY
           float min_distance, float max_distance,
-          tapa::mmap<SpilledTask> cgpq_spill
+          tapa::mmaps<SpilledTask, kQueueCount> cgpq_spill
 #else   // TAPA_SSSP_COARSE_PRIORITY
           tapa::mmap<HeapElemPacked> heap_array,
           tapa::mmap<HeapIndexEntry> heap_index
@@ -435,7 +435,10 @@ int main(int argc, char* argv[]) {
   for (auto& interval : vertices) {
     interval.resize(tapa::round_up_div<kIntervalCount>(vertex_count));
   }
-  aligned_vector<SpilledTask> cgpq_spill(1 << uint_spill_addr_t::width);
+  array<aligned_vector<SpilledTask>, kQueueCount> cgpq_spill;
+  for (auto& spill : cgpq_spill) {
+    spill.resize(1 << uint_spill_addr_t::width);
+  }
   aligned_vector<HeapElemPacked> heap_array(
       GetAddrOfOffChipHeapElem(kLevelCount - 1,
                                GetCapOfLevel(kLevelCount - 1) - 1,
@@ -526,7 +529,7 @@ int main(int argc, char* argv[]) {
             tapa::read_write_mmaps<Vertex, kIntervalCount>(vertices),
 #ifdef TAPA_SSSP_COARSE_PRIORITY
             root_min_distance, root_min_distance + 0.5f,
-            tapa::placeholder_mmap<SpilledTask>(cgpq_spill)
+            tapa::placeholder_mmaps<SpilledTask, kQueueCount>(cgpq_spill)
 #else   // TAPA_SSSP_COARSE_PRIORITY
             tapa::read_only_mmap<HeapElemPacked>(heap_array),
             tapa::read_only_mmap<HeapIndexEntry>(heap_index)
@@ -675,7 +678,7 @@ int main(int argc, char* argv[]) {
       const auto cycle_count = *(metadata_it++);
       VLOG(3) << "    spill count  : " << setfill(' ') << setw(10)
               << spill_count << " / "
-              << cgpq_spill.size() / (kCgpqChunkSize / kSpilledTaskVecLen);
+              << cgpq_spill[qid].size() / (kCgpqChunkSize / kSpilledTaskVecLen);
       VLOG(3) << "    max heap size: " << setfill(' ') << setw(10)
               << max_heap_size << " / " << kCgpqCapacity;
       auto vlog = [&](const std::string& msg, int64_t var) {
