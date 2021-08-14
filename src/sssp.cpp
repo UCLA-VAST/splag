@@ -30,10 +30,6 @@ using tapa::task;
 
 using cgpq::PushReq;
 
-static_assert(kQueueCount % kShardCount == 0,
-              "current implementation requires that queue count is a multiple "
-              "of shard count");
-
 // Verbosity definitions:
 //   v=5: O(1)
 //   v=8: O(#vertex)
@@ -1765,6 +1761,9 @@ void TaskQueue(
 #if TAPA_SSSP_CGPQ_PUSH_COUNT >= 2
   streams<PushReq, kCgpqPushPortCount, 32> VAR(xbar_q1);
 #endif  // TAPA_SSSP_CGPQ_PUSH_COUNT
+#if TAPA_SSSP_CGPQ_PUSH_COUNT >= 4
+  streams<PushReq, kCgpqPushPortCount, 32> VAR(xbar_q2);
+#endif  // TAPA_SSSP_CGPQ_PUSH_COUNT
   stream<CgpqHeapReq, 2> heap_req_q;
   stream<cgpq::ChunkRef, 2> heap_resp_q;
   streams<bool, kCgpqPushPortCount + 1, 2> VAR(done_qi);
@@ -1778,6 +1777,11 @@ void TaskQueue(
       // clang-format off
       .invoke<detach>(CgpqSwitch, 0, xbar_q0[0], xbar_q0[1], xbar_q1[0], xbar_q1[1])
 #endif  // TAPA_SSSP_CGPQ_PUSH_COUNT
+#if TAPA_SSSP_CGPQ_PUSH_COUNT >= 4
+      .invoke<detach>(CgpqSwitch, 0, xbar_q0[2], xbar_q0[3], xbar_q1[2], xbar_q1[3])
+      .invoke<detach>(CgpqSwitch, 1, xbar_q1[0], xbar_q1[2], xbar_q2[0], xbar_q2[2])
+      .invoke<detach>(CgpqSwitch, 1, xbar_q1[1], xbar_q1[3], xbar_q2[1], xbar_q2[3])
+#endif  // TAPA_SSSP_CGPQ_PUSH_COUNT
       // clang-format on
       .invoke<detach>(CgpqHeap, heap_req_q, heap_resp_q)
       .invoke<detach>(CgpqCore, done_qi[kCgpqPushPortCount], stat_q, qid,
@@ -1785,6 +1789,8 @@ void TaskQueue(
                       xbar_q0,
 #elif TAPA_SSSP_CGPQ_PUSH_COUNT == 2
                       xbar_q1,
+#elif TAPA_SSSP_CGPQ_PUSH_COUNT == 4
+                      xbar_q2,
 #else
 #error "invalid TAPA_SSSP_CGPQ_PUSH_COUNT"
 #endif  // TAPA_SSSP_CGPQ_PUSH_COUNT

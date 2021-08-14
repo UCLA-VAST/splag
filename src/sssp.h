@@ -206,7 +206,7 @@ constexpr int kPiHeapStatTaskCount =
 #ifdef TAPA_SSSP_COARSE_PRIORITY
 
 #ifndef TAPA_SSSP_CGPQ_PUSH_COUNT
-#define TAPA_SSSP_CGPQ_PUSH_COUNT 2
+#define TAPA_SSSP_CGPQ_PUSH_COUNT 4
 #endif  // TAPA_SSSP_CGPQ_PUSH_COUNT
 
 constexpr int kCgpqPushPortCount = TAPA_SSSP_CGPQ_PUSH_COUNT;
@@ -427,7 +427,7 @@ inline std::ostream& operator<<(std::ostream& os, const HeapIndexEntry& obj) {
 constexpr int kPeCount = 8;
 
 #ifndef TAPA_SSSP_SHARD_COUNT
-#define TAPA_SSSP_SHARD_COUNT 1
+#define TAPA_SSSP_SHARD_COUNT 2
 #endif
 
 constexpr int kShardCount = TAPA_SSSP_SHARD_COUNT;  // #edge partitions.
