@@ -114,7 +114,9 @@ inline std::ostream& operator<<(std::ostream& os, const Task& obj) {
   return os << "{vid: " << obj.vid << ", vertex: " << obj.vertex << "}";
 }
 
-constexpr int kQueueCount = 1;
+#define TAPA_SSSP_SWITCH_PORT_COUNT 1
+
+constexpr int kQueueCount = TAPA_SSSP_SWITCH_PORT_COUNT;
 
 #ifndef TAPA_SSSP_PHEAP_WIDTH
 #define TAPA_SSSP_PHEAP_WIDTH 16
@@ -202,7 +204,13 @@ constexpr int kPiHeapStatTaskCount =
     sizeof(kPiHeapStatCount) / sizeof(kPiHeapStatCount[0]);
 
 #ifdef TAPA_SSSP_COARSE_PRIORITY
-constexpr int kCgpqPushPortCount = 4;
+
+#ifndef TAPA_SSSP_CGPQ_PUSH_COUNT
+#define TAPA_SSSP_CGPQ_PUSH_COUNT 2
+#endif  // TAPA_SSSP_CGPQ_PUSH_COUNT
+
+constexpr int kCgpqPushPortCount = TAPA_SSSP_CGPQ_PUSH_COUNT;
+
 constexpr int kQueueStatCount = 7 + 4 * kCgpqPushPortCount;
 #else   // TAPA_SSSP_COARSE_PRIORITY
 constexpr int kQueueStatCount = kPiHeapStatTotalCount;
@@ -431,15 +439,16 @@ static_assert(
 #define TAPA_SSSP_EDGE_VEC_LEN 2
 #endif
 
-#define TAPA_SSSP_SWITCH_PORT_COUNT \
-  (TAPA_SSSP_SHARD_COUNT * TAPA_SSSP_EDGE_VEC_LEN)
-
 constexpr int kEdgeVecLen = TAPA_SSSP_EDGE_VEC_LEN;
+
+static_assert(kShardCount * kEdgeVecLen == kCgpqPushPortCount * kQueueCount);
 
 using EdgeVec = tapa::vec_t<Edge, kEdgeVecLen>;
 
-constexpr int kSwitchCount =
-    kShardCount * kEdgeVecLen / 2 * log2(kShardCount * kEdgeVecLen);
+constexpr int kSwitchPortCount = TAPA_SSSP_SWITCH_PORT_COUNT;
+
+constexpr int kSwitchCount = kSwitchPortCount / 2 * log2(kSwitchPortCount);
+
 constexpr int kSwitchStatCount = 5;
 
 constexpr int kIntervalCount = 4;  // #vertex partitions.

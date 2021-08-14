@@ -928,18 +928,6 @@ spin:
   done_q.read(nullptr);
 }
 
-void CgpqBucketArbiter(istream<PushReq>& in_q,
-                       ostreams<PushReq, kCgpqPushPortCount>& out_q) {
-spin:
-  for (;;) {
-#pragma HLS pipeline II = 1
-    if (!in_q.empty()) {
-      const auto req = in_q.read(nullptr);
-      out_q[req.bid % kCgpqPushPortCount].write(req);
-    }
-  }
-}
-
 // On-chip priority queue.
 // Using a binary heap for fewer number of memory banks.
 // Latency of each request << latency of memory for each chunk.
@@ -1655,9 +1643,72 @@ spin:
   }
 }
 
-void DuplicateDone(istream<bool>& in_q, ostreams<bool, 2>& out_q) {
+void CgpqDuplicateDone(istream<bool>& in_q,
+                       ostreams<bool, kCgpqPushPortCount + 1>& out_q) {
   Duplicate(in_q, out_q);
 }
+
+#if TAPA_SSSP_CGPQ_PUSH_COUNT >= 2
+void CgpqSwitch(
+    //
+    ap_uint<log2(kCgpqPushPortCount)> b,
+    //
+    istream<PushReq>& in_q0, istream<PushReq>& in_q1,
+    //
+    ostream<PushReq>& out_q0, ostream<PushReq>& out_q1) {
+  bool should_prioritize_1 = false;
+spin:
+  for (bool is_pkt_0_valid, is_pkt_1_valid;;) {
+#pragma HLS pipeline II = 1
+#pragma HLS latency max = 0
+    const auto pkt_0 = in_q0.peek(is_pkt_0_valid);
+    const auto pkt_1 = in_q1.peek(is_pkt_1_valid);
+
+    const auto addr_0 = pkt_0.bid;
+    const auto addr_1 = pkt_1.bid;
+
+    const bool should_fwd_0_0 = is_pkt_0_valid && !addr_0.get_bit(b);
+    const bool should_fwd_0_1 = is_pkt_0_valid && addr_0.get_bit(b);
+    const bool should_fwd_1_0 = is_pkt_1_valid && !addr_1.get_bit(b);
+    const bool should_fwd_1_1 = is_pkt_1_valid && addr_1.get_bit(b);
+
+    const bool has_conflict = is_pkt_0_valid && is_pkt_1_valid &&
+                              should_fwd_0_0 == should_fwd_1_0 &&
+                              should_fwd_0_1 == should_fwd_1_1;
+
+    const bool should_read_0 = !((!should_fwd_0_0 && !should_fwd_0_1) ||
+                                 (should_prioritize_1 && has_conflict));
+    const bool should_read_1 = !((!should_fwd_1_0 && !should_fwd_1_1) ||
+                                 (!should_prioritize_1 && has_conflict));
+    const bool should_write_0 = should_fwd_0_0 || should_fwd_1_0;
+    const bool should_write_1 = should_fwd_1_1 || should_fwd_0_1;
+    const bool shoud_write_0_0 =
+        should_fwd_0_0 && (!should_fwd_1_0 || !should_prioritize_1);
+    const bool shoud_write_1_1 =
+        should_fwd_1_1 && (!should_fwd_0_1 || should_prioritize_1);
+
+    // if can forward through (0->0 or 1->1), do it
+    // otherwise, check for conflict
+    const bool is_0_written =
+        should_write_0 && out_q0.try_write(shoud_write_0_0 ? pkt_0 : pkt_1);
+    const bool is_1_written =
+        should_write_1 && out_q1.try_write(shoud_write_1_1 ? pkt_1 : pkt_0);
+
+    // if can forward through (0->0 or 1->1), do it
+    // otherwise, round robin priority of both ins
+    if (should_read_0 && (shoud_write_0_0 ? is_0_written : is_1_written)) {
+      in_q0.read(nullptr);
+    }
+    if (should_read_1 && (shoud_write_1_1 ? is_1_written : is_0_written)) {
+      in_q1.read(nullptr);
+    }
+
+    if (has_conflict) {
+      should_prioritize_1 = !should_prioritize_1;
+    }
+  }
+}
+#endif  // TAPA_SSSP_CGPQ_PUSH_COUNT
 
 // Each push request puts the task in the queue if there isn't a task for the
 // same vertex in the queue, or decreases the priority of the existing task
@@ -1667,6 +1718,26 @@ void DuplicateDone(istream<bool>& in_q, ostreams<bool, 2>& out_q) {
 // Each pop removes a task if the queue is not empty, otherwise the response
 // indicates that the queue is empty.
 void TaskQueue(
+#ifdef TAPA_SSSP_COARSE_PRIORITY
+    //
+    istream<bool>& done_q, ostream<PiHeapStat>& stat_q,
+    // Scalar
+    uint_qid_t qid,
+    // Queue requests.
+    istreams<TaskOnChip, kCgpqPushPortCount>& push_req_q,
+    // NOOP acknowledgements
+    ostream<bool>& noop_q,
+    // Queue outputs.
+    ostream<TaskOnChip>& pop_q0, ostream<TaskOnChip>& pop_q1,
+    ostream<TaskOnChip>& pop_q2, ostream<TaskOnChip>& pop_q3,
+    //
+    float min_distance, float max_distance,
+    //
+    ostream<uint_spill_addr_t>& cgpq_spill_read_addr_q,
+    istream<SpilledTask>& cgpq_spill_read_data_q,
+    ostream<packet<uint_spill_addr_t, SpilledTask>>& cgpq_spill_write_req_q,
+    istream<bool>& cgpq_spill_write_resp_q
+#else   // TAPA_SSSP_COARSE_PRIORITY
     //
     istream<bool>& done_q, ostream<PiHeapStat>& stat_q,
     // Scalar
@@ -1676,17 +1747,7 @@ void TaskQueue(
     // NOOP acknowledgements
     ostream<bool>& noop_q,
     // Queue outputs.
-    ostream<TaskOnChip>& pop_q0, ostream<TaskOnChip>& pop_q1,
-    ostream<TaskOnChip>& pop_q2, ostream<TaskOnChip>& pop_q3,
-#ifdef TAPA_SSSP_COARSE_PRIORITY
-    //
-    float min_distance, float max_distance,
-    //
-    ostream<uint_spill_addr_t>& cgpq_spill_read_addr_q,
-    istream<SpilledTask>& cgpq_spill_read_data_q,
-    ostream<packet<uint_spill_addr_t, SpilledTask>>& cgpq_spill_write_req_q,
-    istream<bool>& cgpq_spill_write_resp_q
-#else   // TAPA_SSSP_COARSE_PRIORITY
+    ostream<TaskOnChip>& pop_q,
     //
     ostream<Vid>& piheap_array_read_addr_q,
     istream<HeapElemPacked>& piheap_array_read_data_q,
@@ -1700,22 +1761,37 @@ void TaskQueue(
 #endif  // TAPA_SSSP_COARSE_PRIORITY
 ) {
 #ifdef TAPA_SSSP_COARSE_PRIORITY
-  stream<PushReq, 2> push_req_qi;
+  streams<PushReq, kCgpqPushPortCount, 32> VAR(xbar_q0);
+#if TAPA_SSSP_CGPQ_PUSH_COUNT >= 2
+  streams<PushReq, kCgpqPushPortCount, 32> VAR(xbar_q1);
+#endif  // TAPA_SSSP_CGPQ_PUSH_COUNT
   stream<CgpqHeapReq, 2> heap_req_q;
   stream<cgpq::ChunkRef, 2> heap_resp_q;
-  streams<bool, 2, 2> done_qi;
-  streams<PushReq, kCgpqPushPortCount, 2> VAR(push_req_qii);
+  streams<bool, kCgpqPushPortCount + 1, 2> VAR(done_qi);
 
   task()
-      .invoke<detach>(DuplicateDone, done_q, done_qi)
-      .invoke<join>(CgpqBucketGen, min_distance, max_distance, done_qi[0],
-                    push_req_q, push_req_qi)
-      .invoke<detach>(CgpqBucketArbiter, push_req_qi, push_req_qii)
+      .invoke<detach>(CgpqDuplicateDone, done_q, done_qi)
+      .invoke<join, kCgpqPushPortCount>(CgpqBucketGen, min_distance,
+                                        max_distance, done_qi, push_req_q,
+                                        xbar_q0)
+#if TAPA_SSSP_CGPQ_PUSH_COUNT >= 2
+      // clang-format off
+      .invoke<detach>(CgpqSwitch, 0, xbar_q0[0], xbar_q0[1], xbar_q1[0], xbar_q1[1])
+#endif  // TAPA_SSSP_CGPQ_PUSH_COUNT
+      // clang-format on
       .invoke<detach>(CgpqHeap, heap_req_q, heap_resp_q)
-      .invoke<detach>(CgpqCore, done_qi[1], stat_q, qid, push_req_qii, noop_q,
-                      pop_q0, pop_q1, pop_q2, pop_q3, heap_req_q, heap_resp_q,
-                      cgpq_spill_read_addr_q, cgpq_spill_read_data_q,
-                      cgpq_spill_write_req_q, cgpq_spill_write_resp_q);
+      .invoke<detach>(CgpqCore, done_qi[kCgpqPushPortCount], stat_q, qid,
+#if TAPA_SSSP_CGPQ_PUSH_COUNT == 1
+                      xbar_q0,
+#elif TAPA_SSSP_CGPQ_PUSH_COUNT == 2
+                      xbar_q1,
+#else
+#error "invalid TAPA_SSSP_CGPQ_PUSH_COUNT"
+#endif  // TAPA_SSSP_CGPQ_PUSH_COUNT
+                      noop_q, pop_q0, pop_q1, pop_q2, pop_q3, heap_req_q,
+                      heap_resp_q, cgpq_spill_read_addr_q,
+                      cgpq_spill_read_data_q, cgpq_spill_write_req_q,
+                      cgpq_spill_write_resp_q);
 #else  // TAPA_SSSP_COARSE_PRIORITY
   // Heap rule: child <= parent
   streams<HeapReq, kLevelCount, 1> req_q;
@@ -1955,8 +2031,10 @@ const int kSwitchOutputCount = kSubIntervalCount;
 #endif  // TAPA_SSSP_IMMEDIATE_RELAX
 
 void SwitchOutputArbiter(
-    tapa::istreams<TaskOnChip, kShardCount * kEdgeVecLen>& in_q,
-    tapa::ostreams<TaskOnChip, kSwitchOutputCount>& out_q) {
+    tapa::istreams<TaskOnChip, kShardCount * kEdgeVecLen / kSwitchOutputCount>&
+        in_q,
+    tapa::ostreams<TaskOnChip, kSwitchOutputCount * kCgpqPushPortCount>&
+        out_q) {
   TaskArbiterTemplate(in_q, out_q);
 }
 
@@ -2669,7 +2747,6 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
 #endif  // TAPA_SSSP_COARSE_PRIORITY
 ) {
   streams<TaskOnChip, kSubIntervalCount, 2> vertex_out_q;
-  streams<TaskOnChip, kQueueCount, 512> queue_push_q;
   streams<bool, kQueueCount, 2> queue_done_q;
   streams<PiHeapStat, kQueueCount, 2> queue_stat_q;
 
@@ -2708,8 +2785,6 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
 
   streams<TaskVec, kShardCount, 2> VAR(xbar_qv);
 
-  // For vertices.
-  // Route updates via a kShardCount x kShardCount network.
   streams<TaskOnChip, kShardCount * kEdgeVecLen, 32> xbar_q0;
 #if TAPA_SSSP_SWITCH_PORT_COUNT >= 2
   streams<TaskOnChip, kShardCount * kEdgeVecLen, 32> xbar_q1;
@@ -2764,25 +2839,32 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
                       task_req_qi,
 #endif  // TAPA_SSSP_IMMEDIATE_RELAX
                       task_resp_qi)
-      .invoke<join, kQueueCount>(TaskQueue, queue_done_q, queue_stat_q, seq(),
-                                 queue_push_q, queue_noop_qi, queue_pop_q0,
-                                 queue_pop_q1, queue_pop_q2, queue_pop_q3,
 #ifdef TAPA_SSSP_COARSE_PRIORITY
-                                 min_distance, max_distance,
-                                 //
-                                 cgpq_spill_read_addr_q, cgpq_spill_read_data_q,
-                                 cgpq_spill_write_req_q, cgpq_spill_write_resp_q
+      .invoke<join, kQueueCount>(
+          TaskQueue, queue_done_q, queue_stat_q, seq(),
+#if TAPA_SSSP_SWITCH_PORT_COUNT == 1
+          xbar_q0,
+#elif TAPA_SSSP_SWITCH_PORT_COUNT == 2
+          xbar_q1,
+#elif TAPA_SSSP_SWITCH_PORT_COUNT == 4
+          xbar_q2,
+#else  // TAPA_SSSP_SWITCH_PORT_COUNT
+#error "invalid TAPA_SSSP_SWITCH_PORT_COUNT"
+#endif  // TAPA_SSSP_SWITCH_PORT_COUNT
+          queue_noop_qi, queue_pop_q0, queue_pop_q1, queue_pop_q2, queue_pop_q3,
+          min_distance, max_distance,
+          //
+          cgpq_spill_read_addr_q, cgpq_spill_read_data_q,
+          cgpq_spill_write_req_q, cgpq_spill_write_resp_q)
 #else   // TAPA_SSSP_COARSE_PRIORITY
-                                 piheap_array_read_addr_q,
-                                 piheap_array_read_data_q,
-                                 piheap_array_write_req_q,
-                                 piheap_array_write_resp_q,
-                                 piheap_index_read_addr_q,
-                                 piheap_index_read_data_q,
-                                 piheap_index_write_req_q,
-                                 piheap_index_write_resp_q
+      .invoke<join, kQueueCount>(
+          TaskQueue, queue_done_q, queue_stat_q, seq(), queue_push_q,
+          queue_noop_qi, queue_pop_q0, queue_pop_q1, queue_pop_q2, queue_pop_q3,
+          piheap_array_read_addr_q, piheap_array_read_data_q,
+          piheap_array_write_req_q, piheap_array_write_resp_q,
+          piheap_index_read_addr_q, piheap_index_read_data_q,
+          piheap_index_write_req_q, piheap_index_write_resp_q)
 #endif  // TAPA_SSSP_COARSE_PRIORITY
-                                 )
       .invoke<detach>(QueueNoopMerger, queue_noop_qi, queue_noop_q)
 #ifdef TAPA_SSSP_IMMEDIATE_RELAX
       .invoke<detach>(QueueOutputArbiter, queue_pop_q0, vertex_in_q0)
@@ -2827,24 +2909,6 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
       .invoke<join>(Switch, 1, switch_done_q[3], switch_stat_q[3], xbar_q1[1], xbar_q1[3], xbar_q2[1], xbar_q2[3])
 #endif // TAPA_SSSP_SWITCH_PORT_COUNT
       // clang-format on
-
-      // Distribute updates amount sub-intervals.
-      .invoke<detach>(SwitchOutputArbiter,
-#if TAPA_SSSP_SWITCH_PORT_COUNT == 1
-                      xbar_q0
-#elif TAPA_SSSP_SWITCH_PORT_COUNT == 2
-                      xbar_q1
-#elif TAPA_SSSP_SWITCH_PORT_COUNT == 4
-                      xbar_q2
-#else  // TAPA_SSSP_SWITCH_PORT_COUNT
-#error "invalid TAPA_SSSP_SWITCH_PORT_COUNT"
-#endif  // TAPA_SSSP_SWITCH_PORT_COUNT
-                      ,
-#ifdef TAPA_SSSP_IMMEDIATE_RELAX
-                      queue_push_q)
-#else   // TAPA_SSSP_IMMEDIATE_RELAX
-                      vertex_in_q)
-#endif  // TAPA_SSSP_IMMEDIATE_RELAX
 
       .invoke<detach, kSubIntervalCount>(VertexMem, vertex_read_addr_q,
                                          vertex_read_data_q, vertex_write_req_q,
