@@ -43,6 +43,8 @@ DEFINE_bool(
     "randomly shuffle edges for each vertex; may be overridden by --sort");
 DEFINE_int64(coarsen, 0, "remove vertices whose degree <= this value");
 DEFINE_string(bitstream, "", "path to bitstream file, run csim if empty");
+DEFINE_double(min_distance, 0, "min distance");
+DEFINE_double(max_distance, 0, "max distance");
 
 template <typename T>
 bool IsValid(int64_t root, PackedEdgesView edges, WeightsView weights,
@@ -514,6 +516,15 @@ int main(int argc, char* argv[]) {
     LOG(INFO) << "min distance of root's neighbors: " << root_min_distance;
     LOG(INFO) << "max distance of root's neighbors: " << root_max_distance;
 
+    const float arg_min_distance =
+        FLAGS_min_distance > 0 ? FLAGS_min_distance : root_min_distance;
+    const float arg_max_distance =
+        FLAGS_max_distance > 0
+            ? FLAGS_max_distance
+            : std::max(root_min_distance + 0.5f, root_max_distance) * 1.5f;
+    LOG(INFO) << "using min distance " << arg_min_distance;
+    LOG(INFO) << "using max distance " << arg_max_distance;
+
     const double elapsed_time =
         1e-9 *
         tapa::invoke_in_new_process(
@@ -528,7 +539,7 @@ int main(int argc, char* argv[]) {
                 .vectorized<kEdgeVecLen>(),
             tapa::read_write_mmaps<Vertex, kIntervalCount>(vertices),
 #ifdef TAPA_SSSP_COARSE_PRIORITY
-            root_min_distance, root_min_distance + 0.5f,
+            arg_min_distance, arg_max_distance,
             tapa::placeholder_mmaps<SpilledTask, kQueueCount>(cgpq_spill)
 #else   // TAPA_SSSP_COARSE_PRIORITY
             tapa::read_only_mmap<HeapElemPacked>(heap_array),
