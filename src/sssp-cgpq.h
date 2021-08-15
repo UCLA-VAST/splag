@@ -11,8 +11,6 @@
 
 #define TAPA_SSSP_2X_BUFFER
 
-#define TAPA_SSSP_CGPQ_LOG_BUCKET
-
 namespace cgpq {
 
 constexpr int kBucketCount = 64;

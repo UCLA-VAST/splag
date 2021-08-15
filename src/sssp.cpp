@@ -885,19 +885,15 @@ void CgpqSpillMem(
   ReadWriteMem(read_addr_q, read_data_q, write_req_q, write_resp_q, mem);
 }
 
-void CgpqBucketGen(float min_distance, float max_distance,
+void CgpqBucketGen(bool is_log_bucket, float min_distance, float max_distance,
                    istream<bool>& done_q, istream<TaskOnChip>& in_q,
                    ostream<PushReq>& out_q) {
   using namespace cgpq;
 
   const auto norm =
-      kBucketCount / (
-#ifdef TAPA_SSSP_CGPQ_LOG_BUCKET
-                         std::log(max_distance) - std::log(min_distance)
-#else
-                         max_distance - min_distance
-#endif
-                     );
+      kBucketCount / (is_log_bucket
+                          ? (std::log(max_distance) - std::log(min_distance))
+                          : (max_distance - min_distance));
 
 spin:
   for (ap_uint<log2(kCgpqPushPortCount)> port = 0; done_q.empty(); ++port) {
@@ -906,13 +902,9 @@ spin:
       const auto task = in_q.read(nullptr);
       const uint_bid_t bid = std::max(
           std::min(
-              int((
-#ifdef TAPA_SSSP_CGPQ_LOG_BUCKET
-                      std::log(task.vertex().distance) - std::log(min_distance)
-#else
-                      task.vertex().distance - min_distance
-#endif
-                          ) *
+              int((is_log_bucket ? (std::log(task.vertex().distance) -
+                                    std::log(min_distance))
+                                 : (task.vertex().distance - min_distance)) *
                   norm),
               kBucketCount - 1),
           0);
@@ -1731,7 +1723,7 @@ void TaskQueue(
     // Queue outputs.
     ostreams<TaskOnChip, kCgpqPopPortCount>& pop_q,
     //
-    float min_distance, float max_distance,
+    bool is_log_bucket, float min_distance, float max_distance,
     //
     ostream<uint_spill_addr_t>& cgpq_spill_read_addr_q,
     istream<SpilledTask>& cgpq_spill_read_data_q,
@@ -1774,9 +1766,9 @@ void TaskQueue(
 
   task()
       .invoke<detach>(CgpqDuplicateDone, done_q, done_qi)
-      .invoke<join, kCgpqPushPortCount>(CgpqBucketGen, min_distance,
-                                        max_distance, done_qi, push_req_q,
-                                        xbar_q0)
+      .invoke<join, kCgpqPushPortCount>(CgpqBucketGen, is_log_bucket,
+                                        min_distance, max_distance, done_qi,
+                                        push_req_q, xbar_q0)
 #if TAPA_SSSP_CGPQ_PUSH_COUNT >= 2
       // clang-format off
       .invoke<detach>(CgpqSwitch, 0, xbar_q0[0], xbar_q0[1], xbar_q1[0], xbar_q1[1])
@@ -2818,7 +2810,7 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
           tapa::mmaps<Vertex, kIntervalCount> vertices,
 // For queues.
 #ifdef TAPA_SSSP_COARSE_PRIORITY
-          float min_distance, float max_distance,
+          bool is_log_bucket, float min_distance, float max_distance,
           tapa::mmaps<SpilledTask, kQueueCount> cgpq_spill
 #else   // TAPA_SSSP_COARSE_PRIORITY
           tapa::mmap<HeapElemPacked> heap_array,
@@ -2922,7 +2914,7 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
 #ifdef TAPA_SSSP_COARSE_PRIORITY
       .invoke<join, kQueueCount>(
           TaskQueue, queue_done_q, queue_stat_q, seq(), queue_push_q,
-          queue_noop_qi, queue_pop_q, min_distance, max_distance,
+          queue_noop_qi, queue_pop_q, is_log_bucket, min_distance, max_distance,
           //
           cgpq_spill_read_addr_q, cgpq_spill_read_data_q,
           cgpq_spill_write_req_q, cgpq_spill_write_resp_q)
