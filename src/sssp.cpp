@@ -900,7 +900,7 @@ void CgpqBucketGen(float min_distance, float max_distance,
                      );
 
 spin:
-  for (; done_q.empty();) {
+  for (ap_uint<log2(kCgpqPushPortCount)> port = 0; done_q.empty(); ++port) {
 #pragma HLS pipeline II = 1
     if (!in_q.empty()) {
       const auto task = in_q.read(nullptr);
@@ -917,7 +917,12 @@ spin:
               kBucketCount - 1),
           0);
 
-      out_q.write({.bid = bid, .task = task});
+      out_q.write({.bid = bid == kBucketCount - 1
+                              ? uint_bid_t(bid / kCgpqPushPortCount *
+                                               kCgpqPushPortCount +
+                                           port)
+                              : bid,
+                   .task = task});
     }
   }
 
