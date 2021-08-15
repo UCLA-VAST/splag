@@ -114,7 +114,7 @@ inline std::ostream& operator<<(std::ostream& os, const Task& obj) {
   return os << "{vid: " << obj.vid << ", vertex: " << obj.vertex << "}";
 }
 
-#define TAPA_SSSP_SWITCH_PORT_COUNT 1
+#define TAPA_SSSP_SWITCH_PORT_COUNT 2
 
 constexpr int kQueueCount = TAPA_SSSP_SWITCH_PORT_COUNT;
 
@@ -428,10 +428,10 @@ inline std::ostream& operator<<(std::ostream& os, const HeapIndexEntry& obj) {
 }
 
 // Platform-specific constants and types.
-constexpr int kPeCount = 8;
+constexpr int kPeCount = 16;
 
 #ifndef TAPA_SSSP_SHARD_COUNT
-#define TAPA_SSSP_SHARD_COUNT 2
+#define TAPA_SSSP_SHARD_COUNT 4
 #endif
 
 constexpr int kShardCount = TAPA_SSSP_SHARD_COUNT;  // #edge partitions.
@@ -460,7 +460,7 @@ constexpr int kSwitchCount = kSwitchPortCount / 2 * kSwitchStageCount *
 
 constexpr int kSwitchStatCount = 5;
 
-constexpr int kIntervalCount = 4;  // #vertex partitions.
+constexpr int kIntervalCount = 8;  // #vertex partitions.
 constexpr int kSubIntervalCount = kIntervalCount * 1;
 
 constexpr int kHeapOnChipWidth = 8;  // #children per on-heap element.
