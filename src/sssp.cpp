@@ -2077,25 +2077,41 @@ spin:
   }
 }
 
-void EdgeReqArbiter(tapa::istreams<EdgeReq, kPeCount>& req_q,
-                    tapa::ostreams<SourceVertex, kShardCount>& src_q,
-                    tapa::ostreams<Vid, kShardCount>& addr_q) {
-  DECL_ARRAY(EdgeReq, req, kShardCount, EdgeReq());
-  DECL_ARRAY(bool, src_valid, kShardCount, false);
-  DECL_ARRAY(bool, addr_valid, kShardCount, false);
-
+void EdgeAdapter(istreams<EdgeReq, kPeCount>& in_q,
+                 ostreams<EdgeReq, kPeCount>& out_q) {
 spin:
-  for (ap_uint<bit_length(kPeCount / kShardCount) + 2> pe_sid = 0;; ++pe_sid) {
-#pragma HLS pipeline II = 1
-    RANGE(sid, kShardCount, {
-      const auto pe = pe_sid / 8 * kShardCount + sid;
-      if (!src_valid[sid] && !addr_valid[sid] && req_q[pe].try_read(req[sid])) {
-        src_valid[sid] = addr_valid[sid] = true;
-      }
-
-      UNUSED RESET(addr_valid[sid], addr_q[sid].try_write(req[sid].addr));
-      UNUSED RESET(src_valid[sid], src_q[sid].try_write(req[sid].payload));
+  for (;;) {
+    RANGE(i, kPeCount / kShardCount, {
+      RANGE(j, kShardCount, {
+        if (!in_q[i * kShardCount + j].empty() &&
+            !out_q[j * kPeCount / kShardCount + i].full()) {
+          const auto req = in_q[i * kShardCount + j].read(nullptr);
+          out_q[j * kPeCount / kShardCount + i].try_write(req);
+        }
+      });
     });
+  }
+}
+
+void EdgeReqArbiter(tapa::istreams<EdgeReq, kPeCount / kShardCount>& req_q,
+                    tapa::ostream<SourceVertex>& src_q,
+                    tapa::ostream<Vid>& addr_q) {
+  ap_uint<3> counter = 0;
+  ap_uint<kPeCount / kShardCount> priority = 1;
+spin:
+  for (;;) {
+#pragma HLS pipeline II = 1
+    if (int i; find_non_empty(req_q, priority, i)) {
+      if (!src_q.full() && !addr_q.full()) {
+        const auto req = req_q[i].read(nullptr);
+        src_q.try_write(req.payload);
+        addr_q.try_write(req.addr);
+      }
+    }
+    if (counter == 0) {
+      priority.lrotate(1);
+    }
+    ++counter;
   }
 }
 
@@ -2839,6 +2855,7 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   streams<Vid, kShardCount, 2> edge_read_addr_q("edge_read_addr");
   streams<EdgeVec, kShardCount, 2> VAR(edge_read_data_q);
   streams<EdgeReq, kPeCount, kPeCount / kShardCount * 8> edge_req_q("edge_req");
+  streams<EdgeReq, kPeCount, 32> VAR(edge_req_qi);
   streams<SourceVertex, kShardCount, 64> src_q("source_vertices");
 
   streams<TaskVec, kShardCount, 2> VAR(xbar_qv);
@@ -2942,7 +2959,9 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
       // For edges.
       .invoke<join, kShardCount>(EdgeMem, edge_done_q, edge_stat_q,
                                  edge_read_addr_q, edge_read_data_q, edges)
-      .invoke<detach>(EdgeReqArbiter, edge_req_q, src_q, edge_read_addr_q)
+      .invoke<detach>(EdgeAdapter, edge_req_q, edge_req_qi)
+      .invoke<detach, kShardCount>(EdgeReqArbiter, edge_req_qi, src_q,
+                                   edge_read_addr_q)
 
   // For vertices.
   // Route updates via a kShardCount x kShardCount network.
