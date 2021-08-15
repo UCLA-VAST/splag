@@ -2869,7 +2869,7 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
       vertex_in_qii);
   streams<TaskOnChip, kSubIntervalCount * kCgpqPopPortCount, 32> VAR(
       vertex_in_qi);
-  streams<TaskOnChip, kSubIntervalCount, 2> vertex_in_q;
+  streams<TaskOnChip, kSubIntervalCount, 32> VAR(vertex_in_q);
   //   Connect the vertex readers and updaters.
   streams<bool, kSubIntervalCount, 2> update_noop_qi1;
   streams<Vid, kSubIntervalCount, 2> vertex_read_addr_q;
