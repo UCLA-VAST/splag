@@ -211,6 +211,8 @@ constexpr int kPiHeapStatTaskCount =
 
 constexpr int kCgpqPushPortCount = TAPA_SSSP_CGPQ_PUSH_COUNT;
 
+constexpr int kCgpqPopPortCount = 4;  // Don't change
+
 constexpr int kQueueStatCount = 7 + 4 * kCgpqPushPortCount;
 #else   // TAPA_SSSP_COARSE_PRIORITY
 constexpr int kQueueStatCount = kPiHeapStatTotalCount;

@@ -1111,8 +1111,7 @@ void CgpqCore(
     // NOOP acknowledgements
     ostream<bool>& noop_q,
     // Queue outputs.
-    ostream<TaskOnChip>& pop_q0, ostream<TaskOnChip>& pop_q1,
-    ostream<TaskOnChip>& pop_q2, ostream<TaskOnChip>& pop_q3,
+    ostreams<TaskOnChip, kCgpqPopPortCount>& pop_q,
     //
     ostream<CgpqHeapReq>& heap_req_q, istream<cgpq::ChunkRef>& heap_resp_q,
     //
@@ -1296,8 +1295,8 @@ spin:
         is_spill_valid &&         // there is active spilling, and
         !mem_write_req_q.full();  // spill data is available for write.
 
-    const bool is_output_blocked_by_full_fifo =
-        (pop_q0.full() || pop_q1.full()) || (pop_q2.full() || pop_q3.full());
+    DECL_ARRAY(bool, is_output_fifo_full, kCgpqPopPortCount, pop_q[_i].full());
+    const bool is_output_blocked_by_full_fifo = any_of(is_output_fifo_full);
     const bool is_output_blocked_by_bank_conflict =
         is_spill_valid &&
         output_bid % kBucketPartFac == spill_bid % kBucketPartFac;
@@ -1469,10 +1468,11 @@ spin:
     }
 
     if (can_dequeue) {
-      if (output_meta.GetSize() > 0) pop_q0.try_write(output_task[0]);
-      if (output_meta.GetSize() > 1) pop_q1.try_write(output_task[1]);
-      if (output_meta.GetSize() > 2) pop_q2.try_write(output_task[2]);
-      if (output_meta.GetSize() > 3) pop_q3.try_write(output_task[3]);
+      RANGE(i, kCgpqPopPortCount, {
+        if (output_meta.GetSize() > i) {
+          pop_q[i].try_write(output_task[i]);
+        }
+      });
 
       for (int i = 0; i < kSpilledTaskVecLen; ++i) {
         VLOG_IF(5, i < output_meta.GetSize())
@@ -1724,8 +1724,7 @@ void TaskQueue(
     // NOOP acknowledgements
     ostream<bool>& noop_q,
     // Queue outputs.
-    ostream<TaskOnChip>& pop_q0, ostream<TaskOnChip>& pop_q1,
-    ostream<TaskOnChip>& pop_q2, ostream<TaskOnChip>& pop_q3,
+    ostreams<TaskOnChip, kCgpqPopPortCount>& pop_q,
     //
     float min_distance, float max_distance,
     //
@@ -1794,10 +1793,9 @@ void TaskQueue(
 #else
 #error "invalid TAPA_SSSP_CGPQ_PUSH_COUNT"
 #endif  // TAPA_SSSP_CGPQ_PUSH_COUNT
-                      noop_q, pop_q0, pop_q1, pop_q2, pop_q3, heap_req_q,
-                      heap_resp_q, cgpq_spill_read_addr_q,
-                      cgpq_spill_read_data_q, cgpq_spill_write_req_q,
-                      cgpq_spill_write_resp_q);
+                      noop_q, pop_q, heap_req_q, heap_resp_q,
+                      cgpq_spill_read_addr_q, cgpq_spill_read_data_q,
+                      cgpq_spill_write_req_q, cgpq_spill_write_resp_q);
 #else  // TAPA_SSSP_COARSE_PRIORITY
   // Heap rule: child <= parent
   streams<HeapReq, kLevelCount, 1> req_q;
@@ -2038,6 +2036,41 @@ spin:
           const auto task = in_q[j * kQueueCount + i].read(nullptr);
           CHECK_EQ(task.vid() % kQueueCount, i);
           out_q[i * kCgpqPushPortCount + j].try_write(task);
+        }
+      });
+    });
+  }
+}
+
+void PopAdapter(istreams<TaskOnChip, kQueueCount * kCgpqPopPortCount>& in_q,
+                ostreams<TaskOnChip, kQueueCount * kCgpqPopPortCount>& out_q) {
+spin:
+  for (;;) {
+    RANGE(i, kQueueCount, {
+      RANGE(j, kCgpqPopPortCount, {
+        if (!in_q[i * kCgpqPopPortCount + j].empty() &&
+            !out_q[j * kQueueCount + i].full()) {
+          const auto task = in_q[i * kCgpqPopPortCount + j].read(nullptr);
+          CHECK_EQ(task.vid() % kQueueCount, i);
+          out_q[j * kQueueCount + i].try_write(task);
+        }
+      });
+    });
+  }
+}
+
+void VertexAdapter(
+    istreams<TaskOnChip, kSubIntervalCount * kCgpqPopPortCount>& in_q,
+    ostreams<TaskOnChip, kSubIntervalCount * kCgpqPopPortCount>& out_q) {
+spin:
+  for (;;) {
+    RANGE(i, kSubIntervalCount, {
+      RANGE(j, kCgpqPopPortCount, {
+        if (!in_q[j * kSubIntervalCount + i].empty() &&
+            !out_q[i * kCgpqPopPortCount + j].full()) {
+          const auto task = in_q[j * kSubIntervalCount + i].read(nullptr);
+          CHECK_EQ(task.vid() % kSubIntervalCount, i);
+          out_q[i * kCgpqPopPortCount + j].try_write(task);
         }
       });
     });
@@ -2530,30 +2563,13 @@ void QueueOutputArbiter(tapa::istreams<TaskOnChip, kQueueCount>& in_q,
   TaskArbiterTemplate(in_q, out_q);
 }
 
-void QueueOutputMerger(tapa::istream<TaskOnChip>& in_q0,
-                       tapa::istream<TaskOnChip>& in_q1,
-                       tapa::istream<TaskOnChip>& in_q2,
-                       tapa::istream<TaskOnChip>& in_q3,
+void QueueOutputMerger(tapa::istreams<TaskOnChip, kCgpqPopPortCount>& in_q,
                        tapa::ostream<TaskOnChip>& out_q) {
 spin:
-  for (;;) {
+  for (ap_uint<kCgpqPopPortCount> priority = 1;; priority.lrotate(1)) {
 #pragma HLS pipeline II = 1
-    const bool is_q0_valid = !in_q0.empty();
-    const bool is_q1_valid = !in_q1.empty();
-    const bool is_q2_valid = !in_q2.empty();
-    const bool is_q3_valid = !in_q3.empty();
-    if (is_q0_valid || is_q1_valid) {
-      if (is_q0_valid) {
-        out_q.write(in_q0.read(nullptr));
-      } else {
-        out_q.write(in_q1.read(nullptr));
-      }
-    } else if (is_q2_valid || is_q3_valid) {
-      if (is_q2_valid) {
-        out_q.write(in_q2.read(nullptr));
-      } else {
-        out_q.write(in_q3.read(nullptr));
-      }
+    if (int i; find_non_empty(in_q, priority, i)) {
+      out_q.write(in_q[i].read(nullptr));
     }
   }
 }
@@ -2816,10 +2832,8 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
 
   stream<TaskOnChip, 2> task_init_q;
   stream<int64_t, 2> task_stat_q;
-  streams<TaskOnChip, kQueueCount, 2> queue_pop_q0("queue_pop_q0");
-  streams<TaskOnChip, kQueueCount, 2> queue_pop_q1("queue_pop_q1");
-  streams<TaskOnChip, kQueueCount, 2> queue_pop_q2("queue_pop_q2");
-  streams<TaskOnChip, kQueueCount, 2> queue_pop_q3("queue_pop_q3");
+  streams<TaskOnChip, kQueueCount * kCgpqPopPortCount, 2> VAR(queue_pop_q);
+  streams<TaskOnChip, kQueueCount * kCgpqPopPortCount, 2> VAR(queue_pop_qi);
 
   // For edges.
   streams<Vid, kShardCount, 2> edge_read_addr_q("edge_read_addr");
@@ -2837,10 +2851,10 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   streams<TaskOnChip, kShardCount * kEdgeVecLen, 32> xbar_q2;
 #endif  // TAPA_SSSP_SWITCH_PORT_COUNT
 
-  streams<TaskOnChip, kSubIntervalCount, 32> vertex_in_q0;
-  streams<TaskOnChip, kSubIntervalCount, 32> vertex_in_q1;
-  streams<TaskOnChip, kSubIntervalCount, 32> vertex_in_q2;
-  streams<TaskOnChip, kSubIntervalCount, 32> vertex_in_q3;
+  streams<TaskOnChip, kSubIntervalCount * kCgpqPopPortCount, 32> VAR(
+      vertex_in_qii);
+  streams<TaskOnChip, kSubIntervalCount * kCgpqPopPortCount, 32> VAR(
+      vertex_in_qi);
   streams<TaskOnChip, kSubIntervalCount, 2> vertex_in_q;
   //   Connect the vertex readers and updaters.
   streams<bool, kSubIntervalCount, 2> update_noop_qi1;
@@ -2886,11 +2900,11 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
 #ifdef TAPA_SSSP_COARSE_PRIORITY
       .invoke<join, kQueueCount>(
           TaskQueue, queue_done_q, queue_stat_q, seq(), queue_push_q,
-          queue_noop_qi, queue_pop_q0, queue_pop_q1, queue_pop_q2, queue_pop_q3,
-          min_distance, max_distance,
+          queue_noop_qi, queue_pop_q, min_distance, max_distance,
           //
           cgpq_spill_read_addr_q, cgpq_spill_read_data_q,
           cgpq_spill_write_req_q, cgpq_spill_write_resp_q)
+      .invoke<detach>(PopAdapter, queue_pop_q, queue_pop_qi)
 #else   // TAPA_SSSP_COARSE_PRIORITY
       .invoke<join, kQueueCount>(
           TaskQueue, queue_done_q, queue_stat_q, seq(), queue_push_q,
@@ -2902,13 +2916,11 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
 #endif  // TAPA_SSSP_COARSE_PRIORITY
       .invoke<detach>(QueueNoopMerger, queue_noop_qi, queue_noop_q)
 #ifdef TAPA_SSSP_IMMEDIATE_RELAX
-      .invoke<detach>(QueueOutputArbiter, queue_pop_q0, vertex_in_q0)
-      .invoke<detach>(QueueOutputArbiter, queue_pop_q1, vertex_in_q1)
-      .invoke<detach>(QueueOutputArbiter, queue_pop_q2, vertex_in_q2)
-      .invoke<detach>(QueueOutputArbiter, queue_pop_q3, vertex_in_q3)
-      .invoke<detach, kSubIntervalCount>(QueueOutputMerger, vertex_in_q0,
-                                         vertex_in_q1, vertex_in_q2,
-                                         vertex_in_q3, vertex_in_q)
+      .invoke<detach, kCgpqPopPortCount>(QueueOutputArbiter, queue_pop_qi,
+                                         vertex_in_qii)
+      .invoke<detach>(VertexAdapter, vertex_in_qii, vertex_in_qi)
+      .invoke<detach, kSubIntervalCount>(QueueOutputMerger, vertex_in_qi,
+                                         vertex_in_q)
 #else   // TAPA_SSSP_IMMEDIATE_RELAX
       .invoke<detach>(VertexOutputArbiter, vertex_out_q, queue_push_q)
 #endif  // TAPA_SSSP_IMMEDIATE_RELAX
