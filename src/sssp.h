@@ -447,7 +447,10 @@ using EdgeVec = tapa::vec_t<Edge, kEdgeVecLen>;
 
 constexpr int kSwitchPortCount = TAPA_SSSP_SWITCH_PORT_COUNT;
 
-constexpr int kSwitchCount = kSwitchPortCount / 2 * log2(kSwitchPortCount);
+constexpr int kSwitchStageCount = log2(kSwitchPortCount);
+
+constexpr int kSwitchCount =
+    kSwitchPortCount / 2 * kSwitchStageCount * kCgpqPushPortCount;
 
 constexpr int kSwitchStatCount = 5;
 

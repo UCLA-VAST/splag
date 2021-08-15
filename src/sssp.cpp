@@ -1914,15 +1914,15 @@ void TaskQueue(
 }
 
 #if TAPA_SSSP_SWITCH_PORT_COUNT >= 2
-void Switch(
+void Switch2x2(
     //
-    ap_uint<log2(kShardCount) + log2(kEdgeVecLen)> b,
+    ap_uint<kSwitchStageCount> b,
     //
     istream<bool>& done_q, ostream<int64_t>& stat_q,
     //
     istream<TaskOnChip>& in_q0, istream<TaskOnChip>& in_q1,
     //
-    ostream<TaskOnChip>& out_q0, ostream<TaskOnChip>& out_q1) {
+    ostreams<TaskOnChip, 2>& out_q) {
   bool should_prioritize_1 = false;
   int64_t total_cycle_count = 0;
   int64_t full_0_cycle_count = 0;
@@ -1963,9 +1963,9 @@ spin:
     // if can forward through (0->0 or 1->1), do it
     // otherwise, check for conflict
     const bool is_0_written =
-        should_write_0 && out_q0.try_write(shoud_write_0_0 ? pkt_0 : pkt_1);
+        should_write_0 && out_q[0].try_write(shoud_write_0_0 ? pkt_0 : pkt_1);
     const bool is_1_written =
-        should_write_1 && out_q1.try_write(shoud_write_1_1 ? pkt_1 : pkt_0);
+        should_write_1 && out_q[1].try_write(shoud_write_1_1 ? pkt_1 : pkt_0);
 
     // if can forward through (0->0 or 1->1), do it
     // otherwise, round robin priority of both ins
@@ -2006,7 +2006,43 @@ spin:
   stat_q.write(conflict_0_cycle_count);
   stat_q.write(conflict_1_cycle_count);
 }
+
+void SwitchInnerStage(ap_uint<kSwitchStageCount> b,
+                      istreams<bool, kSwitchPortCount / 2>& done_q,
+                      ostreams<int64_t, kSwitchPortCount / 2>& stat_q,
+                      istreams<TaskOnChip, kSwitchPortCount / 2>& in_q0,
+                      istreams<TaskOnChip, kSwitchPortCount / 2>& in_q1,
+                      ostreams<TaskOnChip, kSwitchPortCount>& out_q) {
+  task().invoke<join, kSwitchPortCount / 2>(Switch2x2, b, done_q, stat_q, in_q0,
+                                            in_q1, out_q);
+}
+
+void SwitchStage(ap_uint<kSwitchStageCount> b,
+                 istreams<bool, kSwitchPortCount / 2>& done_q,
+                 ostreams<int64_t, kSwitchPortCount / 2>& stat_q,
+                 istreams<TaskOnChip, kSwitchPortCount>& in_q,
+                 ostreams<TaskOnChip, kSwitchPortCount>& out_q) {
+  task().invoke(SwitchInnerStage, b, done_q, stat_q, in_q, in_q, out_q);
+}
 #endif  // TAPA_SSSP_SWITCH_PORT_COUNT
+
+void PushAdapter(
+    istreams<TaskOnChip, kQueueCount * kCgpqPushPortCount>& in_q,
+    ostreams<TaskOnChip, kQueueCount * kCgpqPushPortCount>& out_q) {
+spin:
+  for (;;) {
+    RANGE(i, kQueueCount, {
+      RANGE(j, kCgpqPushPortCount, {
+        if (!in_q[j * kQueueCount + i].empty() &&
+            !out_q[i * kCgpqPushPortCount + j].full()) {
+          const auto task = in_q[j * kQueueCount + i].read(nullptr);
+          CHECK_EQ(task.vid() % kQueueCount, i);
+          out_q[i * kCgpqPushPortCount + j].try_write(task);
+        }
+      });
+    });
+  }
+}
 
 void EdgeReqArbiter(tapa::istreams<EdgeReq, kPeCount>& req_q,
                     tapa::ostreams<SourceVertex, kShardCount>& src_q,
@@ -2753,6 +2789,7 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
 #endif  // TAPA_SSSP_COARSE_PRIORITY
 ) {
   streams<TaskOnChip, kSubIntervalCount, 2> vertex_out_q;
+  streams<TaskOnChip, kQueueCount * kCgpqPushPortCount, 512> VAR(queue_push_q);
   streams<bool, kQueueCount, 2> queue_done_q;
   streams<PiHeapStat, kQueueCount, 2> queue_stat_q;
 
@@ -2848,16 +2885,7 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
                       task_resp_qi)
 #ifdef TAPA_SSSP_COARSE_PRIORITY
       .invoke<join, kQueueCount>(
-          TaskQueue, queue_done_q, queue_stat_q, seq(),
-#if TAPA_SSSP_SWITCH_PORT_COUNT == 1
-          xbar_q0,
-#elif TAPA_SSSP_SWITCH_PORT_COUNT == 2
-          xbar_q1,
-#elif TAPA_SSSP_SWITCH_PORT_COUNT == 4
-          xbar_q2,
-#else  // TAPA_SSSP_SWITCH_PORT_COUNT
-#error "invalid TAPA_SSSP_SWITCH_PORT_COUNT"
-#endif  // TAPA_SSSP_SWITCH_PORT_COUNT
+          TaskQueue, queue_done_q, queue_stat_q, seq(), queue_push_q,
           queue_noop_qi, queue_pop_q0, queue_pop_q1, queue_pop_q2, queue_pop_q3,
           min_distance, max_distance,
           //
@@ -2908,14 +2936,23 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   // Route updates via a kShardCount x kShardCount network.
   // clang-format off
 #if TAPA_SSSP_SWITCH_PORT_COUNT >= 2
-      .invoke<join>(Switch, 0, switch_done_q[0], switch_stat_q[0], xbar_q0[0], xbar_q0[1], xbar_q1[0], xbar_q1[1])
+      .invoke<join, kCgpqPushPortCount>(SwitchStage, kSwitchStageCount - 1, switch_done_q, switch_stat_q, xbar_q0, xbar_q1)
 #endif // TAPA_SSSP_SWITCH_PORT_COUNT
 #if TAPA_SSSP_SWITCH_PORT_COUNT >= 4
-      .invoke<join>(Switch, 0, switch_done_q[1], switch_stat_q[1], xbar_q0[2], xbar_q0[3], xbar_q1[2], xbar_q1[3])
-      .invoke<join>(Switch, 1, switch_done_q[2], switch_stat_q[2], xbar_q1[0], xbar_q1[2], xbar_q2[0], xbar_q2[2])
-      .invoke<join>(Switch, 1, switch_done_q[3], switch_stat_q[3], xbar_q1[1], xbar_q1[3], xbar_q2[1], xbar_q2[3])
+      .invoke<join, kCgpqPushPortCount>(SwitchStage, kSwitchStageCount - 2, switch_done_q, switch_stat_q, xbar_q1, xbar_q2)
 #endif // TAPA_SSSP_SWITCH_PORT_COUNT
       // clang-format on
+      .invoke<detach>(PushAdapter,
+#if TAPA_SSSP_SWITCH_PORT_COUNT == 1
+                      xbar_q0,
+#elif TAPA_SSSP_SWITCH_PORT_COUNT == 2
+                      xbar_q1,
+#elif TAPA_SSSP_SWITCH_PORT_COUNT == 4
+                      xbar_q2,
+#else  // TAPA_SSSP_SWITCH_PORT_COUNT
+#error "invalid TAPA_SSSP_SWITCH_PORT_COUNT"
+#endif  // TAPA_SSSP_SWITCH_PORT_COUNT
+                      queue_push_q)
 
       .invoke<detach, kSubIntervalCount>(VertexMem, vertex_read_addr_q,
                                          vertex_read_data_q, vertex_write_req_q,
