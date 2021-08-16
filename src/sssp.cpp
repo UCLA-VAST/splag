@@ -7,6 +7,7 @@
 #include <iomanip>
 
 #include <tapa.h>
+#include <tapa/synthesizable/util.h>
 
 #include "sssp-cgpq.h"
 #include "sssp-kernel.h"
@@ -1648,7 +1649,7 @@ void CgpqSwitch(
     //
     istream<PushReq>& in_q0, istream<PushReq>& in_q1,
     //
-    ostream<PushReq>& out_q0, ostream<PushReq>& out_q1) {
+    ostreams<PushReq, 2>& out_q) {
   bool should_prioritize_1 = false;
 spin:
   for (bool is_pkt_0_valid, is_pkt_1_valid;;) {
@@ -1683,9 +1684,9 @@ spin:
     // if can forward through (0->0 or 1->1), do it
     // otherwise, check for conflict
     const bool is_0_written =
-        should_write_0 && out_q0.try_write(shoud_write_0_0 ? pkt_0 : pkt_1);
+        should_write_0 && out_q[0].try_write(shoud_write_0_0 ? pkt_0 : pkt_1);
     const bool is_1_written =
-        should_write_1 && out_q1.try_write(shoud_write_1_1 ? pkt_1 : pkt_0);
+        should_write_1 && out_q[1].try_write(shoud_write_1_1 ? pkt_1 : pkt_0);
 
     // if can forward through (0->0 or 1->1), do it
     // otherwise, round robin priority of both ins
@@ -1701,6 +1702,21 @@ spin:
     }
   }
 }
+
+void CgpqSwitchInnerStage(ap_uint<kCgpqPushStageCount> b,
+                          istreams<PushReq, kCgpqPushPortCount / 2>& in_q0,
+                          istreams<PushReq, kCgpqPushPortCount / 2>& in_q1,
+                          ostreams<PushReq, kCgpqPushPortCount>& out_q) {
+  task().invoke<detach, kCgpqPushPortCount / 2>(CgpqSwitch, b, in_q0, in_q1,
+                                                out_q);
+}
+
+void CgpqSwitchStage(ap_uint<kCgpqPushStageCount> b,
+                     istreams<PushReq, kCgpqPushPortCount>& in_q,
+                     ostreams<PushReq, kCgpqPushPortCount>& out_q) {
+  task().invoke<detach>(CgpqSwitchInnerStage, b, in_q, in_q, out_q);
+}
+
 #endif  // TAPA_SSSP_CGPQ_PUSH_COUNT
 
 // Each push request puts the task in the queue if there isn't a task for the
@@ -1771,12 +1787,10 @@ void TaskQueue(
                                         push_req_q, xbar_q0)
 #if TAPA_SSSP_CGPQ_PUSH_COUNT >= 2
       // clang-format off
-      .invoke<detach>(CgpqSwitch, 0, xbar_q0[0], xbar_q0[1], xbar_q1[0], xbar_q1[1])
+      .invoke<detach>(CgpqSwitchStage, kCgpqPushStageCount - 1, xbar_q0, xbar_q1)
 #endif  // TAPA_SSSP_CGPQ_PUSH_COUNT
 #if TAPA_SSSP_CGPQ_PUSH_COUNT >= 4
-      .invoke<detach>(CgpqSwitch, 0, xbar_q0[2], xbar_q0[3], xbar_q1[2], xbar_q1[3])
-      .invoke<detach>(CgpqSwitch, 1, xbar_q1[0], xbar_q1[2], xbar_q2[0], xbar_q2[2])
-      .invoke<detach>(CgpqSwitch, 1, xbar_q1[1], xbar_q1[3], xbar_q2[1], xbar_q2[3])
+      .invoke<detach>(CgpqSwitchStage, kCgpqPushStageCount - 2, xbar_q1, xbar_q2)
 #endif  // TAPA_SSSP_CGPQ_PUSH_COUNT
       // clang-format on
       .invoke<detach>(CgpqHeap, heap_req_q, heap_resp_q)
