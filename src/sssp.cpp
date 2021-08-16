@@ -1637,8 +1637,9 @@ spin:
   }
 }
 
-void CgpqDuplicateDone(istream<bool>& in_q,
-                       ostreams<bool, kCgpqPushPortCount + 1>& out_q) {
+void CgpqDuplicateDone(
+    istream<bool>& in_q,
+    ostreams<bool, kCgpqPushPortCount * kSwitchMuxDegree + 1>& out_q) {
   Duplicate(in_q, out_q);
 }
 
@@ -1717,6 +1718,35 @@ void CgpqSwitchStage(ap_uint<kCgpqPushStageCount> b,
   task().invoke<detach>(CgpqSwitchInnerStage, b, in_q, in_q, out_q);
 }
 
+void CgpqSwitchMux(istreams<PushReq, kSwitchMuxDegree>& in_q,
+                   ostream<PushReq>& out_q) {
+spin:
+  for (ap_uint<kSwitchMuxDegree> priority = 1;; priority.lrotate(1)) {
+#pragma HLS pipeline II = 1
+    if (int pos; find_non_empty(in_q, priority, pos) && !out_q.full()) {
+      out_q.try_write(in_q[pos].read(nullptr));
+    }
+  }
+}
+
+void CgpqPushAdapter(
+    istreams<PushReq, kCgpqPushPortCount * kSwitchMuxDegree>& in_q,
+    ostreams<PushReq, kCgpqPushPortCount * kSwitchMuxDegree>& out_q) {
+spin:
+  for (;;) {
+    RANGE(i, kSwitchMuxDegree, {
+      RANGE(j, kCgpqPushPortCount, {
+        if (!in_q[i * kCgpqPushPortCount + j].empty() &&
+            !out_q[j * kSwitchMuxDegree + i].full()) {
+          const auto task = in_q[i * kCgpqPushPortCount + j].read(nullptr);
+          CHECK_EQ(task.bid % kCgpqPushPortCount, j);
+          out_q[j * kSwitchMuxDegree + i].try_write(task);
+        }
+      });
+    });
+  }
+}
+
 #endif  // TAPA_SSSP_CGPQ_PUSH_COUNT
 
 // Each push request puts the task in the queue if there isn't a task for the
@@ -1733,7 +1763,7 @@ void TaskQueue(
     // Scalar
     uint_qid_t qid,
     // Queue requests.
-    istreams<TaskOnChip, kCgpqPushPortCount>& push_req_q,
+    istreams<TaskOnChip, kCgpqPushPortCount * kSwitchMuxDegree>& push_req_q,
     // NOOP acknowledgements
     ostream<bool>& noop_q,
     // Queue outputs.
@@ -1769,32 +1799,33 @@ void TaskQueue(
 #endif  // TAPA_SSSP_COARSE_PRIORITY
 ) {
 #ifdef TAPA_SSSP_COARSE_PRIORITY
-  streams<PushReq, kCgpqPushPortCount, 32> VAR(xbar_q0);
+  streams<PushReq, kCgpqPushPortCount * kSwitchMuxDegree, 32> VAR(xbar_q0);
 #if TAPA_SSSP_CGPQ_PUSH_COUNT >= 2
-  streams<PushReq, kCgpqPushPortCount, 32> VAR(xbar_q1);
+  streams<PushReq, kCgpqPushPortCount * kSwitchMuxDegree, 32> VAR(xbar_q1);
 #endif  // TAPA_SSSP_CGPQ_PUSH_COUNT
 #if TAPA_SSSP_CGPQ_PUSH_COUNT >= 4
-  streams<PushReq, kCgpqPushPortCount, 32> VAR(xbar_q2);
+  streams<PushReq, kCgpqPushPortCount * kSwitchMuxDegree, 32> VAR(xbar_q2);
 #endif  // TAPA_SSSP_CGPQ_PUSH_COUNT
+  streams<PushReq, kCgpqPushPortCount * kSwitchMuxDegree, 32> VAR(xbar_out_qi);
+  streams<PushReq, kCgpqPushPortCount, 512> VAR(xbar_out_q);
   stream<CgpqHeapReq, 2> heap_req_q;
   stream<cgpq::ChunkRef, 2> heap_resp_q;
-  streams<bool, kCgpqPushPortCount + 1, 2> VAR(done_qi);
+  streams<bool, kCgpqPushPortCount * kSwitchMuxDegree + 1, 2> VAR(done_qi);
 
   task()
       .invoke<detach>(CgpqDuplicateDone, done_q, done_qi)
-      .invoke<join, kCgpqPushPortCount>(CgpqBucketGen, is_log_bucket,
-                                        min_distance, max_distance, done_qi,
-                                        push_req_q, xbar_q0)
+      .invoke<join, kCgpqPushPortCount * kSwitchMuxDegree>(
+          CgpqBucketGen, is_log_bucket, min_distance, max_distance, done_qi,
+          push_req_q, xbar_q0)
 #if TAPA_SSSP_CGPQ_PUSH_COUNT >= 2
       // clang-format off
-      .invoke<detach>(CgpqSwitchStage, kCgpqPushStageCount - 1, xbar_q0, xbar_q1)
+      .invoke<detach, kSwitchMuxDegree>(CgpqSwitchStage, kCgpqPushStageCount - 1, xbar_q0, xbar_q1)
 #endif  // TAPA_SSSP_CGPQ_PUSH_COUNT
 #if TAPA_SSSP_CGPQ_PUSH_COUNT >= 4
-      .invoke<detach>(CgpqSwitchStage, kCgpqPushStageCount - 2, xbar_q1, xbar_q2)
+      .invoke<detach, kSwitchMuxDegree>(CgpqSwitchStage, kCgpqPushStageCount - 2, xbar_q1, xbar_q2)
 #endif  // TAPA_SSSP_CGPQ_PUSH_COUNT
       // clang-format on
-      .invoke<detach>(CgpqHeap, heap_req_q, heap_resp_q)
-      .invoke<detach>(CgpqCore, done_qi[kCgpqPushPortCount], stat_q, qid,
+      .invoke<detach>(CgpqPushAdapter,
 #if TAPA_SSSP_CGPQ_PUSH_COUNT == 1
                       xbar_q0,
 #elif TAPA_SSSP_CGPQ_PUSH_COUNT == 2
@@ -1804,6 +1835,12 @@ void TaskQueue(
 #else
 #error "invalid TAPA_SSSP_CGPQ_PUSH_COUNT"
 #endif  // TAPA_SSSP_CGPQ_PUSH_COUNT
+                      xbar_out_qi)
+      .invoke<detach, kCgpqPushPortCount>(CgpqSwitchMux, xbar_out_qi,
+                                          xbar_out_q)
+      .invoke<detach>(CgpqHeap, heap_req_q, heap_resp_q)
+      .invoke<detach>(CgpqCore, done_qi[kCgpqPushPortCount * kSwitchMuxDegree],
+                      stat_q, qid, xbar_out_q,  //
                       noop_q, pop_q, heap_req_q, heap_resp_q,
                       cgpq_spill_read_addr_q, cgpq_spill_read_data_q,
                       cgpq_spill_write_req_q, cgpq_spill_write_resp_q);
@@ -2041,17 +2078,6 @@ spin:
   for (ap_uint<kSwitchMuxDegree> priority = 1;; priority.lrotate(1)) {
     if (int pos; find_non_full(out_q, priority, pos) && !in_q.empty()) {
       out_q[pos].try_write(in_q.read(nullptr));
-    }
-  }
-}
-
-void SwitchMux(istreams<TaskOnChip, kSwitchMuxDegree>& in_q,
-               ostream<TaskOnChip>& out_q) {
-spin:
-  for (ap_uint<kSwitchMuxDegree> priority = 1;; priority.lrotate(1)) {
-#pragma HLS pipeline II = 1
-    if (int pos; find_non_empty(in_q, priority, pos) && !out_q.full()) {
-      out_q.try_write(in_q[pos].read(nullptr));
     }
   }
 }
@@ -2854,7 +2880,6 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
 #endif  // TAPA_SSSP_COARSE_PRIORITY
 ) {
   streams<TaskOnChip, kSubIntervalCount, 2> vertex_out_q;
-  streams<TaskOnChip, kQueueCount * kCgpqPushPortCount, 512> VAR(queue_push_q);
   streams<bool, kQueueCount, 2> queue_done_q;
   streams<PiHeapStat, kQueueCount, 2> queue_stat_q;
 
@@ -2952,7 +2977,7 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
                       task_resp_qi)
 #ifdef TAPA_SSSP_COARSE_PRIORITY
       .invoke<join, kQueueCount>(
-          TaskQueue, queue_done_q, queue_stat_q, seq(), queue_push_q,
+          TaskQueue, queue_done_q, queue_stat_q, seq(), xbar_out_q,
           queue_noop_qi, queue_pop_q, is_log_bucket, min_distance, max_distance,
           //
           cgpq_spill_read_addr_q, cgpq_spill_read_data_q,
@@ -3020,8 +3045,6 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
 #error "invalid TAPA_SSSP_SWITCH_PORT_COUNT"
 #endif  // TAPA_SSSP_SWITCH_PORT_COUNT
                       xbar_out_q)
-      .invoke<detach, kQueueCount * kCgpqPushPortCount>(SwitchMux, xbar_out_q,
-                                                        queue_push_q)
 
       .invoke<detach, kSubIntervalCount>(VertexMem, vertex_read_addr_q,
                                          vertex_read_data_q, vertex_write_req_q,
