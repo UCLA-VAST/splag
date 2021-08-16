@@ -447,12 +447,14 @@ static_assert(kShardCount * kEdgeVecLen == kCgpqPushPortCount * kQueueCount);
 
 using EdgeVec = tapa::vec_t<Edge, kEdgeVecLen>;
 
+constexpr int kSwitchMuxDegree = 2;  // Mux output from this many switches.
+
 constexpr int kSwitchPortCount = TAPA_SSSP_SWITCH_PORT_COUNT;
 
 constexpr int kSwitchStageCount = log2(kSwitchPortCount);
 
-constexpr int kSwitchCount =
-    kSwitchPortCount / 2 * kSwitchStageCount * kCgpqPushPortCount;
+constexpr int kSwitchCount = kSwitchPortCount / 2 * kSwitchStageCount *
+                             kCgpqPushPortCount * kSwitchMuxDegree;
 
 constexpr int kSwitchStatCount = 5;
 

@@ -302,6 +302,28 @@ struct arbiter {
     return is_left_non_empty || is_right_non_empty;
   }
 
+  template <typename T, uint64_t S, typename index_t>
+  static bool find_non_full(tapa::ostreams<T, S>& out_qs,
+                            const ap_uint<int(S)>& priority, index_t& idx) {
+#pragma HLS inline
+    static_assert(begin >= 0, "begin must >= 0");
+    static_assert(len > 1, "len must > 1");
+    static_assert(begin + len <= S, "begin + len must <= S");
+    index_t idx_left, idx_right;
+    const auto is_left_non_full =
+        arbiter<begin, len / 2>::find_non_full(out_qs, priority, idx_left);
+    const auto is_right_non_full =
+        arbiter<begin + len / 2, len - len / 2>::find_non_full(out_qs, priority,
+                                                               idx_right);
+    idx = is_left_non_full ^ is_right_non_full
+              ? is_left_non_full ? idx_left : idx_right
+          : ap_uint<len / 2>(priority.range(begin + len / 2 - 1, begin))
+                  .or_reduce()
+              ? idx_left
+              : idx_right;
+    return is_left_non_full || is_right_non_full;
+  }
+
   template <typename T, int N, typename pos_t>
   static T find_max(const T (&array)[N], pos_t& pos) {
 #pragma HLS inline
@@ -355,6 +377,19 @@ struct arbiter<begin, 1> {
     return true;
   }
 
+  template <typename T, uint64_t S, typename index_t>
+  static bool find_non_full(tapa::ostreams<T, S>& out_qs,
+                            const ap_uint<int(S)>& priority, index_t& idx) {
+#pragma HLS inline
+    static_assert(begin >= 0, "begin must >= 0");
+    static_assert(begin < S, "begin must < S");
+    idx = begin;
+    if (out_qs[begin].full()) {
+      return false;
+    }
+    return true;
+  }
+
   template <typename T, int N, typename pos_t>
   static T find_max(const T (&array)[N], pos_t& pos) {
 #pragma HLS inline
@@ -385,6 +420,18 @@ inline bool find_non_empty(tapa::istreams<T, S>& in_qs,
                            const ap_uint<int(S)>& priority, index_t& idx) {
 #pragma HLS inline
   return arbiter<0, S>::find_non_empty(in_qs, priority, idx);
+}
+/// Find a non-full ostream.
+///
+/// @param[in] out_qs   Output streams.
+/// @param[in] priority One-hot encoding of the prioritzed output stream.
+/// @param[out] idx     Index of the non-full ostream, invalid if none found.
+/// @return             Whether a non-full ostream is found.
+template <typename T, uint64_t S, typename index_t>
+inline bool find_non_full(tapa::ostreams<T, S>& in_qs,
+                          const ap_uint<int(S)>& priority, index_t& idx) {
+#pragma HLS inline
+  return arbiter<0, S>::find_non_full(in_qs, priority, idx);
 }
 
 /// Find a false value in a **completely partitioned** boolean array.
