@@ -1646,11 +1646,13 @@ void CgpqDuplicateDone(
 #if TAPA_SSSP_CGPQ_PUSH_COUNT >= 2
 void CgpqSwitch(
     //
-    ap_uint<log2(kCgpqPushPortCount)> b,
+    int b,
     //
     istream<PushReq>& in_q0, istream<PushReq>& in_q1,
     //
     ostreams<PushReq, 2>& out_q) {
+  b = kCgpqPushStageCount - 1 - b / kSwitchMuxDegree;
+
   bool should_prioritize_1 = false;
 spin:
   for (bool is_pkt_0_valid, is_pkt_1_valid;;) {
@@ -1704,7 +1706,7 @@ spin:
   }
 }
 
-void CgpqSwitchInnerStage(ap_uint<kCgpqPushStageCount> b,
+void CgpqSwitchInnerStage(int b,
                           istreams<PushReq, kCgpqPushPortCount / 2>& in_q0,
                           istreams<PushReq, kCgpqPushPortCount / 2>& in_q1,
                           ostreams<PushReq, kCgpqPushPortCount>& out_q) {
@@ -1712,8 +1714,7 @@ void CgpqSwitchInnerStage(ap_uint<kCgpqPushStageCount> b,
                                                 out_q);
 }
 
-void CgpqSwitchStage(ap_uint<kCgpqPushStageCount> b,
-                     istreams<PushReq, kCgpqPushPortCount>& in_q,
+void CgpqSwitchStage(int b, istreams<PushReq, kCgpqPushPortCount>& in_q,
                      ostreams<PushReq, kCgpqPushPortCount>& out_q) {
   task().invoke<detach>(CgpqSwitchInnerStage, b, in_q, in_q, out_q);
 }
@@ -1799,13 +1800,9 @@ void TaskQueue(
 #endif  // TAPA_SSSP_COARSE_PRIORITY
 ) {
 #ifdef TAPA_SSSP_COARSE_PRIORITY
-  streams<PushReq, kCgpqPushPortCount * kSwitchMuxDegree, 32> VAR(xbar_q0);
-#if TAPA_SSSP_CGPQ_PUSH_COUNT >= 2
-  streams<PushReq, kCgpqPushPortCount * kSwitchMuxDegree, 32> VAR(xbar_q1);
-#endif  // TAPA_SSSP_CGPQ_PUSH_COUNT
-#if TAPA_SSSP_CGPQ_PUSH_COUNT >= 4
-  streams<PushReq, kCgpqPushPortCount * kSwitchMuxDegree, 32> VAR(xbar_q2);
-#endif  // TAPA_SSSP_CGPQ_PUSH_COUNT
+  streams<PushReq,
+          kCgpqPushPortCount * kSwitchMuxDegree*(kCgpqPushStageCount + 1), 32>
+      VAR(xbar_q);
   streams<PushReq, kCgpqPushPortCount * kSwitchMuxDegree, 32> VAR(xbar_out_qi);
   streams<PushReq, kCgpqPushPortCount, 512> VAR(xbar_out_q);
   stream<CgpqHeapReq, 2> heap_req_q;
@@ -1816,26 +1813,12 @@ void TaskQueue(
       .invoke<detach>(CgpqDuplicateDone, done_q, done_qi)
       .invoke<join, kCgpqPushPortCount * kSwitchMuxDegree>(
           CgpqBucketGen, is_log_bucket, min_distance, max_distance, done_qi,
-          push_req_q, xbar_q0)
+          push_req_q, xbar_q)
 #if TAPA_SSSP_CGPQ_PUSH_COUNT >= 2
-      // clang-format off
-      .invoke<detach, kSwitchMuxDegree>(CgpqSwitchStage, kCgpqPushStageCount - 1, xbar_q0, xbar_q1)
+      .invoke<detach, kSwitchMuxDegree * kCgpqPushStageCount>(
+          CgpqSwitchStage, seq(), xbar_q, xbar_q)
 #endif  // TAPA_SSSP_CGPQ_PUSH_COUNT
-#if TAPA_SSSP_CGPQ_PUSH_COUNT >= 4
-      .invoke<detach, kSwitchMuxDegree>(CgpqSwitchStage, kCgpqPushStageCount - 2, xbar_q1, xbar_q2)
-#endif  // TAPA_SSSP_CGPQ_PUSH_COUNT
-      // clang-format on
-      .invoke<detach>(CgpqPushAdapter,
-#if TAPA_SSSP_CGPQ_PUSH_COUNT == 1
-                      xbar_q0,
-#elif TAPA_SSSP_CGPQ_PUSH_COUNT == 2
-                      xbar_q1,
-#elif TAPA_SSSP_CGPQ_PUSH_COUNT == 4
-                      xbar_q2,
-#else
-#error "invalid TAPA_SSSP_CGPQ_PUSH_COUNT"
-#endif  // TAPA_SSSP_CGPQ_PUSH_COUNT
-                      xbar_out_qi)
+      .invoke<detach>(CgpqPushAdapter, xbar_q, xbar_out_qi)
       .invoke<detach, kCgpqPushPortCount>(CgpqSwitchMux, xbar_out_qi,
                                           xbar_out_q)
       .invoke<detach>(CgpqHeap, heap_req_q, heap_resp_q)
@@ -1962,13 +1945,15 @@ void TaskQueue(
 #if TAPA_SSSP_SWITCH_PORT_COUNT >= 2
 void Switch2x2(
     //
-    ap_uint<kSwitchStageCount> b,
+    int b,
     //
     istream<bool>& done_q, ostream<int64_t>& stat_q,
     //
     istream<TaskOnChip>& in_q0, istream<TaskOnChip>& in_q1,
     //
     ostreams<TaskOnChip, 2>& out_q) {
+  b = kSwitchStageCount - 1 - b / (kCgpqPushPortCount * kSwitchMuxDegree);
+
   bool should_prioritize_1 = false;
   int64_t total_cycle_count = 0;
   int64_t full_0_cycle_count = 0;
@@ -2053,8 +2038,7 @@ spin:
   stat_q.write(conflict_1_cycle_count);
 }
 
-void SwitchInnerStage(ap_uint<kSwitchStageCount> b,
-                      istreams<bool, kSwitchPortCount / 2>& done_q,
+void SwitchInnerStage(int b, istreams<bool, kSwitchPortCount / 2>& done_q,
                       ostreams<int64_t, kSwitchPortCount / 2>& stat_q,
                       istreams<TaskOnChip, kSwitchPortCount / 2>& in_q0,
                       istreams<TaskOnChip, kSwitchPortCount / 2>& in_q1,
@@ -2063,8 +2047,7 @@ void SwitchInnerStage(ap_uint<kSwitchStageCount> b,
                                             in_q1, out_q);
 }
 
-void SwitchStage(ap_uint<kSwitchStageCount> b,
-                 istreams<bool, kSwitchPortCount / 2>& done_q,
+void SwitchStage(int b, istreams<bool, kSwitchPortCount / 2>& done_q,
                  ostreams<int64_t, kSwitchPortCount / 2>& stat_q,
                  istreams<TaskOnChip, kSwitchPortCount>& in_q,
                  ostreams<TaskOnChip, kSwitchPortCount>& out_q) {
@@ -2921,13 +2904,10 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   streams<TaskOnChip, kShardCount * kEdgeVecLen, 2> xbar_in_q;
   streams<TaskOnChip, kShardCount * kEdgeVecLen * kSwitchMuxDegree, 2>
       xbar_out_q;
-  streams<TaskOnChip, kShardCount * kEdgeVecLen * kSwitchMuxDegree, 32> xbar_q0;
-#if TAPA_SSSP_SWITCH_PORT_COUNT >= 2
-  streams<TaskOnChip, kShardCount * kEdgeVecLen * kSwitchMuxDegree, 32> xbar_q1;
-#endif  // TAPA_SSSP_SWITCH_PORT_COUNT
-#if TAPA_SSSP_SWITCH_PORT_COUNT >= 4
-  streams<TaskOnChip, kShardCount * kEdgeVecLen * kSwitchMuxDegree, 32> xbar_q2;
-#endif  // TAPA_SSSP_SWITCH_PORT_COUNT
+  streams<TaskOnChip,
+          kShardCount * kEdgeVecLen * kSwitchMuxDegree*(kSwitchStageCount + 1),
+          32>
+      xbar_q;
 
   streams<TaskOnChip, kSubIntervalCount * kCgpqPopPortCount, 64> VAR(
       vertex_in_qii);
@@ -3024,27 +3004,14 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
       .invoke<detach, kShardCount>(EdgeReqArbiter, edge_req_qi, src_q,
                                    edge_read_addr_q)
 
-  // For vertices.
-  // Route updates via a kShardCount x kShardCount network.
-  // clang-format off
+      // For vertices.
+      // Route updates via a kShardCount x kShardCount network.
+      .invoke<detach, kShardCount * kEdgeVecLen>(SwitchDemux, xbar_in_q, xbar_q)
 #if TAPA_SSSP_SWITCH_PORT_COUNT >= 2
-      .invoke<join, kCgpqPushPortCount * kSwitchMuxDegree>(SwitchStage, kSwitchStageCount - 1, switch_done_q, switch_stat_q, xbar_q0, xbar_q1)
-#endif // TAPA_SSSP_SWITCH_PORT_COUNT
-#if TAPA_SSSP_SWITCH_PORT_COUNT >= 4
-      .invoke<join, kCgpqPushPortCount * kSwitchMuxDegree>(SwitchStage, kSwitchStageCount - 2, switch_done_q, switch_stat_q, xbar_q1, xbar_q2)
-#endif // TAPA_SSSP_SWITCH_PORT_COUNT
-      // clang-format on
-      .invoke<detach>(PushAdapter,
-#if TAPA_SSSP_SWITCH_PORT_COUNT == 1
-                      xbar_q0,
-#elif TAPA_SSSP_SWITCH_PORT_COUNT == 2
-                      xbar_q1,
-#elif TAPA_SSSP_SWITCH_PORT_COUNT == 4
-                      xbar_q2,
-#else  // TAPA_SSSP_SWITCH_PORT_COUNT
-#error "invalid TAPA_SSSP_SWITCH_PORT_COUNT"
+      .invoke<join, kCgpqPushPortCount * kSwitchMuxDegree * kSwitchStageCount>(
+          SwitchStage, seq(), switch_done_q, switch_stat_q, xbar_q, xbar_q)
 #endif  // TAPA_SSSP_SWITCH_PORT_COUNT
-                      xbar_out_q)
+      .invoke<detach>(PushAdapter, xbar_q, xbar_out_q)
 
       .invoke<detach, kSubIntervalCount>(VertexMem, vertex_read_addr_q,
                                          vertex_read_data_q, vertex_write_req_q,
@@ -3061,7 +3028,5 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
                                 task_count_qi, edge_req_q)
       .invoke<detach>(TaskCountMerger, task_count_qi, task_count_q)
       .invoke<detach, kShardCount>(DistGen, src_q, edge_read_data_q, xbar_qv)
-      .invoke<detach, kShardCount>(TaskAdapter, xbar_qv, xbar_in_q)
-      .invoke<detach, kShardCount * kEdgeVecLen>(SwitchDemux, xbar_in_q,
-                                                 xbar_q0);
+      .invoke<detach, kShardCount>(TaskAdapter, xbar_qv, xbar_in_q);
 }
