@@ -13,7 +13,7 @@
 
 namespace cgpq {
 
-constexpr int kBucketCount = 64;
+constexpr int kBucketCount = 128;
 
 constexpr int kChunkSize = kCgpqChunkSize;
 
