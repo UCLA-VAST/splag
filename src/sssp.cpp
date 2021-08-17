@@ -2035,6 +2035,7 @@ void SwitchMux(istreams<TaskOnChip, kSwitchMuxDegree>& in_q,
                ostream<TaskOnChip>& out_q) {
 spin:
   for (ap_uint<kSwitchMuxDegree> priority = 1;; priority.lrotate(1)) {
+#pragma HLS pipeline II = 1
     if (int pos; find_non_empty(in_q, priority, pos) && !out_q.full()) {
       out_q.try_write(in_q[pos].read(nullptr));
     }
