@@ -1804,7 +1804,7 @@ void TaskQueue(
           kCgpqPushPortCount * kSwitchMuxDegree*(kCgpqPushStageCount + 1), 32>
       VAR(xbar_q);
   streams<PushReq, kCgpqPushPortCount * kSwitchMuxDegree, 32> VAR(xbar_out_qi);
-  streams<PushReq, kCgpqPushPortCount, 512> VAR(xbar_out_q);
+  streams<PushReq, kCgpqPushPortCount, 32> VAR(xbar_out_q);
   stream<CgpqHeapReq, 2> heap_req_q;
   stream<cgpq::ChunkRef, 2> heap_resp_q;
   streams<bool, kCgpqPushPortCount * kSwitchMuxDegree + 1, 2> VAR(done_qi);
