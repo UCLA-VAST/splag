@@ -520,9 +520,7 @@ int main(int argc, char* argv[]) {
     const float arg_min_distance =
         FLAGS_min_distance > 0 ? FLAGS_min_distance : root_min_distance;
     const float arg_max_distance =
-        FLAGS_max_distance > 0
-            ? FLAGS_max_distance
-            : std::max(root_min_distance + 0.5f, root_max_distance) * 1.5f;
+        FLAGS_max_distance > 0 ? FLAGS_max_distance : root_min_distance + 0.5f;
     LOG(INFO) << "using min distance " << arg_min_distance;
     LOG(INFO) << "using max distance " << arg_max_distance;
 
