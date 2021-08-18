@@ -39,12 +39,12 @@ using Eid = int32_t;  // Large enough to index all edges.
 // since all distances are positive and normalized, we can store fewer bits.
 // kFloatWidth bits from kFloatMsb is used.
 constexpr int kFloatMsb = 30;
-constexpr int kFloatWidth = 30;
+constexpr int kFloatWidth = 18;
 constexpr int kFloatLsb = kFloatMsb - kFloatWidth + 1;
 static_assert(kFloatLsb >= 0, "invalid configuration");
 static_assert(kFloatMsb <= 32, "invalid configuration");
 
-static constexpr int kVidWidth = 25;
+static constexpr int kVidWidth = 23;
 static constexpr int kEidWidth = 28;
 
 constexpr Vid kNullVid = -1;
@@ -102,12 +102,6 @@ inline std::ostream& operator<<(std::ostream& os, const Index& obj) {
 struct Task {
   Vid vid;
   Vertex vertex;
-  uint32_t _padding_0;
-  uint32_t _padding_1;
-  uint32_t _padding_2;
-
-  // Compares priority.
-  bool operator<=(const Task& other) const { return other.vertex <= vertex; }
 };
 
 inline std::ostream& operator<<(std::ostream& os, const Task& obj) {
@@ -233,8 +227,9 @@ class TaskOnChip {
 
   operator Task() const { return {.vid = vid(), .vertex = vertex()}; }
 
+  // Compares priority.
   bool operator<=(const TaskOnChip& other) const {
-    return Task(*this) <= Task(other);
+    return other.vertex() <= vertex();
   }
 
   Vid vid() const { return data.range(vid_msb, vid_lsb); };
@@ -245,33 +240,22 @@ class TaskOnChip {
     return {
         .parent = Vid(data.range(parent_msb, parent_lsb)),
         .distance = bit_cast<float>(distance.to_uint()),
-        .offset = Eid(data.range(offset_msb, offset_lsb)),
-        .degree = Vid(data.range(degree_msb, degree_lsb)),
     };
   }
 
+ private:
   void set_vid(Vid vid) { data.range(vid_msb, vid_lsb) = vid; }
   void set_value(const Vertex& vertex) {
     set_parent(vertex.parent);
     set_distance(vertex.distance);
   }
-  void set_metadata(const Vertex& vertex) {
-    set_offset(vertex.offset);
-    set_degree(vertex.degree);
-  }
-  void set_vertex(const Vertex& vertex) {
-    set_value(vertex);
-    set_metadata(vertex);
-  }
+  void set_vertex(const Vertex& vertex) { set_value(vertex); }
   void set_parent(Vid parent) { data.range(parent_msb, parent_lsb) = parent; }
   void set_distance(float distance) {
     data.range(distance_msb, distance_lsb) =
         ap_uint<32>(bit_cast<uint32_t>(distance)).range(kFloatMsb, kFloatLsb);
   }
-  void set_offset(Eid offset) { data.range(offset_msb, offset_lsb) = offset; }
-  void set_degree(Vid degree) { data.range(degree_msb, degree_lsb) = degree; }
 
- private:
   static constexpr int kDegreeWidth = 20;
   static constexpr int vid_lsb = 0;
   static constexpr int vid_msb = vid_lsb + kVidWidth - 1;
@@ -279,11 +263,7 @@ class TaskOnChip {
   static constexpr int parent_msb = parent_lsb + kVidWidth - 1;
   static constexpr int distance_lsb = parent_msb + 1;
   static constexpr int distance_msb = distance_lsb + kFloatWidth - 1;
-  static constexpr int offset_lsb = distance_msb + 1;
-  static constexpr int offset_msb = offset_lsb + kEidWidth - 1;
-  static constexpr int degree_lsb = offset_msb + 1;
-  static constexpr int degree_msb = degree_lsb + kDegreeWidth - 1;
-  static constexpr int length = degree_msb + 1;
+  static constexpr int length = distance_msb + 1;
   ap_uint<length> data;
 
   friend struct HeapElemAxi;

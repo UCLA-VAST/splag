@@ -1,6 +1,8 @@
 #ifndef TAPA_SSSP_KERNEL_H_
 #define TAPA_SSSP_KERNEL_H_
 
+#include <cstddef>
+
 #include <ap_int.h>
 
 #include <algorithm>
@@ -117,7 +119,47 @@ struct VertexCacheEntry {
   bool is_reading;
   bool is_writing;
   bool is_dirty;
-  TaskOnChip task;
+
+  VertexCacheEntry() {}
+
+  VertexCacheEntry(std::nullptr_t) {
+    is_valid = false;
+    is_reading = false;
+    is_writing = false;
+    is_dirty = false;
+  }
+
+  Task GetTask() const {
+    return {
+        .vid = static_cast<Vid>(vid_),
+        .vertex =
+            {
+                .parent = static_cast<Vid>(parent_),
+                .distance = distance_,
+                .offset = static_cast<Eid>(offset_),
+                .degree = static_cast<Vid>(degree_),
+            },
+    };
+  }
+
+  void SetVid(Vid vid) { this->vid_ = vid; }
+
+  void SetValue(const Vertex& vertex) {
+    parent_ = vertex.parent;
+    distance_ = vertex.distance;
+  }
+
+  void SetMetadata(const Vertex& vertex) {
+    offset_ = vertex.offset;
+    degree_ = vertex.degree;
+  }
+
+ private:
+  uint_vid_t vid_;
+  uint_vid_t parent_;
+  float distance_;
+  uint_eid_t offset_;
+  uint_vid_t degree_;
 };
 
 // Convenient functions and macros.
