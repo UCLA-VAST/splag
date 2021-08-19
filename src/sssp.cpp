@@ -1398,11 +1398,6 @@ spin:
                              ? refill_meta.GetWritePos()
                              : input_meta[i % kCgpqPushPortCount].GetWritePos();
 
-        auto tasks = refill_task;
-        if (is_input.bit(i)) {
-          tasks[pos % kPosPartFac] = input_task[i % kCgpqPushPortCount];
-        }
-
         ap_uint<kPosPartFac> is_written = is_refill.bit(i) ? -1 : 0;
         is_written.bit(pos % kPosPartFac) = is_refill.bit(i) || is_input.bit(i);
 
@@ -1410,14 +1405,17 @@ spin:
           if (is_written.bit(j)) {
             chunk_buf[assert_mod(bid, kBucketPartFac, i)][assume_mod(
                 ChunkMeta::uint_pos_t(pos + (kPosPartFac - 1 - j)), kPosPartFac,
-                j)] = tasks[j];
+                j)] = is_input.bit(i) ? input_task[i % kCgpqPushPortCount]
+                                      : refill_task[j];
 
             VLOG(5) << "chunk_buf[" << assert_mod(bid, kBucketPartFac, i)
                     << "]["
                     << assume_mod(
                            ChunkMeta::uint_pos_t(pos + (kPosPartFac - 1 - j)),
                            kPosPartFac, j)
-                    << "] <- " << tasks[j];
+                    << "] <- "
+                    << (is_input.bit(i) ? input_task[i % kCgpqPushPortCount]
+                                        : refill_task[j]);
           }
         });
       }
