@@ -58,7 +58,7 @@ class ChunkMeta {
 
   using uint_pos_t = ap_uint<bit_length(kBufferSize - 1)>;
   using uint_size_t = ap_uint<bit_length(kBufferSize)>;
-  using uint_delta_t = ap_uint<bit_length(kSpilledTaskVecLen)>;
+  using int_delta_t = ap_int<bit_length(kSpilledTaskVecLen) + 1>;
 
   auto GetSize() const { return size_; }
 
@@ -99,39 +99,34 @@ class ChunkMeta {
 #endif  // TAPA_SSSP_2X_BUFFER
   }
 
-  void Push(uint_delta_t n, int bid) {
-    CHECK(!IsFull());
-    CHECK_GE(free_size_, n);
-
-    write_pos_ += n;
-    size_ += n;
-    free_size_ -= n;
-    is_empty_ = false;
-    is_full_ = write_pos_ == read_pos_;
-    UpdateAlmostBits();
-
-    CHECK_EQ(size_ + free_size_, kBufferSize);
-    VLOG(5) << std::setfill(' ') << "push[" << std::setw(2) << bid
-            << "]: " << std::setw(4) << size_ - n << " -> " << std::setw(4)
-            << size_;
-  }
-
-  void Pop(int bid) {
-    CHECK(!IsEmpty());
-    CHECK_GE(size_, kSpilledTaskVecLen);
+  void Update(int_delta_t push, int_delta_t pop, int bid) {
+    if (push) {
+      CHECK(!IsFull());
+      CHECK_GE(free_size_, push);
+    }
+    if (pop) {
+      CHECK(!IsEmpty());
+      CHECK_GE(size_, pop - push);
+      CHECK_EQ(pop, kSpilledTaskVecLen);
+    }
     CHECK_EQ(read_pos_ % kSpilledTaskVecLen, 0);
 
-    read_pos_ += kSpilledTaskVecLen;
-    size_ -= kSpilledTaskVecLen;
-    free_size_ += kSpilledTaskVecLen;
-    is_empty_ = write_pos_ == read_pos_;
-    is_full_ = false;
+    read_pos_ += pop;
+    write_pos_ += push;
+    const auto delta = push - pop;
+    size_ += delta;
+    free_size_ -= delta;
+    is_empty_ = size_ == 0;
+    is_full_ = free_size_ == 0;
     UpdateAlmostBits();
 
     CHECK_EQ(size_ + free_size_, kBufferSize);
-    VLOG(5) << std::setfill(' ') << "pop [" << std::setw(2) << bid
-            << "]: " << std::setw(4) << size_ + kSpilledTaskVecLen << " -> "
-            << std::setw(4) << size_;
+    VLOG_IF(5, push) << std::setfill(' ') << "push[" << std::setw(2) << bid
+                     << "]: " << std::setw(4) << size_ - push << " -> "
+                     << std::setw(4) << size_;
+    VLOG_IF(5, pop) << std::setfill(' ') << "pop [" << std::setw(2) << bid
+                    << "]: " << std::setw(4) << size_ + kSpilledTaskVecLen
+                    << " -> " << std::setw(4) << size_;
   }
 
  private:

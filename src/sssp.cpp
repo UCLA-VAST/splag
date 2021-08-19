@@ -1501,21 +1501,21 @@ spin:
       is_output.bit(output_bid) = can_dequeue;
 
       RANGE(i, kBucketCount, {
-        if (is_refill.bit(i) || is_input.bit(i) || is_align.bit(i)) {
-          ChunkMeta::uint_delta_t n;
-          if (is_refill.bit(i)) {
-            n = kSpilledTaskVecLen;
-          } else if (is_input.bit(i)) {
-            n = 1;
-          } else {
-            n = kSpilledTaskVecLen - output_meta.GetSize();
-          }
-          chunk_meta[i].Push(n, i);
+        ChunkMeta::int_delta_t n_push = 0;
+        if (is_align.bit(i)) {
+          n_push = kSpilledTaskVecLen - output_meta.GetSize();
+        } else if (is_refill.bit(i)) {
+          n_push = kSpilledTaskVecLen;
+        } else if (is_input.bit(i)) {
+          n_push = 1;
         }
 
+        ChunkMeta::int_delta_t n_pop = 0;
         if (is_spill.bit(i) || is_output.bit(i)) {
-          chunk_meta[i].Pop(i);
+          n_pop = kSpilledTaskVecLen;
         }
+
+        chunk_meta[i].Update(n_push, n_pop, i);
       });
     }
 
