@@ -52,6 +52,10 @@ struct PushBuf {
 
 class ChunkMeta {
  public:
+  ~ChunkMeta() {
+#pragma HLS aggregate variable = this bit
+  }
+
   using uint_pos_t = ap_uint<bit_length(kBufferSize - 1)>;
   using uint_size_t = ap_uint<bit_length(kBufferSize)>;
   using uint_delta_t = ap_uint<bit_length(kSpilledTaskVecLen)>;
