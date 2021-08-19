@@ -1499,21 +1499,25 @@ spin:
       is_output.bit(output_bid) = can_dequeue;
 
       RANGE(i, kBucketCount, {
-        ChunkMeta::int_delta_t n_push = 0;
+        const bool is_pop = is_spill.bit(i) || is_output.bit(i);
+        ChunkMeta::uint_delta_t n_push = 0;
+        const ChunkMeta::uint_delta_t n_pop = is_pop ? kSpilledTaskVecLen : 0;
+        ChunkMeta::int_delta_t n_delta = 0;
         if (is_align.bit(i)) {
+          CHECK(is_pop);
           n_push = kSpilledTaskVecLen - output_meta.GetSize();
+          n_delta = -output_meta.GetSize();
         } else if (is_refill.bit(i)) {
           n_push = kSpilledTaskVecLen;
+          n_delta = is_pop ? 0 : kSpilledTaskVecLen;
         } else if (is_input.bit(i)) {
           n_push = 1;
+          n_delta = is_pop ? 1 - kSpilledTaskVecLen : 1;
+        } else if (is_pop) {
+          n_delta = -kSpilledTaskVecLen;
         }
 
-        ChunkMeta::int_delta_t n_pop = 0;
-        if (is_spill.bit(i) || is_output.bit(i)) {
-          n_pop = kSpilledTaskVecLen;
-        }
-
-        chunk_meta[i].Update(n_push, n_pop, i);
+        chunk_meta[i].Update(n_push, n_pop, n_delta, i);
       });
     }
 

@@ -58,7 +58,8 @@ class ChunkMeta {
 
   using uint_pos_t = ap_uint<bit_length(kBufferSize - 1)>;
   using uint_size_t = ap_uint<bit_length(kBufferSize)>;
-  using int_delta_t = ap_int<bit_length(kSpilledTaskVecLen) + 1>;
+  using uint_delta_t = ap_uint<bit_length(kSpilledTaskVecLen)>;
+  using int_delta_t = ap_int<uint_delta_t::width + 1>;
 
   auto GetSize() const { return size_; }
 
@@ -99,7 +100,7 @@ class ChunkMeta {
 #endif  // TAPA_SSSP_2X_BUFFER
   }
 
-  void Update(int_delta_t push, int_delta_t pop, int bid) {
+  void Update(uint_delta_t push, uint_delta_t pop, int_delta_t delta, int bid) {
     if (push) {
       CHECK(!IsFull());
       CHECK_GE(free_size_, push);
@@ -113,7 +114,7 @@ class ChunkMeta {
 
     read_pos_ += pop;
     write_pos_ += push;
-    const auto delta = push - pop;
+    CHECK_EQ(delta, push - pop);
     size_ += delta;
     free_size_ -= delta;
     is_empty_ = size_ == 0;
