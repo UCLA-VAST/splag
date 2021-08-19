@@ -82,14 +82,14 @@ class ChunkMeta {
 
   bool IsAlmostFull() const {
 #ifdef TAPA_SSSP_2X_BUFFER
-    return GetSize() >= kBufferSize / 4 * 3;
+    return is_almost_full_;
 #else
     return IsFull();
 #endif  // TAPA_SSSP_2X_BUFFER
   }
   bool IsAlmostEmpty() const {
 #ifdef TAPA_SSSP_2X_BUFFER
-    return GetSize() < kBufferSize / 4;
+    return is_almost_empty_;
 #else
     return IsEmpty();
 #endif  // TAPA_SSSP_2X_BUFFER
@@ -104,6 +104,7 @@ class ChunkMeta {
     free_size_ -= n;
     is_empty_ = false;
     is_full_ = write_pos_ == read_pos_;
+    UpdateAlmostBits();
 
     CHECK_EQ(size_ + free_size_, kBufferSize);
     VLOG(5) << std::setfill(' ') << "push[" << std::setw(2) << bid
@@ -121,6 +122,7 @@ class ChunkMeta {
     free_size_ += kSpilledTaskVecLen;
     is_empty_ = write_pos_ == read_pos_;
     is_full_ = false;
+    UpdateAlmostBits();
 
     CHECK_EQ(size_ + free_size_, kBufferSize);
     VLOG(5) << std::setfill(' ') << "pop [" << std::setw(2) << bid
@@ -129,12 +131,18 @@ class ChunkMeta {
   }
 
  private:
+  void UpdateAlmostBits() {
+    is_almost_empty_ = size_ < kBufferSize / 4;
+    is_almost_full_ = free_size_ < kBufferSize / 4;
+  }
   uint_pos_t read_pos_ = 0;
   uint_pos_t write_pos_ = 0;
   uint_size_t size_ = 0;
   uint_size_t free_size_ = kBufferSize;
   bool is_empty_ = true;
   bool is_full_ = false;
+  bool is_almost_empty_ = true;
+  bool is_almost_full_ = false;
 };
 
 struct ChunkRef {
