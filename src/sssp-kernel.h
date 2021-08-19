@@ -261,6 +261,20 @@ inline int assert_mod(int value, int mod, int rem) {
   return assume_mod(value, mod, rem);
 }
 
+template <int divisor, int width>
+ap_uint<width - log2(divisor)> div(ap_uint<width> dividend) {
+  static_assert(is_power_of(divisor, 2));
+  constexpr int divisor_width = log2(divisor);
+  return dividend.range(width - 1, divisor_width);
+}
+
+template <int divisor, int width>
+ap_uint<log2(divisor)> mod(ap_uint<width> dividend) {
+  static_assert(is_power_of(divisor, 2));
+  constexpr int divisor_width = log2(divisor);
+  return dividend.range(divisor_width - 1, 0);
+}
+
 template <typename T, int N, typename UnaryFunction>
 inline void for_each(const T (&array)[N], UnaryFunction f) {
   for (int i = 0; i < N; ++i) {

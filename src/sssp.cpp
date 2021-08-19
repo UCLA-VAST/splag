@@ -1203,7 +1203,10 @@ spin:
       // Keep invariant input_bid[i] % kPushPortCoutn == i.
       input_bid[i] = assume_mod(push_req.bid, kCgpqPushPortCount, i);
       input_task[i] = push_req.task;
-      input_meta[i] = chunk_meta[input_bid[i]];
+      // Create a copy of the i-th bank of chunk_meta to simplify the mux.
+      DECL_ARRAY(ChunkMeta, chunk_meta_copy, kBucketCount / kCgpqPushPortCount,
+                 chunk_meta[_i * kCgpqPushPortCount + i]);
+      input_meta[i] = chunk_meta_copy[div<kCgpqPushPortCount>(push_req.bid)];
     });
 
     bool is_refill_task_valid;
