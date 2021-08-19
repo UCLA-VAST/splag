@@ -19,6 +19,7 @@ target_link_libraries(sssp PRIVATE sssp_kernel tapa::tapa gflags)
 find_package(SDx REQUIRED)
 add_tapa_target(
   sssp-hw-xo
+  --enable-synth-util
   INPUT src/sssp.cpp
   TOP SSSP
   CONNECTIVITY ${CMAKE_CURRENT_SOURCE_DIR}/link_config.ini
