@@ -207,8 +207,6 @@ constexpr int kCgpqPushPortCount = TAPA_SSSP_CGPQ_PUSH_COUNT;
 
 constexpr int kCgpqPushStageCount = log2(kCgpqPushPortCount);
 
-constexpr int kCgpqPopPortCount = 4;  // Don't change
-
 constexpr int kQueueStatCount = 7 + 4 * kCgpqPushPortCount;
 #else   // TAPA_SSSP_COARSE_PRIORITY
 constexpr int kQueueStatCount = kPiHeapStatTotalCount;
@@ -447,7 +445,13 @@ constexpr int kHeapOnChipWidth = 8;  // #children per on-heap element.
 
 constexpr int kHeapOffChipWidth = 16;  // #children per off-heap element.
 
-constexpr int kSpilledTaskVecLen = 4;  // = 512 bit / 128 bit.
+constexpr int kSpilledTaskVecLen = 4;
+
+static_assert(kSubIntervalCount == kSpilledTaskVecLen * kQueueCount);
+
+constexpr int kPopSwitchPortCount = kSubIntervalCount / kQueueCount;
+
+constexpr int kPopSwitchStageCount = log2(kPopSwitchPortCount);
 
 using SpilledTask = std::array<TaskOnChip, kSpilledTaskVecLen>;
 

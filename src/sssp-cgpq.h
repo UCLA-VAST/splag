@@ -27,7 +27,7 @@ constexpr int kBufferSize = kChunkSize;
 
 constexpr int kPosPartFac = kSpilledTaskVecLen;
 
-constexpr int kBucketPartFac = 4;
+constexpr int kBucketPartFac = kCgpqPushPortCount;
 
 using uint_bid_t = ap_uint<bit_length(kBucketCount - 1)>;
 

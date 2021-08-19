@@ -1109,7 +1109,7 @@ void CgpqCore(
     // NOOP acknowledgements
     ostream<bool>& noop_q,
     // Queue outputs.
-    ostreams<TaskOnChip, kCgpqPopPortCount>& pop_q,
+    ostreams<TaskOnChip, kSpilledTaskVecLen>& pop_q,
     //
     ostream<CgpqHeapReq>& heap_req_q, istream<cgpq::ChunkRef>& heap_resp_q,
     //
@@ -1296,7 +1296,7 @@ spin:
         is_spill_valid &&         // there is active spilling, and
         !mem_write_req_q.full();  // spill data is available for write.
 
-    DECL_ARRAY(bool, is_output_fifo_full, kCgpqPopPortCount, pop_q[_i].full());
+    DECL_ARRAY(bool, is_output_fifo_full, kSpilledTaskVecLen, pop_q[_i].full());
     const bool is_output_blocked_by_full_fifo = any_of(is_output_fifo_full);
     const bool is_output_blocked_by_bank_conflict =
         is_spill_valid &&
@@ -1467,7 +1467,7 @@ spin:
     }
 
     if (can_dequeue) {
-      RANGE(i, kCgpqPopPortCount, {
+      RANGE(i, kSpilledTaskVecLen, {
         if (output_meta.GetSize() > i) {
           pop_q[i].try_write(output_task[i]);
         }
@@ -1755,6 +1755,54 @@ spin:
 
 #endif  // TAPA_SSSP_CGPQ_PUSH_COUNT
 
+void SwitchMux(istreams<TaskOnChip, kSwitchMuxDegree>& in_q,
+               ostream<TaskOnChip>& out_q) {
+spin:
+  for (ap_uint<kSwitchMuxDegree> priority = 1;; priority.lrotate(1)) {
+#pragma HLS pipeline II = 1
+    if (int pos; find_non_empty(in_q, priority, pos) && !out_q.full()) {
+      const auto task = in_q[pos].read(nullptr);
+      out_q.try_write(task);
+    }
+  }
+}
+
+void CgpqPopAdapter(
+    istreams<TaskOnChip, kPopSwitchPortCount * kSwitchMuxDegree>& in_q,
+    ostreams<TaskOnChip, kPopSwitchPortCount * kSwitchMuxDegree>& out_q) {
+spin:
+  for (;;) {
+    RANGE(i, kSwitchMuxDegree, {
+      RANGE(j, kPopSwitchPortCount, {
+        if (!in_q[i * kPopSwitchPortCount + j].empty() &&
+            !out_q[j * kSwitchMuxDegree + i].full()) {
+          const auto task = in_q[i * kPopSwitchPortCount + j].read(nullptr);
+          CHECK_EQ(task.vid() / kQueueCount % kPopSwitchPortCount, j);
+          out_q[j * kSwitchMuxDegree + i].try_write(task);
+        }
+      });
+    });
+  }
+}
+
+void VertexAdapter(istreams<TaskOnChip, kSubIntervalCount>& in_q,
+                   ostreams<TaskOnChip, kSubIntervalCount>& out_q) {
+spin:
+  for (;;) {
+    RANGE(i, kQueueCount, {
+      RANGE(j, kSubIntervalCount / kQueueCount, {
+        if (!in_q[i * kSubIntervalCount / kQueueCount + j].empty() &&
+            !out_q[j * kQueueCount + i].full()) {
+          const auto task =
+              in_q[i * kSubIntervalCount / kQueueCount + j].read(nullptr);
+          CHECK_EQ(task.vid() % kSubIntervalCount, j * kQueueCount + i);
+          out_q[j * kQueueCount + i].try_write(task);
+        }
+      });
+    });
+  }
+}
+
 // Each push request puts the task in the queue if there isn't a task for the
 // same vertex in the queue, or decreases the priority of the existing task
 // using the new value. Whether a new task is created is returned in the
@@ -1773,7 +1821,7 @@ void TaskQueue(
     // NOOP acknowledgements
     ostream<bool>& noop_q,
     // Queue outputs.
-    ostreams<TaskOnChip, kCgpqPopPortCount>& pop_q,
+    ostreams<TaskOnChip, kSpilledTaskVecLen>& pop_q,
     //
     bool is_log_bucket, float min_distance, float max_distance,
     //
@@ -2058,6 +2106,83 @@ void SwitchStage(int b, istreams<bool, kSwitchPortCount / 2>& done_q,
                  ostreams<TaskOnChip, kSwitchPortCount>& out_q) {
   task().invoke(SwitchInnerStage, b, done_q, stat_q, in_q, in_q, out_q);
 }
+
+void PopSwitch2x2(
+    //
+    int b,
+    //
+    istream<TaskOnChip>& in_q0, istream<TaskOnChip>& in_q1,
+    //
+    ostreams<TaskOnChip, 2>& out_q) {
+  b = kSwitchStageCount + kPopSwitchStageCount - 1 -
+      b / (kQueueCount * kSwitchMuxDegree);
+
+  bool should_prioritize_1 = false;
+
+spin:
+  for (bool is_pkt_0_valid, is_pkt_1_valid;;) {
+#pragma HLS pipeline II = 1
+#pragma HLS latency max = 0
+    const auto pkt_0 = in_q0.peek(is_pkt_0_valid);
+    const auto pkt_1 = in_q1.peek(is_pkt_1_valid);
+
+    const uint_vid_t addr_0 = pkt_0.vid();
+    const uint_vid_t addr_1 = pkt_1.vid();
+
+    const bool should_fwd_0_0 = is_pkt_0_valid && !addr_0.get_bit(b);
+    const bool should_fwd_0_1 = is_pkt_0_valid && addr_0.get_bit(b);
+    const bool should_fwd_1_0 = is_pkt_1_valid && !addr_1.get_bit(b);
+    const bool should_fwd_1_1 = is_pkt_1_valid && addr_1.get_bit(b);
+
+    const bool has_conflict = is_pkt_0_valid && is_pkt_1_valid &&
+                              should_fwd_0_0 == should_fwd_1_0 &&
+                              should_fwd_0_1 == should_fwd_1_1;
+
+    const bool should_read_0 = !((!should_fwd_0_0 && !should_fwd_0_1) ||
+                                 (should_prioritize_1 && has_conflict));
+    const bool should_read_1 = !((!should_fwd_1_0 && !should_fwd_1_1) ||
+                                 (!should_prioritize_1 && has_conflict));
+    const bool should_write_0 = should_fwd_0_0 || should_fwd_1_0;
+    const bool should_write_1 = should_fwd_1_1 || should_fwd_0_1;
+    const bool shoud_write_0_0 =
+        should_fwd_0_0 && (!should_fwd_1_0 || !should_prioritize_1);
+    const bool shoud_write_1_1 =
+        should_fwd_1_1 && (!should_fwd_0_1 || should_prioritize_1);
+
+    // if can forward through (0->0 or 1->1), do it
+    // otherwise, check for conflict
+    const bool is_0_written =
+        should_write_0 && out_q[0].try_write(shoud_write_0_0 ? pkt_0 : pkt_1);
+    const bool is_1_written =
+        should_write_1 && out_q[1].try_write(shoud_write_1_1 ? pkt_1 : pkt_0);
+
+    // if can forward through (0->0 or 1->1), do it
+    // otherwise, round robin priority of both ins
+    if (should_read_0 && (shoud_write_0_0 ? is_0_written : is_1_written)) {
+      in_q0.read(nullptr);
+    }
+    if (should_read_1 && (shoud_write_1_1 ? is_1_written : is_0_written)) {
+      in_q1.read(nullptr);
+    }
+
+    if (has_conflict) {
+      should_prioritize_1 = !should_prioritize_1;
+    }
+  }
+}
+
+void PopSwitchInnerStage(int b,
+                         istreams<TaskOnChip, kPopSwitchPortCount / 2>& in_q0,
+                         istreams<TaskOnChip, kPopSwitchPortCount / 2>& in_q1,
+                         ostreams<TaskOnChip, kPopSwitchPortCount>& out_q) {
+  task().invoke<detach, kPopSwitchPortCount / 2>(PopSwitch2x2, b, in_q0, in_q1,
+                                                 out_q);
+}
+
+void PopSwitchStage(int b, istreams<TaskOnChip, kPopSwitchPortCount>& in_q,
+                    ostreams<TaskOnChip, kPopSwitchPortCount>& out_q) {
+  task().invoke<detach>(PopSwitchInnerStage, b, in_q, in_q, out_q);
+}
 #endif  // TAPA_SSSP_SWITCH_PORT_COUNT
 
 void SwitchDemux(istream<TaskOnChip>& in_q,
@@ -2083,41 +2208,6 @@ spin:
           const auto task = in_q[j * kQueueCount + i].read(nullptr);
           CHECK_EQ(task.vid() % kQueueCount, i);
           out_q[i * kCgpqPushPortCount * kSwitchMuxDegree + j].try_write(task);
-        }
-      });
-    });
-  }
-}
-
-void PopAdapter(istreams<TaskOnChip, kQueueCount * kCgpqPopPortCount>& in_q,
-                ostreams<TaskOnChip, kQueueCount * kCgpqPopPortCount>& out_q) {
-spin:
-  for (;;) {
-    RANGE(i, kQueueCount, {
-      RANGE(j, kCgpqPopPortCount, {
-        if (!in_q[i * kCgpqPopPortCount + j].empty() &&
-            !out_q[j * kQueueCount + i].full()) {
-          const auto task = in_q[i * kCgpqPopPortCount + j].read(nullptr);
-          CHECK_EQ(task.vid() % kQueueCount, i);
-          out_q[j * kQueueCount + i].try_write(task);
-        }
-      });
-    });
-  }
-}
-
-void VertexAdapter(
-    istreams<TaskOnChip, kSubIntervalCount * kCgpqPopPortCount>& in_q,
-    ostreams<TaskOnChip, kSubIntervalCount * kCgpqPopPortCount>& out_q) {
-spin:
-  for (;;) {
-    RANGE(i, kSubIntervalCount, {
-      RANGE(j, kCgpqPopPortCount, {
-        if (!in_q[j * kSubIntervalCount + i].empty() &&
-            !out_q[i * kCgpqPopPortCount + j].full()) {
-          const auto task = in_q[j * kSubIntervalCount + i].read(nullptr);
-          CHECK_EQ(task.vid() % kSubIntervalCount, i);
-          out_q[i * kCgpqPopPortCount + j].try_write(task);
         }
       });
     });
@@ -2612,22 +2702,6 @@ spin:
   }
 }
 
-void QueueOutputArbiter(tapa::istreams<TaskOnChip, kQueueCount>& in_q,
-                        tapa::ostreams<TaskOnChip, kSubIntervalCount>& out_q) {
-  TaskArbiterTemplate(in_q, out_q);
-}
-
-void QueueOutputMerger(tapa::istreams<TaskOnChip, kCgpqPopPortCount>& in_q,
-                       tapa::ostream<TaskOnChip>& out_q) {
-spin:
-  for (ap_uint<kCgpqPopPortCount> priority = 1;; priority.lrotate(1)) {
-#pragma HLS pipeline II = 1
-    if (int i; find_non_empty(in_q, priority, i)) {
-      out_q.write(in_q[i].read(nullptr));
-    }
-  }
-}
-
 void VertexOutputArbiter(tapa::istreams<TaskOnChip, kSubIntervalCount>& in_q,
                          tapa::ostreams<TaskOnChip, kQueueCount>& out_q) {
   TaskArbiterTemplate(in_q, out_q);
@@ -2885,8 +2959,12 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
 
   stream<Task, 2> task_init_q;
   stream<int64_t, 2> task_stat_q;
-  streams<TaskOnChip, kQueueCount * kCgpqPopPortCount, 2> VAR(queue_pop_q);
-  streams<TaskOnChip, kQueueCount * kCgpqPopPortCount, 2> VAR(queue_pop_qi);
+  streams<TaskOnChip,
+          kQueueCount * kSpilledTaskVecLen *
+              kSwitchMuxDegree*(kPopSwitchStageCount + 1),
+          32>
+      VAR(pop_xbar_q);
+  streams<TaskOnChip, kQueueCount * kSpilledTaskVecLen, 32> VAR(queue_pop_q);
 
   // For edges.
   streams<Vid, kShardCount, 2> edge_read_addr_q("edge_read_addr");
@@ -2905,11 +2983,10 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
           32>
       xbar_q;
 
-  streams<TaskOnChip, kSubIntervalCount * kCgpqPopPortCount, 32> VAR(
+  streams<TaskOnChip, kSubIntervalCount * kSwitchMuxDegree, 32> VAR(
       vertex_in_qii);
-  streams<TaskOnChip, kSubIntervalCount * kCgpqPopPortCount, 32> VAR(
-      vertex_in_qi);
-  streams<TaskOnChip, kSubIntervalCount, 32> VAR(vertex_in_q);
+  streams<TaskOnChip, kSubIntervalCount, 2> VAR(vertex_in_qi);
+  streams<TaskOnChip, kSubIntervalCount, 2> VAR(vertex_in_q);
   //   Connect the vertex readers and updaters.
   streams<bool, kSubIntervalCount, 2> update_noop_qi1;
   streams<Vid, kSubIntervalCount, 2> vertex_read_addr_q;
@@ -2958,7 +3035,12 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
           //
           cgpq_spill_read_addr_q, cgpq_spill_read_data_q,
           cgpq_spill_write_req_q, cgpq_spill_write_resp_q)
-      .invoke<detach>(PopAdapter, queue_pop_q, queue_pop_qi)
+      .invoke<detach, kSubIntervalCount>(SwitchDemux, queue_pop_q, pop_xbar_q)
+      .invoke<detach, kQueueCount * kSwitchMuxDegree * kPopSwitchStageCount>(
+          PopSwitchStage, seq(), pop_xbar_q, pop_xbar_q)
+      .invoke<detach, kQueueCount>(CgpqPopAdapter, pop_xbar_q, vertex_in_qii)
+      .invoke<detach, kSubIntervalCount>(SwitchMux, vertex_in_qii, vertex_in_qi)
+      .invoke<detach>(VertexAdapter, vertex_in_qi, vertex_in_q)
 #else   // TAPA_SSSP_COARSE_PRIORITY
       .invoke<join, kQueueCount>(
           TaskQueue, queue_done_q, queue_stat_q, seq(), queue_push_q,
@@ -2970,11 +3052,6 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
 #endif  // TAPA_SSSP_COARSE_PRIORITY
       .invoke<detach>(QueueNoopMerger, queue_noop_qi, queue_noop_q)
 #ifdef TAPA_SSSP_IMMEDIATE_RELAX
-      .invoke<detach, kCgpqPopPortCount>(QueueOutputArbiter, queue_pop_qi,
-                                         vertex_in_qii)
-      .invoke<detach>(VertexAdapter, vertex_in_qii, vertex_in_qi)
-      .invoke<detach, kSubIntervalCount>(QueueOutputMerger, vertex_in_qi,
-                                         vertex_in_q)
 #else   // TAPA_SSSP_IMMEDIATE_RELAX
       .invoke<detach>(VertexOutputArbiter, vertex_out_q, queue_push_q)
 #endif  // TAPA_SSSP_IMMEDIATE_RELAX
