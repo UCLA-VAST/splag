@@ -1738,19 +1738,10 @@ spin:
 void CgpqPushAdapter(
     istreams<PushReq, kCgpqPushPortCount * kSwitchMuxDegree>& in_q,
     ostreams<PushReq, kCgpqPushPortCount * kSwitchMuxDegree>& out_q) {
-spin:
-  for (;;) {
-    RANGE(i, kSwitchMuxDegree, {
-      RANGE(j, kCgpqPushPortCount, {
-        if (!in_q[i * kCgpqPushPortCount + j].empty() &&
-            !out_q[j * kSwitchMuxDegree + i].full()) {
-          const auto task = in_q[i * kCgpqPushPortCount + j].read(nullptr);
-          CHECK_EQ(task.bid % kCgpqPushPortCount, j);
-          out_q[j * kSwitchMuxDegree + i].try_write(task);
-        }
+  Transpose<kSwitchMuxDegree, kCgpqPushPortCount>(
+      in_q, out_q, [](const auto& req, int old_pos, int new_pos) {
+        CHECK_EQ(req.bid % kCgpqPushPortCount, old_pos % kCgpqPushPortCount);
       });
-    });
-  }
 }
 
 #endif  // TAPA_SSSP_CGPQ_PUSH_COUNT
@@ -1770,37 +1761,19 @@ spin:
 void CgpqPopAdapter(
     istreams<TaskOnChip, kPopSwitchPortCount * kSwitchMuxDegree>& in_q,
     ostreams<TaskOnChip, kPopSwitchPortCount * kSwitchMuxDegree>& out_q) {
-spin:
-  for (;;) {
-    RANGE(i, kSwitchMuxDegree, {
-      RANGE(j, kPopSwitchPortCount, {
-        if (!in_q[i * kPopSwitchPortCount + j].empty() &&
-            !out_q[j * kSwitchMuxDegree + i].full()) {
-          const auto task = in_q[i * kPopSwitchPortCount + j].read(nullptr);
-          CHECK_EQ(task.vid() / kQueueCount % kPopSwitchPortCount, j);
-          out_q[j * kSwitchMuxDegree + i].try_write(task);
-        }
+  Transpose<kSwitchMuxDegree, kPopSwitchPortCount>(
+      in_q, out_q, [](const auto& task, int old_pos, int new_pos) {
+        CHECK_EQ(task.vid() / kQueueCount % kPopSwitchPortCount,
+                 old_pos % kPopSwitchPortCount);
       });
-    });
-  }
 }
 
 void VertexAdapter(istreams<TaskOnChip, kSubIntervalCount>& in_q,
                    ostreams<TaskOnChip, kSubIntervalCount>& out_q) {
-spin:
-  for (;;) {
-    RANGE(i, kQueueCount, {
-      RANGE(j, kSubIntervalCount / kQueueCount, {
-        if (!in_q[i * kSubIntervalCount / kQueueCount + j].empty() &&
-            !out_q[j * kQueueCount + i].full()) {
-          const auto task =
-              in_q[i * kSubIntervalCount / kQueueCount + j].read(nullptr);
-          CHECK_EQ(task.vid() % kSubIntervalCount, j * kQueueCount + i);
-          out_q[j * kQueueCount + i].try_write(task);
-        }
+  Transpose<kQueueCount, kSubIntervalCount / kQueueCount>(
+      in_q, out_q, [](const auto& task, int old_pos, int new_pos) {
+        CHECK_EQ(task.vid() % kSubIntervalCount, new_pos);
       });
-    });
-  }
 }
 
 // Each push request puts the task in the queue if there isn't a task for the
@@ -2199,35 +2172,18 @@ void PushAdapter(istreams<TaskOnChip, kQueueCount * kCgpqPushPortCount *
                                           kSwitchMuxDegree>& in_q,
                  ostreams<TaskOnChip, kQueueCount * kCgpqPushPortCount *
                                           kSwitchMuxDegree>& out_q) {
-spin:
-  for (;;) {
-    RANGE(i, kQueueCount, {
-      RANGE(j, kCgpqPushPortCount * kSwitchMuxDegree, {
-        if (!in_q[j * kQueueCount + i].empty() &&
-            !out_q[i * kCgpqPushPortCount * kSwitchMuxDegree + j].full()) {
-          const auto task = in_q[j * kQueueCount + i].read(nullptr);
-          CHECK_EQ(task.vid() % kQueueCount, i);
-          out_q[i * kCgpqPushPortCount * kSwitchMuxDegree + j].try_write(task);
-        }
+  Transpose<kCgpqPushPortCount * kSwitchMuxDegree, kQueueCount>(
+      in_q, out_q, [](const auto& task, int old_pos, int new_pos) {
+        CHECK_EQ(task.vid() % kQueueCount, old_pos % kQueueCount);
       });
-    });
-  }
 }
 
 void EdgeAdapter(istreams<EdgeReq, kPeCount>& in_q,
                  ostreams<EdgeReq, kPeCount>& out_q) {
-spin:
-  for (;;) {
-    RANGE(i, kPeCount / kShardCount, {
-      RANGE(j, kShardCount, {
-        if (!in_q[i * kShardCount + j].empty() &&
-            !out_q[j * kPeCount / kShardCount + i].full()) {
-          const auto req = in_q[i * kShardCount + j].read(nullptr);
-          out_q[j * kPeCount / kShardCount + i].try_write(req);
-        }
+  Transpose<kPeCount / kShardCount, kShardCount>(
+      in_q, out_q, [](const auto& req, int old_pos, int new_pos) {
+        CHECK_EQ(req.payload.parent % kShardCount, old_pos % kShardCount);
       });
-    });
-  }
 }
 
 void EdgeReqArbiter(tapa::istreams<EdgeReq, kPeCount / kShardCount>& req_q,

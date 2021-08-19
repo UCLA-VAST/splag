@@ -730,4 +730,25 @@ spin:
   }
 }
 
+/// Transpose a MxN stream array to a NxM stream array, effectively changing the
+/// stride from 1 to M.
+template <int M, int N, typename T, typename Checker>
+void Transpose(tapa::istreams<T, M * N>& in_q, tapa::ostreams<T, M * N>& out_q,
+               Checker checker) {
+#pragma HLS inline
+spin:
+  for (;;) {
+#pragma HLS pipeline II = 1
+    RANGE(i, M, {
+      RANGE(j, N, {
+        if (!in_q[i * N + j].empty() && !out_q[j * M + i].full()) {
+          const auto elem = in_q[i * N + j].read(nullptr);
+          checker(elem, i * N + j, j * M + i);
+          out_q[j * M + i].try_write(elem);
+        }
+      });
+    });
+  }
+}
+
 #endif  // TAPA_SSSP_KERNEL_H_
