@@ -453,7 +453,7 @@ using SpilledTask = std::array<TaskOnChip, kSpilledTaskVecLen>;
 
 constexpr int kCgpqChunkSize = 1024;
 
-constexpr int kCgpqLevel = 15;
+constexpr int kCgpqLevel = 16;
 
 constexpr int kCgpqCapacity = (1 << kCgpqLevel) - 1;
 
