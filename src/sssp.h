@@ -59,7 +59,11 @@ struct Vertex {
 
   // Compares distance.
   bool operator<=(const Vertex& other) const {
-    return bit_cast<uint32_t>(distance) <= bit_cast<uint32_t>(other.distance);
+    return static_cast<ap_uint<kFloatWidth>>(
+               bit_cast<ap_uint<32>>(distance).range(kFloatMsb, kFloatLsb)) <=
+           static_cast<ap_uint<kFloatWidth>>(
+               bit_cast<ap_uint<32>>(other.distance)
+                   .range(kFloatMsb, kFloatLsb));
   }
 
   bool is_inf() const {
