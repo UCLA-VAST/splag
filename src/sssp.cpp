@@ -2261,8 +2261,7 @@ spin:
   stat_q.write(pe_stall_cycle_count);
 }
 
-void ProcElemS0(istream<Task>& task_in_q, ostream<Vid>& task_resp_q,
-                ostream<uint_vid_t>& task_count_q,
+void EdgeReqGen(istream<Task>& task_in_q, ostream<uint_vid_t>& task_count_q,
                 ostream<EdgeReq>& edge_req_q) {
   EdgeReq req;
 
@@ -2283,10 +2282,6 @@ spin:
 
     if (i > 0) {
       edge_req_q.write(req);
-      if (i == 1) {
-        task_resp_q.write(req.payload.vid);
-      }
-
       ++req.addr;
       --i;
     }
@@ -2666,61 +2661,24 @@ const int kTaskInputCount = kQueueCount;
 void TaskArbiter(  //
     istream<Task>& task_init_q, ostream<int64_t>& task_stat_q,
     istreams<Task, kTaskInputCount>& task_in_q,
-    ostreams<Task, kPeCount>& task_req_q,
-    istreams<Vid, kPeCount>& task_resp_q) {
+    ostreams<Task, kPeCount>& task_req_q) {
 exec:
   for (;;) {
     static_assert(kPeCount % kTaskInputCount == 0, "");
-    bool is_pe_active[kTaskInputCount][kPeCount / kTaskInputCount];
-#pragma HLS array_partition variable = is_pe_active complete dim = 0
-    RANGE(peid, kPeCount,
-          is_pe_active[peid % kTaskInputCount][peid / kTaskInputCount] = false);
-
-    CLEAN_UP(clean_up, [&] {
-      RANGE(
-          peid, kPeCount,
-          CHECK(!is_pe_active[peid % kTaskInputCount][peid / kTaskInputCount]));
-    });
 
     const auto task_init = task_init_q.read();
     const auto tid_init = task_init.vid % kTaskInputCount;
     task_req_q[tid_init].write(task_init);
-    is_pe_active[tid_init][0] = true;
-
-    DECL_ARRAY(int64_t, pe_active_count, kPeCount, 0);
 
   spin:
     for (; !task_init_q.eos(nullptr);) {
 #pragma HLS pipeline II = 1
-
-      // Increment performance counters.
-      RANGE(peid, kPeCount, {
-        if (is_pe_active[peid % kTaskInputCount][peid / kTaskInputCount]) {
-          ++pe_active_count[peid];
-        }
-      });
-
       // Issue task requests.
       RANGE(tid, kTaskInputCount, {
-        ap_uint<bit_length(kPeCount / kTaskInputCount - 1)> pe_tid;
-        if (!task_in_q[tid].empty() && find_false(is_pe_active[tid], pe_tid)) {
-          const auto peid = pe_tid * kTaskInputCount + tid;
+        if (!task_in_q[tid].empty() && !task_req_q[tid].full()) {
           const auto task = task_in_q[tid].read(nullptr);
           CHECK_EQ(task.vid % kTaskInputCount, tid);
-          CHECK(!task_req_q[peid].full()) << "PE rate limit needed";
-          task_req_q[peid].try_write(task);
-          CHECK(!is_pe_active[tid][pe_tid]);
-          is_pe_active[tid][pe_tid] = true;
-        }
-      });
-
-      // Collect task responses.
-      RANGE(peid, kPeCount, {
-        if (!task_resp_q[peid].empty()) {
-          const auto vid = task_resp_q[peid].read(nullptr);
-          CHECK_EQ(vid % kTaskInputCount, peid % kTaskInputCount);
-          CHECK(is_pe_active[peid % kTaskInputCount][peid / kTaskInputCount]);
-          is_pe_active[peid % kTaskInputCount][peid / kTaskInputCount] = false;
+          task_req_q[tid].try_write(task);
         }
       });
     }
@@ -2728,7 +2686,7 @@ exec:
     task_init_q.try_open();
   stat:
     for (ap_uint<bit_length(kPeCount)> peid = 0; peid < kPeCount; ++peid) {
-      task_stat_q.write(pe_active_count[peid]);
+      task_stat_q.write(0);
     }
   }
 }
@@ -2905,7 +2863,6 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
 #endif  // TAPA_SSSP_COARSE_PRIORITY
 
   streams<Task, kPeCount, 2> task_req_qi("task_req_i");
-  streams<Vid, kPeCount, 2> task_resp_qi("task_resp_i");
 
   stream<Task, 2> task_init_q;
   stream<int64_t, 2> task_stat_q;
@@ -2969,13 +2926,13 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
 #endif  // TAPA_SSSP_SWITCH_PORT_COUNT
           task_init_q, task_stat_q, vertex_noop_q, queue_noop_q, task_count_q)
 #ifdef TAPA_SSSP_IMMEDIATE_RELAX
-      .invoke<detach>(TaskArbiter, task_init_q, task_stat_q, vertex_out_q,
-                      task_req_qi,
+      .invoke<detach>(
+          TaskArbiter, task_init_q, task_stat_q, vertex_out_q, task_req_qi
 #else   // TAPA_SSSP_IMMEDIATE_RELAX
-      .invoke<detach>(TaskArbiter, task_init_q, task_stat_q, queue_pop_q,
-                      task_req_qi,
+      .invoke<detach>(
+          TaskArbiter, task_init_q, task_stat_q, queue_pop_q, task_req_qi
 #endif  // TAPA_SSSP_IMMEDIATE_RELAX
-                      task_resp_qi)
+          )
 #ifdef TAPA_SSSP_COARSE_PRIORITY
       .invoke<join, kQueueCount>(
           TaskQueue, queue_done_q, queue_stat_q, seq(), xbar_out_q,
@@ -3045,8 +3002,8 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
       .invoke<detach>(VertexNoopMerger, update_noop_qi1, vertex_noop_q)
 
       // PEs.
-      .invoke<detach, kPeCount>(ProcElemS0, task_req_qi, task_resp_qi,
-                                task_count_qi, edge_req_q)
+      .invoke<detach, kPeCount>(EdgeReqGen, task_req_qi, task_count_qi,
+                                edge_req_q)
       .invoke<detach>(TaskCountMerger, task_count_qi, task_count_q)
       .invoke<detach, kShardCount>(DistGen, src_q, edge_read_data_q, xbar_in_q);
 }
