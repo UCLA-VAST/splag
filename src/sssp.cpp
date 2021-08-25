@@ -2363,18 +2363,6 @@ init:
     }
   });
 
-  auto GenPush = [&push_q](VertexCacheEntry& entry) {
-    push_q.write(entry.GetTask());
-    VLOG(5) << "task     -> " << entry.GetTask();
-    entry.is_dirty = true;
-    VLOG(5) << "v$$$[" << entry.GetTask().vid << "] marked dirty";
-  };
-
-  auto GenNoop = [&noop_q] {
-    noop_q.write(false);
-    VLOG(5) << "task     -> NOOP";
-  };
-
 exec:
   for (;;) {
 #pragma HLS pipeline off
@@ -2462,11 +2450,19 @@ exec:
         entry.SetMetadata(vertex);
         if (vertex <= entry.GetTask().vertex) {
           // Distance in DRAM is closer; generate NOOP and update cache.
-          GenNoop();
+          noop_q.write(false);
+          VLOG(5) << "task     -> NOOP";
           entry.SetValue(vertex);
         } else {
           // Distance in cache is closer; generate PUSH.
-          GenPush(entry);
+          if (entry.GetTask().vertex.degree > 1) {
+            push_q.write(entry.GetTask());
+          } else {
+            noop_q.write(false);
+          }
+          VLOG(5) << "task     -> " << entry.GetTask();
+          entry.is_dirty = true;
+          VLOG(5) << "v$$$[" << entry.GetTask().vid << "] marked dirty";
           ++write_hit;
         }
         is_entry_updated = true;
@@ -2498,10 +2494,18 @@ exec:
           // If reading, PUSH will be generated when read finishes, if
           // necessary.
           if (is_entry_updated && !entry.is_reading) {
-            GenPush(entry);
+            if (entry.GetTask().vertex.degree > 1) {
+              push_q.write(entry.GetTask());
+            } else {
+              noop_q.write(false);
+            }
+            VLOG(5) << "task     -> " << entry.GetTask();
+            entry.is_dirty = true;
+            VLOG(5) << "v$$$[" << entry.GetTask().vid << "] marked dirty";
             ++write_hit;
           } else {
-            GenNoop();
+            noop_q.write(false);
+            VLOG(5) << "task     -> NOOP";
           }
 
           ++read_hit;
