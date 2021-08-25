@@ -2182,7 +2182,7 @@ void EdgeAdapter(istreams<EdgeReq, kPeCount>& in_q,
                  ostreams<EdgeReq, kPeCount>& out_q) {
   Transpose<kPeCount / kShardCount, kShardCount>(
       in_q, out_q, [](const auto& req, int old_pos, int new_pos) {
-        CHECK_EQ(req.payload.parent % kShardCount, old_pos % kShardCount);
+        CHECK_EQ(req.payload.vid % kShardCount, old_pos % kShardCount);
       });
 }
 
@@ -2271,15 +2271,20 @@ spin:
 #pragma HLS pipeline II = 1
     if (i == 0 && !task_in_q.empty()) {
       const auto task = task_in_q.read(nullptr);
-      req = {task.vertex.offset, {task.vid, task.vertex.distance}};
-      task_count_q.write(task.vertex.degree);
+      req = {task.vertex.offset,
+             {
+                 .vid = task.vid,
+                 .parent = task.vertex.parent,
+                 .distance = task.vertex.distance,
+             }};
+      task_count_q.write(task.vertex.degree - 1);  // Don't visit parent.
       i = tapa::round_up_div<kEdgeVecLen>(task.vertex.degree);
     }
 
     if (i > 0) {
       edge_req_q.write(req);
       if (i == 1) {
-        task_resp_q.write(req.payload.parent);
+        task_resp_q.write(req.payload.vid);
       }
 
       ++req.addr;
@@ -2290,7 +2295,7 @@ spin:
 
 void DistGen(istream<SourceVertex>& src_in_q,
              istream<EdgeVec>& edges_read_data_q,
-             ostream<TaskVec>& update_out_q) {
+             ostreams<TaskOnChip, kEdgeVecLen>& update_out_q) {
 spin:
   for (;;) {
 #pragma HLS pipeline II = 1
@@ -2299,27 +2304,12 @@ spin:
       const auto edge_v = edges_read_data_q.read(nullptr);
       TaskVec task_v;
       RANGE(i, kEdgeVecLen, {
-        task_v[i] = Task{
-            .vid = edge_v[i].dst,
-            .vertex = {src.parent, src.distance + edge_v[i].weight},
-        };
-      });
-      update_out_q.write(task_v);
-    }
-  }
-}
-
-void TaskAdapter(istream<TaskVec>& in_q,
-                 ostreams<TaskOnChip, kEdgeVecLen>& out_q) {
-spin:
-  for (;;) {
-#pragma HLS pipeline II = 1
-    if (!in_q.empty()) {
-      const auto task_v = in_q.read(nullptr);
-      RANGE(i, kEdgeVecLen, {
-        if (bit_cast<uint32_t>(task_v[i].vertex().distance) !=
-            bit_cast<uint32_t>(kInfDistance)) {
-          out_q[i].write(task_v[i]);
+        if (!std::isinf(edge_v[i].weight) &&
+            uint_vid_t(edge_v[i].dst) != uint_vid_t(src.parent)) {
+          update_out_q[i].write(Task{
+              .vid = edge_v[i].dst,
+              .vertex = {src.vid, src.distance + edge_v[i].weight},
+          });
         }
       });
     }
@@ -2780,7 +2770,7 @@ void Dispatcher(
   ap_uint<bit_length(kTerminationHold)> termination = 0;
 
 spin:
-  for (int32_t active_task_count = 1;
+  for (int32_t active_task_count = 2;  // Because root doesn't have a parent.
        active_task_count || termination < kTerminationHold; ++cycle_count) {
 #pragma HLS pipeline II = 1
     if (active_task_count == 0) {
@@ -2933,8 +2923,6 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   streams<EdgeReq, kPeCount, 32> VAR(edge_req_qi);
   streams<SourceVertex, kShardCount, 64> src_q("source_vertices");
 
-  streams<TaskVec, kShardCount, 2> VAR(xbar_qv);
-
   streams<TaskOnChip, kShardCount * kEdgeVecLen, 2> xbar_in_q;
   streams<TaskOnChip, kShardCount * kEdgeVecLen * kSwitchMuxDegree, 2>
       xbar_out_q;
@@ -3060,6 +3048,5 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
       .invoke<detach, kPeCount>(ProcElemS0, task_req_qi, task_resp_qi,
                                 task_count_qi, edge_req_q)
       .invoke<detach>(TaskCountMerger, task_count_qi, task_count_q)
-      .invoke<detach, kShardCount>(DistGen, src_q, edge_read_data_q, xbar_qv)
-      .invoke<detach, kShardCount>(TaskAdapter, xbar_qv, xbar_in_q);
+      .invoke<detach, kShardCount>(DistGen, src_q, edge_read_data_q, xbar_in_q);
 }
