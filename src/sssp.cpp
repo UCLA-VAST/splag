@@ -2189,22 +2189,26 @@ void EdgeAdapter(istreams<EdgeReq, kPeCount>& in_q,
 void EdgeReqArbiter(tapa::istreams<EdgeReq, kPeCount / kShardCount>& req_q,
                     tapa::ostream<SourceVertex>& src_q,
                     tapa::ostream<Vid>& addr_q) {
-  ap_uint<3> counter = 0;
-  ap_uint<kPeCount / kShardCount> priority = 1;
 spin:
   for (;;) {
 #pragma HLS pipeline II = 1
-    if (int i; find_non_empty(req_q, priority, i)) {
-      if (!src_q.full() && !addr_q.full()) {
-        const auto req = req_q[i].read(nullptr);
+    DECL_ARRAY(bool, is_req_valid, kPeCount / kShardCount, false);
+    DECL_ARRAY(EdgeReq, req, kPeCount / kShardCount,
+               req_q[_i].peek(is_req_valid[_i]));
+    if (!src_q.full() && !addr_q.full()) {
+      static_assert(kPeCount / kShardCount == 2);
+      if (is_req_valid[0] &&
+          (!is_req_valid[1] ||
+           DistLe(req[0].payload.distance, req[1].payload.distance))) {
+        const auto req = req_q[0].read(nullptr);
+        src_q.try_write(req.payload);
+        addr_q.try_write(req.addr);
+      } else if (is_req_valid[1]) {
+        const auto req = req_q[1].read(nullptr);
         src_q.try_write(req.payload);
         addr_q.try_write(req.addr);
       }
     }
-    if (counter == 0) {
-      priority.lrotate(1);
-    }
-    ++counter;
   }
 }
 

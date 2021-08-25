@@ -50,6 +50,13 @@ static constexpr int kEidWidth = 28;
 constexpr Vid kNullVid = -1;
 constexpr float kInfDistance = std::numeric_limits<float>::infinity();
 
+inline bool DistLe(float a, float b) {
+  return static_cast<ap_uint<kFloatWidth>>(
+             bit_cast<ap_uint<32>>(a).range(kFloatMsb, kFloatLsb)) <=
+         static_cast<ap_uint<kFloatWidth>>(
+             bit_cast<ap_uint<32>>(b).range(kFloatMsb, kFloatLsb));
+}
+
 struct Vertex {
   Vid parent;
   float distance;
@@ -59,11 +66,7 @@ struct Vertex {
 
   // Compares distance.
   bool operator<=(const Vertex& other) const {
-    return static_cast<ap_uint<kFloatWidth>>(
-               bit_cast<ap_uint<32>>(distance).range(kFloatMsb, kFloatLsb)) <=
-           static_cast<ap_uint<kFloatWidth>>(
-               bit_cast<ap_uint<32>>(other.distance)
-                   .range(kFloatMsb, kFloatLsb));
+    return DistLe(distance, other.distance);
   }
 
   bool is_inf() const {
