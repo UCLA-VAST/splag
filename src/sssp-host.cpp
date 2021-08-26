@@ -423,7 +423,7 @@ int main(int argc, char* argv[]) {
           std::sort(first, last,
                     [](auto& a, auto& b) { return a.dst < b.dst; });
         } else {
-          std::random_shuffle(first, last);
+          std::shuffle(first, last, std::mt19937());
         }
       }
     }
