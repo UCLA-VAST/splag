@@ -946,7 +946,7 @@ void CgpqHeap(istream<CgpqHeapReq>& req_q, ostream<cgpq::ChunkRef>& resp_q) {
   // Heap element that is being send up or down.
   ChunkRef heap_elem;
   // Heap position that should be read.
-  uint_heap_pair_pos_t heap_read_pos;
+  uint_heap_pair_pos_t heap_read_pos = 0;
   // Whether heap was written in the previous iteration.
   bool is_heap_written = false;
   // Heap position that was written in the previous iteration.
@@ -992,7 +992,11 @@ spin:
         heap_write_pos = heap_pos / 2;
         is_heap_written = true;
 
+#if defined(__has_feature)
+#if !__has_feature(memory_sanitizer)
         CHECK(heap_array[heap_pos / 2] == heap_pair);
+#endif
+#endif
         if (heap_pos > 1 && heap_elem_next < heap_elem) {
           heap_pair[heap_pos % 2] = heap_elem_next;
           if (heap_pos == 1) {
@@ -1124,7 +1128,7 @@ void CgpqCore(
   // Whether the external priority queue is busy.
   bool is_heap_available = true;
   // The current top of heap, valid only if heap is not busy.
-  ChunkRef heap_root;
+  ChunkRef heap_root{.bucket = 0};
   // Current heap size, kept track both in the heap and here as perf counter.
   uint_heap_size_t heap_size = 0;
   // Maximum heap size in this execution (as perf counter).
@@ -1140,7 +1144,7 @@ void CgpqCore(
     kPosPartFac dim = 2
 
   bool is_spill_valid = false;
-  uint_bid_t spill_bid;
+  uint_bid_t spill_bid = 0;
   uint_spill_addr_t spill_addr_req = 0;
   uint_spill_addr_t spill_addr_resp = 0;
   ChunkMeta::uint_size_t task_to_spill_count = kChunkSize;
@@ -1150,10 +1154,10 @@ void CgpqCore(
   uint_spill_addr_t refill_addr;
   // Refill data should write to this bucket.
   bool is_refill_valid = false;
-  uint_bid_t refill_bid;
+  uint_bid_t refill_bid = 0;
   // Future refill data should write to this bucket.
   bool is_refill_next_valid = false;
-  uint_bid_t refill_bid_next;
+  uint_bid_t refill_bid_next = 0;
   // Number of data remaining to refill.
   uint_chunk_size_t refill_remain_count;
 
