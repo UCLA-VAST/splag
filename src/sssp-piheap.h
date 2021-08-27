@@ -134,16 +134,16 @@ find_update:
     ReadElemPair(elems_in, req.index + i, elem_pair);
     const bool is_update_needed_0 =
         elem_pair[0].valid &&
-        (!max_elem.valid || !(elem_pair[0].task <= max_elem.task));
+        (!max_elem.valid || max_elem.task < elem_pair[0].task);
     const bool is_update_needed_1 =
         elem_pair[1].valid &&
-        (!max_elem.valid || !(elem_pair[1].task <= max_elem.task));
+        (!max_elem.valid || max_elem.task < elem_pair[1].task);
     if (is_update_needed_0 || is_update_needed_1) {
       elem_pair_out[0] = elem_pair[0];
       elem_pair_out[1] = elem_pair[1];
       is_max_pos_valid |= true;
       if (!elem_pair[0].valid ||
-          (elem_pair[1].valid && elem_pair[0].task <= elem_pair[1].task)) {
+          (elem_pair[1].valid && !(elem_pair[1].task < elem_pair[0].task))) {
         idx = req.index + i + 1;
         max_elem = elem_pair[1];
       } else {
@@ -215,7 +215,7 @@ inline void PiHeapPush(uint_qid_t qid, int level, HeapReq req,
         CHECK_LT(new_idx, (idx + 1) * kPiHeapWidth);
         idx = new_idx;
 
-        if (!(req.task <= elem.task)) {
+        if (elem.task < req.task) {
           std::swap(elem.task, req.task);
         }
         index_req_q.write({
@@ -247,7 +247,7 @@ inline void PiHeapPush(uint_qid_t qid, int level, HeapReq req,
       ++elem.size;
       idx = idx * kPiHeapWidth + max;
 
-      if (!(req.task <= elem.task)) {
+      if (elem.task < req.task) {
         std::swap(elem.task, req.task);
       }
 #ifdef TAPA_SSSP_PHEAP_INDEX

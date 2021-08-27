@@ -50,9 +50,9 @@ static constexpr int kEidWidth = 28;
 constexpr Vid kNullVid = -1;
 constexpr float kInfDistance = std::numeric_limits<float>::infinity();
 
-inline bool DistLe(float a, float b) {
+inline bool DistLt(float a, float b) {
   return static_cast<ap_uint<kFloatWidth>>(
-             bit_cast<ap_uint<32>>(a).range(kFloatMsb, kFloatLsb)) <=
+             bit_cast<ap_uint<32>>(a).range(kFloatMsb, kFloatLsb)) <
          static_cast<ap_uint<kFloatWidth>>(
              bit_cast<ap_uint<32>>(b).range(kFloatMsb, kFloatLsb));
 }
@@ -65,8 +65,8 @@ struct Vertex {
   Vid degree;
 
   // Compares distance.
-  bool operator<=(const Vertex& other) const {
-    return DistLe(distance, other.distance);
+  bool operator<(const Vertex& other) const {
+    return DistLt(distance, other.distance);
   }
 
   bool is_inf() const {
@@ -109,6 +109,9 @@ inline std::ostream& operator<<(std::ostream& os, const Index& obj) {
 struct Task {
   Vid vid;
   Vertex vertex;
+
+  // Compares priority.
+  bool operator<(const Task& other) const { return other.vertex < vertex; }
 };
 
 inline std::ostream& operator<<(std::ostream& os, const Task& obj) {
@@ -233,8 +236,8 @@ class TaskOnChip {
   operator Task() const { return {.vid = vid(), .vertex = vertex()}; }
 
   // Compares priority.
-  bool operator<=(const TaskOnChip& other) const {
-    return other.vertex() <= vertex();
+  bool operator<(const TaskOnChip& other) const {
+    return other.vertex() < vertex();
   }
 
   Vid vid() const { return data.range(vid_msb, vid_lsb); };

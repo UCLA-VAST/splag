@@ -391,7 +391,7 @@ struct arbiter {
     const auto max_left = arbiter<begin, len / 2>::find_max(array, pos_left);
     const auto max_right =
         arbiter<begin + len / 2, len - len / 2>::find_max(array, pos_right);
-    if (!(max_left <= max_right)) {
+    if (max_right < max_left) {
       pos = pos_left;
       return max_left;
     }

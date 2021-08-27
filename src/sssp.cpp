@@ -578,7 +578,7 @@ spin:
 
     VLOG_IF(5, do_push) << "PUSH q[" << qid << "] <-  " << push_req;
     VLOG_IF(5, do_pop) << "POP  q[" << qid << "]  -> "
-                       << (!root.valid || (do_push && root.task <= push_req)
+                       << (!root.valid || (do_push && !(push_req < root.task))
                                ? push_req
                                : root.task);
 
@@ -621,7 +621,7 @@ spin:
         }
       } else if (do_pop) {
         const bool is_update_needed =
-            root.valid && !(do_push && root.task <= push_req);
+            root.valid && !(do_push && !(push_req < root.task));
 
         const auto resp_task = is_update_needed ? root.task : push_req;
         CHECK_EQ(resp_task.vid() % kQueueCount, qid);
@@ -1761,7 +1761,7 @@ spin:
       DECL_ARRAY(TaskOnChip, task, 2, in_q[_i].peek(is_task_valid[_i]));
       if (is_task_valid[0] || is_task_valid[1]) {
         out_q.try_write(
-            (is_task_valid[0] && (!is_task_valid[1] || !(task[0] <= task[1])))
+            (is_task_valid[0] && (!is_task_valid[1] || task[1] < task[0]))
                 ? in_q[0].read(nullptr)
                 : in_q[1].read(nullptr));
       }
@@ -2210,7 +2210,7 @@ spin:
       static_assert(kPeCount / kShardCount == 2);
       if (is_req_valid[0] &&
           (!is_req_valid[1] ||
-           DistLe(req[0].payload.distance, req[1].payload.distance))) {
+           DistLt(req[0].payload.distance, req[1].payload.distance))) {
         const auto req = req_q[0].read(nullptr);
         src_q.try_write(req.payload);
         addr_q.try_write(req.addr);
@@ -2448,7 +2448,7 @@ exec:
         // Vertex updates do not have metadata of the destination vertex, so
         // update cache using metadata from DRAM.
         entry.SetMetadata(vertex);
-        if (vertex <= entry.GetTask().vertex) {
+        if (!(entry.GetTask().vertex < vertex)) {
           // Distance in DRAM is closer; generate NOOP and update cache.
           noop_q.write(false);
           VLOG(5) << "task     -> NOOP";
@@ -2486,7 +2486,7 @@ exec:
           VLOG(5) << "task     <- " << task;
 
           // Update cache if new task has higher priority.
-          if ((is_entry_updated = !(task <= entry.GetTask()))) {
+          if ((is_entry_updated = entry.GetTask() < task)) {
             entry.SetValue(task.vertex());
           }
 
