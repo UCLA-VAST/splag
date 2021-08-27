@@ -1755,16 +1755,11 @@ void SwitchMux(istreams<TaskOnChip, kSwitchMuxDegree>& in_q,
 spin:
   for (;;) {
 #pragma HLS pipeline II = 1
-    if (!out_q.full()) {
-      static_assert(kSwitchMuxDegree == 2);
-      DECL_ARRAY(bool, is_task_valid, 2, false);
-      DECL_ARRAY(TaskOnChip, task, 2, in_q[_i].peek(is_task_valid[_i]));
-      if (is_task_valid[0] || is_task_valid[1]) {
-        out_q.try_write(
-            (is_task_valid[0] && (!is_task_valid[1] || task[1] < task[0]))
-                ? in_q[0].read(nullptr)
-                : in_q[1].read(nullptr));
-      }
+    TaskOnChip task;
+    int pos;
+    if (find_max_non_empty(in_q, task, pos)) {
+      in_q[pos].read(nullptr);
+      out_q.write(task);
     }
   }
 }
@@ -2189,40 +2184,6 @@ void PushAdapter(istreams<TaskOnChip, kQueueCount * kCgpqPushPortCount *
       });
 }
 
-void EdgeAdapter(istreams<EdgeReq, kPeCount>& in_q,
-                 ostreams<EdgeReq, kPeCount>& out_q) {
-  Transpose<kPeCount / kShardCount, kShardCount>(
-      in_q, out_q, [](const auto& req, int old_pos, int new_pos) {
-        CHECK_EQ(req.payload.vid % kShardCount, old_pos % kShardCount);
-      });
-}
-
-void EdgeReqArbiter(tapa::istreams<EdgeReq, kPeCount / kShardCount>& req_q,
-                    tapa::ostream<SourceVertex>& src_q,
-                    tapa::ostream<Vid>& addr_q) {
-spin:
-  for (;;) {
-#pragma HLS pipeline II = 1
-    DECL_ARRAY(bool, is_req_valid, kPeCount / kShardCount, false);
-    DECL_ARRAY(EdgeReq, req, kPeCount / kShardCount,
-               req_q[_i].peek(is_req_valid[_i]));
-    if (!src_q.full() && !addr_q.full()) {
-      static_assert(kPeCount / kShardCount == 2);
-      if (is_req_valid[0] &&
-          (!is_req_valid[1] ||
-           DistLt(req[0].payload.distance, req[1].payload.distance))) {
-        const auto req = req_q[0].read(nullptr);
-        src_q.try_write(req.payload);
-        addr_q.try_write(req.addr);
-      } else if (is_req_valid[1]) {
-        const auto req = req_q[1].read(nullptr);
-        src_q.try_write(req.payload);
-        addr_q.try_write(req.addr);
-      }
-    }
-  }
-}
-
 #ifdef TAPA_SSSP_IMMEDIATE_RELAX
 const int kSwitchOutputCount = kQueueCount;
 #else   // TAPA_SSSP_IMMEDIATE_RELAX
@@ -2277,7 +2238,7 @@ spin:
 }
 
 void EdgeReqGen(istream<Task>& task_in_q, ostream<uint_vid_t>& task_count_q,
-                ostream<EdgeReq>& edge_req_q) {
+                ostream<SourceVertex>& src_q, ostream<Vid>& edge_addr_q) {
   EdgeReq req;
 
 spin:
@@ -2296,7 +2257,8 @@ spin:
     }
 
     if (i > 0) {
-      edge_req_q.write(req);
+      src_q.write(req.payload);
+      edge_addr_q.write(req.addr);
       ++req.addr;
       --i;
     }
@@ -2662,13 +2624,39 @@ spin:
   }
 }
 
-void VertexOutputArbiter(tapa::istreams<TaskOnChip, kSubIntervalCount>& in_q,
-                         tapa::ostreams<TaskOnChip, kQueueCount>& out_q) {
-  TaskArbiterTemplate(in_q, out_q);
+void VertexOutputAdapter(istreams<Task, kSubIntervalCount>& in_q,
+                         ostreams<Task, kSubIntervalCount>& out_q) {
+  Transpose<kSubIntervalCount / kShardCount, kShardCount>(
+      in_q, out_q, [](const auto& task, int old_pos, int new_pos) {
+        CHECK_EQ(task.vid % kSubIntervalCount, old_pos);
+        CHECK_EQ(task.vid % kShardCount,
+                 new_pos / (kSubIntervalCount / kShardCount) % kShardCount);
+      });
+}
+
+void VertexOutputArbiter(
+#ifdef TAPA_SSSP_IMMEDIATE_RELAX
+    tapa::istreams<Task, kSubIntervalCount / kShardCount>& in_q,
+    tapa::ostream<Task>& out_q
+#else   // TAPA_SSSP_IMMEDIATE_RELAX
+    tapa::istreams<TaskOnChip, kSubIntervalCount>& in_q,
+    tapa::ostreams<TaskOnChip, kQueueCount>& out_q
+#endif  // TAPA_SSSP_IMMEDIATE_RELAX
+) {
+spin:
+  for (;;) {
+#pragma HLS pipeline II = 1
+    Task task;
+    int pos;
+    if (find_max_non_empty(in_q, task, pos)) {
+      in_q[pos].read(nullptr);
+      out_q.write(task);
+    }
+  }
 }
 
 #ifdef TAPA_SSSP_IMMEDIATE_RELAX
-const int kTaskInputCount = kSubIntervalCount;
+const int kTaskInputCount = kShardCount;
 #else   // TAPA_SSSP_IMMEDIATE_RELAX
 const int kTaskInputCount = kQueueCount;
 #endif  // TAPA_SSSP_IMMEDIATE_RELAX
@@ -2856,6 +2844,8 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
 #endif  // TAPA_SSSP_COARSE_PRIORITY
 ) {
   streams<Task, kSubIntervalCount, 2> vertex_out_q;
+  streams<Task, kSubIntervalCount, 2> VAR(vertex_out_qx);
+  streams<Task, kShardCount, 2> VAR(vertex_out_qi);
   streams<bool, kQueueCount, 2> queue_done_q;
   streams<PiHeapStat, kQueueCount, 2> queue_stat_q;
 
@@ -2891,8 +2881,6 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   // For edges.
   streams<Vid, kShardCount, 2> edge_read_addr_q("edge_read_addr");
   streams<EdgeVec, kShardCount, 2> VAR(edge_read_data_q);
-  streams<EdgeReq, kPeCount, kPeCount / kShardCount * 8> edge_req_q("edge_req");
-  streams<EdgeReq, kPeCount, 32> VAR(edge_req_qi);
   streams<SourceVertex, kShardCount, 64> src_q("source_vertices");
 
   streams<TaskOnChip, kShardCount * kEdgeVecLen, 2> xbar_in_q;
@@ -2942,7 +2930,7 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
           task_init_q, task_stat_q, vertex_noop_q, queue_noop_q, task_count_q)
 #ifdef TAPA_SSSP_IMMEDIATE_RELAX
       .invoke<detach>(
-          TaskArbiter, task_init_q, task_stat_q, vertex_out_q, task_req_qi
+          TaskArbiter, task_init_q, task_stat_q, vertex_out_qi, task_req_qi
 #else   // TAPA_SSSP_IMMEDIATE_RELAX
       .invoke<detach>(
           TaskArbiter, task_init_q, task_stat_q, queue_pop_q, task_req_qi
@@ -2971,10 +2959,14 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
           piheap_index_write_req_q, piheap_index_write_resp_q)
 #endif  // TAPA_SSSP_COARSE_PRIORITY
       .invoke<detach>(QueueNoopMerger, queue_noop_qi, queue_noop_q)
+      .invoke<detach>(VertexOutputAdapter, vertex_out_q, vertex_out_qx)
+      .invoke<detach, kShardCount>(VertexOutputArbiter, vertex_out_qx,
 #ifdef TAPA_SSSP_IMMEDIATE_RELAX
+                                   vertex_out_qi
 #else   // TAPA_SSSP_IMMEDIATE_RELAX
-      .invoke<detach>(VertexOutputArbiter, vertex_out_q, queue_push_q)
+                                   queue_push_q
 #endif  // TAPA_SSSP_IMMEDIATE_RELAX
+                                   )
 
   // Put mmaps are in the top level to enable flexible floorplanning.
 #ifdef TAPA_SSSP_COARSE_PRIORITY
@@ -2993,9 +2985,6 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
       // For edges.
       .invoke<join, kShardCount>(EdgeMem, edge_done_q, edge_stat_q,
                                  edge_read_addr_q, edge_read_data_q, edges)
-      .invoke<detach>(EdgeAdapter, edge_req_q, edge_req_qi)
-      .invoke<detach, kShardCount>(EdgeReqArbiter, edge_req_qi, src_q,
-                                   edge_read_addr_q)
 
       // For vertices.
       // Route updates via a kShardCount x kShardCount network.
@@ -3017,8 +3006,8 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
       .invoke<detach>(VertexNoopMerger, update_noop_qi1, vertex_noop_q)
 
       // PEs.
-      .invoke<detach, kPeCount>(EdgeReqGen, task_req_qi, task_count_qi,
-                                edge_req_q)
+      .invoke<detach, kPeCount>(EdgeReqGen, task_req_qi, task_count_qi, src_q,
+                                edge_read_addr_q)
       .invoke<detach>(TaskCountMerger, task_count_qi, task_count_q)
       .invoke<detach, kShardCount>(DistGen, src_q, edge_read_data_q, xbar_in_q);
 }

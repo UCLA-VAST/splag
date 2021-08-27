@@ -14,8 +14,6 @@ using uint_vid_t = ap_uint<kVidWidth>;
 
 using uint_eid_t = ap_uint<kEidWidth>;
 
-using uint_pe_qid_t = ap_uint<bit_length(kPeCount / kQueueCount - 1)>;
-
 using uint_vertex_noop_t = ap_uint<bit_length(kSubIntervalCount)>;
 
 using uint_queue_noop_t = ap_uint<bit_length(kQueueCount)>;
@@ -381,6 +379,29 @@ struct arbiter {
     return is_left_non_full || is_right_non_full;
   }
 
+  template <typename T, uint64_t S, typename pos_t>
+  static bool find_max_non_empty(tapa::istreams<T, S>& in_qs, T& elem,
+                                 pos_t& pos) {
+#pragma HLS inline
+    static_assert(begin >= 0, "begin must >= 0");
+    static_assert(len > 1, "len must > 1");
+    static_assert(begin + len <= S, "begin + len must <= S");
+    pos_t pos_left, pos_right;
+    T elem_left, elem_right;
+#pragma HLS aggregate variable = elem_left bit
+#pragma HLS aggregate variable = elem_right bit
+    const auto is_left_non_empty =
+        arbiter<begin, len / 2>::find_max_non_empty(in_qs, elem_left, pos_left);
+    const auto is_right_non_empty =
+        arbiter<begin + len / 2, len - len / 2>::find_max_non_empty(
+            in_qs, elem_right, pos_right);
+    const bool is_left_chosen =
+        is_left_non_empty && (!is_right_non_empty || (elem_right < elem_left));
+    pos = is_left_chosen ? pos_left : pos_right;
+    elem = is_left_chosen ? elem_left : elem_right;
+    return is_left_non_empty || is_right_non_empty;
+  }
+
   template <typename T, int N, typename pos_t>
   static T find_max(const T (&array)[N], pos_t& pos) {
 #pragma HLS inline
@@ -447,6 +468,16 @@ struct arbiter<begin, 1> {
     return true;
   }
 
+  template <typename T, uint64_t S, typename pos_t>
+  static bool find_max_non_empty(tapa::istreams<T, S>& in_qs, T& elem,
+                                 pos_t& pos) {
+#pragma HLS inline
+    static_assert(begin >= 0, "begin must >= 0");
+    static_assert(begin < S, "begin must < S");
+    pos = begin;
+    return in_qs[begin].try_peek(elem);
+  }
+
   template <typename T, int N, typename pos_t>
   static T find_max(const T (&array)[N], pos_t& pos) {
 #pragma HLS inline
@@ -478,6 +509,22 @@ inline bool find_non_empty(tapa::istreams<T, S>& in_qs,
 #pragma HLS inline
   return arbiter<0, S>::find_non_empty(in_qs, priority, idx);
 }
+
+/// Find the maximum non-empty istream.
+///
+/// @param[in] in_qs    Input streams.
+/// @param[out] elem    The maximum peeked value, invalid if none found.
+/// @param[out] pos     Position of the maximum non-empty istream, invalid if
+///                     none found.
+/// @return             Whether a non-empty istream is found.
+template <typename T, uint64_t S, typename pos_t>
+inline bool find_max_non_empty(tapa::istreams<T, S>& in_qs, T& elem,
+                               pos_t& pos) {
+#pragma HLS inline
+#pragma HLS aggregate variable = elem bit
+  return arbiter<0, S>::find_max_non_empty(in_qs, elem, pos);
+}
+
 /// Find a non-full ostream.
 ///
 /// @param[in] out_qs   Output streams.
@@ -701,7 +748,7 @@ spin:
 #pragma HLS pipeline II = 1
     if constexpr (in_n > out_n) {  // #input >= #output.
       RANGE(oid, out_n, {
-        const auto iid = assert_mod(base % in_n, out_n, oid);
+        const auto iid = assume_mod(base % in_n, out_n, oid);
         if (!in_q[iid].empty() && !out_q[oid].full()) {
           out_q[oid].try_write(in_q[iid].read(nullptr));
         }

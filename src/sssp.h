@@ -417,17 +417,9 @@ inline std::ostream& operator<<(std::ostream& os, const HeapIndexEntry& obj) {
 
 // Platform-specific constants and types.
 
-#ifndef TAPA_SSSP_SHARD_COUNT
-#define TAPA_SSSP_SHARD_COUNT 8
-#endif
+constexpr int kShardCount = 8;  // #edge partitions.
 
-constexpr int kShardCount = TAPA_SSSP_SHARD_COUNT;  // #edge partitions.
-
-#ifndef TAPA_SSSP_EDGE_VEC_LEN
-#define TAPA_SSSP_EDGE_VEC_LEN 2
-#endif
-
-constexpr int kEdgeVecLen = TAPA_SSSP_EDGE_VEC_LEN;
+constexpr int kEdgeVecLen = 2;
 
 static_assert(kShardCount * kEdgeVecLen == kCgpqPushPortCount * kQueueCount);
 
@@ -447,7 +439,7 @@ constexpr int kSwitchStatCount = 5;
 constexpr int kIntervalCount = 16;  // #vertex partitions.
 constexpr int kSubIntervalCount = kIntervalCount * 1;
 
-constexpr int kPeCount = kSubIntervalCount;
+constexpr int kPeCount = kShardCount;
 
 static_assert(
     kPeCount % kShardCount == 0,
