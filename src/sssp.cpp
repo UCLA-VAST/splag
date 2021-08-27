@@ -1753,11 +1753,18 @@ void CgpqPushAdapter(
 void SwitchMux(istreams<TaskOnChip, kSwitchMuxDegree>& in_q,
                ostream<TaskOnChip>& out_q) {
 spin:
-  for (ap_uint<kSwitchMuxDegree> priority = 1;; priority.lrotate(1)) {
+  for (;;) {
 #pragma HLS pipeline II = 1
-    if (int pos; find_non_empty(in_q, priority, pos) && !out_q.full()) {
-      const auto task = in_q[pos].read(nullptr);
-      out_q.try_write(task);
+    if (!out_q.full()) {
+      static_assert(kSwitchMuxDegree == 2);
+      DECL_ARRAY(bool, is_task_valid, 2, false);
+      DECL_ARRAY(TaskOnChip, task, 2, in_q[_i].peek(is_task_valid[_i]));
+      if (is_task_valid[0] || is_task_valid[1]) {
+        out_q.try_write(
+            (is_task_valid[0] && (!is_task_valid[1] || !(task[0] <= task[1])))
+                ? in_q[0].read(nullptr)
+                : in_q[1].read(nullptr));
+      }
     }
   }
 }
