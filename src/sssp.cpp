@@ -1128,7 +1128,7 @@ void CgpqCore(
   // Whether the external priority queue is busy.
   bool is_heap_available = true;
   // The current top of heap, valid only if heap is not busy.
-  ChunkRef heap_root{.bucket = 0};
+  ChunkRef heap_root{.addr = 0, .bucket = 0};
   // Current heap size, kept track both in the heap and here as perf counter.
   uint_heap_size_t heap_size = 0;
   // Maximum heap size in this execution (as perf counter).
