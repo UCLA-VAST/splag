@@ -662,6 +662,7 @@ int main(int argc, char* argv[]) {
       }
     }
 
+    int64_t edge_vec_count = 0;
     for (int sid = 0; sid < kShardCount; ++sid) {
       VLOG(3) << "  shard[" << sid << "]:";
 
@@ -676,8 +677,15 @@ int main(int argc, char* argv[]) {
         VLOG(3) << "    " << kEdgeUnitOpNamesAligned[i] << ": " << setfill(' ')
                 << setw(10) << op_count << " ( " << fixed << setprecision(1)
                 << setw(5) << 100. * op_count / cycle_count << "%)";
+        if (i == 0) {
+          edge_vec_count += op_count;
+        }
       }
     }
+    LOG(INFO) << "  " << setfill(' ') << fixed << setprecision(1) << setw(3)
+              << (100. -
+                  100. * visited_edge_count / (edge_vec_count * kEdgeVecLen))
+              << "% edges are null";
 
     for (int qid = 0; qid < kQueueCount; ++qid) {
       VLOG(3) << "  queue[" << qid << "]:";
