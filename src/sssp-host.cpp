@@ -578,7 +578,7 @@ int main(int argc, char* argv[]) {
     auto pushpop_count = *(metadata_it++);
     auto pop_valid_count = *(metadata_it++);
     auto pop_noop_count = *(metadata_it++);
-    ++metadata_it;
+    const auto pre_relaxation_count = *(metadata_it++);
     auto cycle_count = *(metadata_it++);
     auto queue_full_count = *(metadata_it++);
     auto pe_full_count = *(metadata_it++);
@@ -596,6 +596,9 @@ int main(int argc, char* argv[]) {
     VLOG(3) << "  #PUSHPOP:              " << pushpop_count;
     VLOG(3) << "  #POP (valid):          " << pop_valid_count;
     VLOG(3) << "  #POP (noop):           " << pop_noop_count;
+    VLOG(3) << "  #filtered noop:        " << pre_relaxation_count << " ("
+            << fixed << setprecision(1)
+            << 100. * pre_relaxation_count / visited_edge_count << "%)";
     VLOG(3) << "  cycle count:           " << cycle_count;
     VLOG_IF(3, queue_full_count)
         << "    queue full:          " << queue_full_count << " (" << std::fixed

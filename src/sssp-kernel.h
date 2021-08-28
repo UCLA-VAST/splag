@@ -16,6 +16,9 @@ using uint_eid_t = ap_uint<kEidWidth>;
 
 using uint_vertex_noop_t = ap_uint<bit_length(kSubIntervalCount)>;
 
+using uint_vertex_filter_noop_t =
+    ap_uint<bit_length(kShardCount* kEdgeVecLen* kSwitchMuxDegree)>;
+
 using uint_queue_noop_t = ap_uint<bit_length(kQueueCount)>;
 
 struct SourceVertex {

@@ -2297,6 +2297,75 @@ void VertexMem(
   ReadWriteMem(read_addr_q, read_data_q, write_req_q, write_resp_q, mem);
 }
 
+void VertexFilter(
+    //
+    istream<bool>& done_q,
+    //
+    istream<TaskOnChip>& in_q, ostream<TaskOnChip>& out_q,
+    ostream<bool>& noop_q) {
+  constexpr int kVertexCacheSize = 4096;
+  TaskOnChip cache[kVertexCacheSize];
+#pragma HLS bind_storage variable = cache type = RAM_S2P impl = URAM
+#pragma HLS aggregate variable = cache bit
+
+exec:
+  for (;;) {
+#pragma HLS pipeline off
+
+  init:
+    for (int i = 0; i < kVertexCacheSize; ++i) {
+#pragma HLS dependence variable = cache inter false
+      cache[i] = Task{
+          .vid = i,
+          .vertex = {.parent = kNullVid, .distance = kInfDistance},
+      };
+    }
+
+    using uint_cache_index_t = ap_uint<log2(kVertexCacheSize)>;
+    uint_cache_index_t prev_index = 0;
+    TaskOnChip prev_entry = Task{
+        .vid = 0,
+        .vertex = {.parent = kNullVid, .distance = kInfDistance},
+    };
+
+  spin:
+    for (; done_q.empty();) {
+#pragma HLS pipeline II = 1
+#pragma HLS dependence variable = cache inter true distance = 2
+
+      if (!in_q.empty()) {
+        const auto task = in_q.read(nullptr);
+        const auto vid = task.vid();
+
+        // curr_index = vid / kQueueCount but HLS seems to have trouble
+        // optimizing this, thus the following.
+        constexpr int kQueueWidth = log2(kQueueCount);
+        const uint_cache_index_t curr_index = uint_vid_t(vid).range(
+            uint_cache_index_t::width + kQueueWidth - 1, kQueueWidth);
+
+        // Forward when there is a read-after-write dependence from preivous 1
+        // iteration.
+        auto entry = curr_index == prev_index ? prev_entry : cache[curr_index];
+
+        // Generate noop if existing entry is for the same vertex and has higher
+        // priority.
+        if (entry.vid() == vid && !(entry < task)) {
+          noop_q.write(false);
+        } else {
+          out_q.write(task);
+          entry = task;
+          cache[curr_index] = entry;
+        }
+
+        prev_index = curr_index;
+        prev_entry = entry;
+      }
+    }
+
+    done_q.read(nullptr);
+  }
+}
+
 void VertexCache(
     //
     istream<bool>& done_q, ostream<int32_t>& stat_q,
@@ -2592,6 +2661,22 @@ spin:
   }
 }
 
+void VertexFilterNoopMerger(
+    istreams<bool, kShardCount * kEdgeVecLen * kSwitchMuxDegree>& pkt_in_q,
+    ostream<uint_vertex_filter_noop_t>& pkt_out_q) {
+spin:
+  for (;;) {
+#pragma HLS pipeline II = 1
+    uint_vertex_filter_noop_t count = 0;
+    bool buf;
+    RANGE(i, kShardCount * kEdgeVecLen * kSwitchMuxDegree,
+          pkt_in_q[i].try_read(buf) && ++count);
+    if (count) {
+      pkt_out_q.write(count);
+    }
+  }
+}
+
 void QueueNoopMerger(istreams<bool, kQueueCount>& in_q,
                      ostream<uint_queue_noop_t>& out_q) {
 spin:
@@ -2700,6 +2785,8 @@ void Dispatcher(
     // Metadata.
     tapa::mmap<int64_t> metadata,
     // Vertex cache control.
+    ostreams<bool, kShardCount * kEdgeVecLen * kSwitchMuxDegree>&
+        vertex_filter_done_q,
     ostreams<bool, kSubIntervalCount>& vertex_cache_done_q,
     istreams<int32_t, kSubIntervalCount>& vertex_cache_stat_q,
     ostreams<bool, kShardCount>& edge_done_q,
@@ -2716,6 +2803,7 @@ void Dispatcher(
     istream<int64_t>& task_stat_q,
     // Task count.
     istream<uint_vertex_noop_t>& vertex_noop_q,
+    istream<uint_vertex_filter_noop_t>& vertex_filter_noop_q,
     istream<uint_queue_noop_t>& queue_noop_q,
     istream<TaskCount>& task_count_q) {
   task_init_q.write(root);
@@ -2725,6 +2813,7 @@ void Dispatcher(
   int32_t push_count = 0;
   int32_t pushpop_count = 0;
   int32_t pop_valid_count = 0;
+  int32_t filtered_noop_count = 0;
   int64_t cycle_count = 0;
 
   constexpr int kTerminationHold = 500;
@@ -2744,6 +2833,14 @@ spin:
       const auto previous_task_count = active_task_count;
       const auto count = vertex_noop_q.read(nullptr);
       active_task_count -= count;
+      VLOG(5) << "#task " << previous_task_count << " -> " << active_task_count;
+    }
+
+    if (!vertex_filter_noop_q.empty()) {
+      const auto previous_task_count = active_task_count;
+      const auto count = vertex_filter_noop_q.read(nullptr);
+      active_task_count -= count;
+      filtered_noop_count += count;
       VLOG(5) << "#task " << previous_task_count << " -> " << active_task_count;
     }
 
@@ -2767,6 +2864,8 @@ spin:
 
   push_count += pop_valid_count;
 
+  RANGE(i, kShardCount * kEdgeVecLen * kSwitchMuxDegree,
+        vertex_filter_done_q[i].write(false));
   RANGE(iid, kSubIntervalCount, vertex_cache_done_q[iid].write(false));
   RANGE(sid, kShardCount, edge_done_q[sid].write(false));
   RANGE(qid, kQueueCount, queue_done_q[qid].write(false));
@@ -2779,6 +2878,7 @@ spin:
   metadata[1] = push_count;
   metadata[2] = pushpop_count;
   metadata[3] = pop_valid_count;
+  metadata[5] = filtered_noop_count;
   metadata[6] = cycle_count;
 
 vertex_cache_stat:
@@ -2914,6 +3014,14 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
 
   stream<uint_vertex_noop_t, 2> vertex_noop_q;
 
+  streams<TaskOnChip, kShardCount * kEdgeVecLen * kSwitchMuxDegree, 2> VAR(
+      vertex_filter_out_q);
+  streams<bool, kShardCount * kEdgeVecLen * kSwitchMuxDegree, 2> VAR(
+      vertex_filter_noop_qi);
+  streams<bool, kShardCount * kEdgeVecLen * kSwitchMuxDegree, 2> VAR(
+      vertex_filter_done_q);
+  stream<uint_vertex_filter_noop_t, 2> VAR(vertex_filter_noop_q);
+
   streams<bool, kQueueCount, 2> queue_noop_qi;
   stream<uint_queue_noop_t, 2> queue_noop_q;
 
@@ -2921,13 +3029,14 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   stream<TaskCount, 2> task_count_q;
 
   tapa::task()
-      .invoke(
-          Dispatcher, root, metadata, vertex_cache_done_q, vertex_cache_stat_q,
-          edge_done_q, edge_stat_q, queue_done_q, queue_stat_q,
+      .invoke(Dispatcher, root, metadata, vertex_filter_done_q,
+              vertex_cache_done_q, vertex_cache_stat_q, edge_done_q,
+              edge_stat_q, queue_done_q, queue_stat_q,
 #if TAPA_SSSP_SWITCH_PORT_COUNT > 1
-          switch_done_q, switch_stat_q,
+              switch_done_q, switch_stat_q,
 #endif  // TAPA_SSSP_SWITCH_PORT_COUNT
-          task_init_q, task_stat_q, vertex_noop_q, queue_noop_q, task_count_q)
+              task_init_q, task_stat_q, vertex_noop_q, vertex_filter_noop_q,
+              queue_noop_q, task_count_q)
 #ifdef TAPA_SSSP_IMMEDIATE_RELAX
       .invoke<detach>(
           TaskArbiter, task_init_q, task_stat_q, vertex_out_qi, task_req_qi
@@ -2937,8 +3046,13 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
 #endif  // TAPA_SSSP_IMMEDIATE_RELAX
           )
 #ifdef TAPA_SSSP_COARSE_PRIORITY
+      .invoke<detach, vertex_filter_done_q.length>(
+          VertexFilter, vertex_filter_done_q, xbar_out_q, vertex_filter_out_q,
+          vertex_filter_noop_qi)
+      .invoke<detach>(VertexFilterNoopMerger, vertex_filter_noop_qi,
+                      vertex_filter_noop_q)
       .invoke<join, kQueueCount>(
-          TaskQueue, queue_done_q, queue_stat_q, seq(), xbar_out_q,
+          TaskQueue, queue_done_q, queue_stat_q, seq(), vertex_filter_out_q,
           queue_noop_qi, queue_pop_q, is_log_bucket, min_distance, max_distance,
           //
           cgpq_spill_read_addr_q, cgpq_spill_read_data_q,
