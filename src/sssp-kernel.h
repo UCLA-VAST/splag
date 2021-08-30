@@ -14,12 +14,14 @@ using uint_vid_t = ap_uint<kVidWidth>;
 
 using uint_eid_t = ap_uint<kEidWidth>;
 
-using uint_vertex_noop_t = ap_uint<bit_length(kSubIntervalCount)>;
-
-using uint_vertex_filter_noop_t =
-    ap_uint<bit_length(kShardCount* kEdgeVecLen* kSwitchMuxDegree)>;
-
 using uint_queue_noop_t = ap_uint<bit_length(kQueueCount)>;
+
+struct VertexNoop {
+  using uint_vertex_noop_t = ap_uint<bit_length(kSubIntervalCount)>;
+
+  uint_vertex_noop_t push_count;
+  uint_vertex_noop_t pop_count;
+};
 
 struct SourceVertex {
   Vid vid;

@@ -118,9 +118,9 @@ inline std::ostream& operator<<(std::ostream& os, const Task& obj) {
   return os << "{vid: " << obj.vid << ", vertex: " << obj.vertex << "}";
 }
 
-#define TAPA_SSSP_SWITCH_PORT_COUNT 4
+#define TAPA_SSSP_SWITCH_PORT_COUNT 16
 
-constexpr int kQueueCount = TAPA_SSSP_SWITCH_PORT_COUNT;
+constexpr int kQueueCount = 4;
 
 #ifndef TAPA_SSSP_PHEAP_WIDTH
 #define TAPA_SSSP_PHEAP_WIDTH 16
@@ -431,12 +431,12 @@ constexpr int kSwitchPortCount = TAPA_SSSP_SWITCH_PORT_COUNT;
 
 constexpr int kSwitchStageCount = log2(kSwitchPortCount);
 
-constexpr int kSwitchCount = kSwitchPortCount / 2 * kSwitchStageCount *
-                             kCgpqPushPortCount * kSwitchMuxDegree;
+constexpr int kSwitchCount =
+    kSwitchPortCount / 2 * kSwitchStageCount * kSwitchMuxDegree;
 
 constexpr int kSwitchStatCount = 5;
 
-constexpr int kIntervalCount = 16;  // #vertex partitions.
+constexpr int kIntervalCount = TAPA_SSSP_SWITCH_PORT_COUNT;
 constexpr int kSubIntervalCount = kIntervalCount * 1;
 
 constexpr int kPeCount = kShardCount;
@@ -450,6 +450,8 @@ constexpr int kHeapOnChipWidth = 8;  // #children per on-heap element.
 constexpr int kHeapOffChipWidth = 16;  // #children per off-heap element.
 
 constexpr int kSpilledTaskVecLen = 4;
+
+static_assert(kShardCount * kEdgeVecLen == kSubIntervalCount);
 
 static_assert(kSubIntervalCount == kSpilledTaskVecLen * kQueueCount);
 

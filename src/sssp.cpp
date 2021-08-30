@@ -1646,9 +1646,8 @@ spin:
   }
 }
 
-void CgpqDuplicateDone(
-    istream<bool>& in_q,
-    ostreams<bool, kCgpqPushPortCount * kSwitchMuxDegree + 1>& out_q) {
+void CgpqDuplicateDone(istream<bool>& in_q,
+                       ostreams<bool, kCgpqPushPortCount + 1>& out_q) {
   Duplicate(in_q, out_q);
 }
 
@@ -1728,6 +1727,16 @@ void CgpqSwitchStage(int b, istreams<PushReq, kCgpqPushPortCount>& in_q,
   task().invoke<detach>(CgpqSwitchInnerStage, b, in_q, in_q, out_q);
 }
 
+void CgpqSwitchDemux(istream<PushReq>& in_q,
+                     ostreams<PushReq, kSwitchMuxDegree>& out_q) {
+spin:
+  for (ap_uint<kSwitchMuxDegree> priority = 1;; priority.lrotate(1)) {
+    if (int pos; find_non_full(out_q, priority, pos) && !in_q.empty()) {
+      out_q[pos].try_write(in_q.read(nullptr));
+    }
+  }
+}
+
 void CgpqSwitchMux(istreams<PushReq, kSwitchMuxDegree>& in_q,
                    ostream<PushReq>& out_q) {
 spin:
@@ -1782,6 +1791,16 @@ void VertexAdapter(istreams<TaskOnChip, kSubIntervalCount>& in_q,
       });
 }
 
+void PopAdapter(istreams<TaskOnChip, kSubIntervalCount>& in_q,
+                ostreams<TaskOnChip, kSubIntervalCount>& out_q) {
+  Transpose<kSubIntervalCount / kQueueCount, kQueueCount>(
+      in_q, out_q, [](const auto& task, int old_pos, int new_pos) {
+        CHECK_EQ(task.vid() % kSubIntervalCount, old_pos);
+        CHECK_EQ(task.vid() % kQueueCount,
+                 new_pos / (kSubIntervalCount / kQueueCount));
+      });
+}
+
 // Each push request puts the task in the queue if there isn't a task for the
 // same vertex in the queue, or decreases the priority of the existing task
 // using the new value. Whether a new task is created is returned in the
@@ -1796,7 +1815,7 @@ void TaskQueue(
     // Scalar
     uint_qid_t qid,
     // Queue requests.
-    istreams<TaskOnChip, kCgpqPushPortCount * kSwitchMuxDegree>& push_req_q,
+    istreams<TaskOnChip, kCgpqPushPortCount>& push_req_q,
     // NOOP acknowledgements
     ostream<bool>& noop_q,
     // Queue outputs.
@@ -1832,6 +1851,7 @@ void TaskQueue(
 #endif  // TAPA_SSSP_COARSE_PRIORITY
 ) {
 #ifdef TAPA_SSSP_COARSE_PRIORITY
+  streams<PushReq, kCgpqPushPortCount, 2> VAR(push_req_qi);
   streams<PushReq,
           kCgpqPushPortCount * kSwitchMuxDegree*(kCgpqPushStageCount + 1), 32>
       VAR(xbar_q);
@@ -1839,13 +1859,14 @@ void TaskQueue(
   streams<PushReq, kCgpqPushPortCount, 32> VAR(xbar_out_q);
   stream<CgpqHeapReq, 2> heap_req_q;
   stream<cgpq::ChunkRef, 2> heap_resp_q;
-  streams<bool, kCgpqPushPortCount * kSwitchMuxDegree + 1, 2> VAR(done_qi);
+  streams<bool, kCgpqPushPortCount + 1, 2> VAR(done_qi);
 
   task()
       .invoke<detach>(CgpqDuplicateDone, done_q, done_qi)
-      .invoke<join, kCgpqPushPortCount * kSwitchMuxDegree>(
-          CgpqBucketGen, is_log_bucket, min_distance, max_distance, done_qi,
-          push_req_q, xbar_q)
+      .invoke<join, kCgpqPushPortCount>(CgpqBucketGen, is_log_bucket,
+                                        min_distance, max_distance, done_qi,
+                                        push_req_q, push_req_qi)
+      .invoke<detach, kCgpqPushPortCount>(CgpqSwitchDemux, push_req_qi, xbar_q)
 #if TAPA_SSSP_CGPQ_PUSH_COUNT >= 2
       .invoke<detach, kSwitchMuxDegree * kCgpqPushStageCount>(
           CgpqSwitchStage, seq(), xbar_q, xbar_q)
@@ -1854,8 +1875,8 @@ void TaskQueue(
       .invoke<detach, kCgpqPushPortCount>(CgpqSwitchMux, xbar_out_qi,
                                           xbar_out_q)
       .invoke<detach>(CgpqHeap, heap_req_q, heap_resp_q)
-      .invoke<detach>(CgpqCore, done_qi[kCgpqPushPortCount * kSwitchMuxDegree],
-                      stat_q, qid, xbar_out_q,  //
+      .invoke<detach>(CgpqCore, done_qi[kCgpqPushPortCount], stat_q, qid,
+                      xbar_out_q,  //
                       noop_q, pop_q, heap_req_q, heap_resp_q,
                       cgpq_spill_read_addr_q, cgpq_spill_read_data_q,
                       cgpq_spill_write_req_q, cgpq_spill_write_resp_q);
@@ -1984,7 +2005,7 @@ void Switch2x2(
     istream<TaskOnChip>& in_q0, istream<TaskOnChip>& in_q1,
     //
     ostreams<TaskOnChip, 2>& out_q) {
-  b = kSwitchStageCount - 1 - b / (kCgpqPushPortCount * kSwitchMuxDegree);
+  b = kSwitchStageCount - 1 - b / kSwitchMuxDegree;
 
   bool should_prioritize_1 = false;
   int64_t total_cycle_count = 0;
@@ -2093,8 +2114,7 @@ void PopSwitch2x2(
     istream<TaskOnChip>& in_q0, istream<TaskOnChip>& in_q1,
     //
     ostreams<TaskOnChip, 2>& out_q) {
-  b = kSwitchStageCount + kPopSwitchStageCount - 1 -
-      b / (kQueueCount * kSwitchMuxDegree);
+  b = kSwitchStageCount - 1 - b / (kQueueCount * kSwitchMuxDegree);
 
   bool should_prioritize_1 = false;
 
@@ -2174,13 +2194,14 @@ spin:
   }
 }
 
-void PushAdapter(istreams<TaskOnChip, kQueueCount * kCgpqPushPortCount *
-                                          kSwitchMuxDegree>& in_q,
-                 ostreams<TaskOnChip, kQueueCount * kCgpqPushPortCount *
-                                          kSwitchMuxDegree>& out_q) {
-  Transpose<kCgpqPushPortCount * kSwitchMuxDegree, kQueueCount>(
+void PushAdapter(
+    istreams<TaskOnChip, kSwitchPortCount * kSwitchMuxDegree>& in_q,
+    ostreams<TaskOnChip, kSwitchPortCount * kSwitchMuxDegree>& out_q) {
+  Transpose<kSwitchMuxDegree, kSwitchPortCount>(
       in_q, out_q, [](const auto& task, int old_pos, int new_pos) {
-        CHECK_EQ(task.vid() % kQueueCount, old_pos % kQueueCount);
+        CHECK_EQ(task.vid() % kSwitchPortCount, old_pos % kSwitchPortCount);
+        CHECK_EQ(task.vid() % kSwitchPortCount,
+                 new_pos / kSwitchMuxDegree % kSwitchPortCount);
       });
 }
 
@@ -2297,80 +2318,15 @@ void VertexMem(
   ReadWriteMem(read_addr_q, read_data_q, write_req_q, write_resp_q, mem);
 }
 
-void VertexFilter(
-    //
-    istream<bool>& done_q,
-    //
-    istream<TaskOnChip>& in_q, ostream<TaskOnChip>& out_q,
-    ostream<bool>& noop_q) {
-  constexpr int kVertexCacheSize = 4096;
-  TaskOnChip cache[kVertexCacheSize];
-#pragma HLS bind_storage variable = cache type = RAM_S2P impl = URAM
-#pragma HLS aggregate variable = cache bit
-
-exec:
-  for (;;) {
-#pragma HLS pipeline off
-
-  init:
-    for (int i = 0; i < kVertexCacheSize; ++i) {
-#pragma HLS dependence variable = cache inter false
-      cache[i] = Task{
-          .vid = i,
-          .vertex = {.parent = kNullVid, .distance = kInfDistance},
-      };
-    }
-
-    using uint_cache_index_t = ap_uint<log2(kVertexCacheSize)>;
-    uint_cache_index_t prev_index = 0;
-    TaskOnChip prev_entry = Task{
-        .vid = 0,
-        .vertex = {.parent = kNullVid, .distance = kInfDistance},
-    };
-
-  spin:
-    for (; done_q.empty();) {
-#pragma HLS pipeline II = 1
-#pragma HLS dependence variable = cache inter true distance = 2
-
-      if (!in_q.empty()) {
-        const auto task = in_q.read(nullptr);
-        const auto vid = task.vid();
-
-        // curr_index = vid / kQueueCount but HLS seems to have trouble
-        // optimizing this, thus the following.
-        constexpr int kQueueWidth = log2(kQueueCount);
-        const uint_cache_index_t curr_index = uint_vid_t(vid).range(
-            uint_cache_index_t::width + kQueueWidth - 1, kQueueWidth);
-
-        // Forward when there is a read-after-write dependence from preivous 1
-        // iteration.
-        auto entry = curr_index == prev_index ? prev_entry : cache[curr_index];
-
-        // Generate noop if existing entry is for the same vertex and has higher
-        // priority.
-        if (entry.vid() == vid && !(entry < task)) {
-          noop_q.write(false);
-        } else {
-          out_q.write(task);
-          entry = task;
-          cache[curr_index] = entry;
-        }
-
-        prev_index = curr_index;
-        prev_entry = entry;
-      }
-    }
-
-    done_q.read(nullptr);
-  }
-}
-
 void VertexCache(
     //
     istream<bool>& done_q, ostream<int32_t>& stat_q,
     //
-    istream<TaskOnChip>& req_q, ostream<Task>& push_q, ostream<bool>& noop_q,
+    istream<TaskOnChip>& push_in_q, ostream<TaskOnChip>& push_out_q,
+    //
+    istream<TaskOnChip>& req_q, ostream<Task>& push_q,
+    //
+    ostream<bool>& noop_q,
     //
     ostream<Vid>& read_vid_out_q, istream<Vid>& read_vid_in_q,
     ostream<Vid>& write_vid_out_q, istream<Vid>& write_vid_in_q,
@@ -2417,12 +2373,23 @@ exec:
 
     bool is_started = false;
 
+    Vertex vertex;
+    bool is_read_data_valid = false;
+
+    Vid read_vid;
+    bool is_read_vid_valid = false;
+
+    TaskOnChip push_task = nullptr;
+    bool is_push_task_valid = false;
+
     TaskOnChip task = nullptr;
     bool is_task_valid = false;
 
     using uint_cache_index_t = ap_uint<log2(kVertexCacheSize)>;
     uint_cache_index_t prev_index = 0;
     VertexCacheEntry prev_entry = nullptr;
+
+    bool is_push_output_available = true;
 
   spin:
     for (; done_q.empty();) {
@@ -2434,14 +2401,16 @@ exec:
       const auto write_vid = write_vid_in_q.peek(is_write_vid_valid);
       const bool is_write_ack_valid = is_write_resp_valid && is_write_vid_valid;
 
-      const bool is_read_data_valid = !read_data_q.empty();
-      bool is_read_vid_valid;
-      const auto read_vid = read_vid_in_q.peek(is_read_vid_valid);
       const bool is_read_ack_valid = is_read_data_valid && is_read_vid_valid;
 
-      const auto vid = is_write_ack_valid  ? write_vid
-                       : is_read_ack_valid ? read_vid
-                                           : task.vid();
+      const bool is_push_valid = is_push_task_valid && is_push_output_available;
+
+      const bool is_pop_valid = is_task_valid;
+
+      const auto vid = is_push_valid        ? push_task.vid()
+                       : is_write_ack_valid ? write_vid
+                       : is_read_ack_valid  ? read_vid
+                                            : task.vid();
 
       // curr_index = vid / kSubIntervalCount but HLS seems to have trouble
       // optimizing this, thus the following.
@@ -2454,7 +2423,25 @@ exec:
       auto entry = curr_index == prev_index ? prev_entry : cache[curr_index];
       bool is_entry_updated = false;
 
-      if (is_write_ack_valid) {
+      const bool is_hit = entry.is_valid && entry.GetTask().vid == vid;
+
+      if (is_push_valid) {
+        is_started = true;
+
+        CHECK_EQ(vid, push_task.vid());
+
+        if (is_hit && !(entry.GetTask() < push_task)) {
+          if (is_hit) {
+            ++read_hit;
+          }
+          is_push_output_available = !push_out_q.full();
+          noop_q.write(/*is_push=*/true);
+          is_push_task_valid = false;
+        } else {
+          is_push_output_available = push_out_q.try_write(push_task);
+          is_push_task_valid = !is_push_output_available;
+        }
+      } else if (is_write_ack_valid) {
         ++write_resp_count;
 
         write_resp_q.read(nullptr);
@@ -2466,42 +2453,43 @@ exec:
         is_entry_updated = true;
         CHECK_GT(active_write_count, 0);
         --active_write_count;
+
+        is_push_output_available = !push_out_q.full();
       } else if (is_read_ack_valid) {
         ++read_resp_count;
 
-        const auto vertex = read_data_q.read(nullptr);
-        read_vid_in_q.read(nullptr);
-        VLOG(5) << "vmem[" << vid << "] -> " << vertex;
-        CHECK(entry.is_valid);
-        CHECK_EQ(entry.GetTask().vid, vid);
-        CHECK(entry.is_reading);
-        entry.is_reading = false;
-        // Vertex updates do not have metadata of the destination vertex, so
-        // update cache using metadata from DRAM.
-        entry.SetMetadata(vertex);
-        if (!(entry.GetTask().vertex < vertex)) {
-          // Distance in DRAM is closer; generate NOOP and update cache.
-          noop_q.write(false);
-          VLOG(5) << "task     -> NOOP";
-          entry.SetValue(vertex);
-        } else {
-          // Distance in cache is closer; generate PUSH.
-          if (entry.GetTask().vertex.degree > 1) {
-            push_q.write(entry.GetTask());
+        if (!push_q.full() && !noop_q.full()) {
+          is_read_data_valid = is_read_vid_valid = false;
+          VLOG(5) << "vmem[" << vid << "] -> " << vertex;
+          CHECK(entry.is_valid);
+          CHECK_EQ(entry.GetTask().vid, vid);
+          CHECK(entry.is_reading);
+          entry.is_reading = false;
+          // Vertex updates do not have metadata of the destination vertex, so
+          // update cache using metadata from DRAM.
+          entry.SetMetadata(vertex);
+          if (!(entry.GetTask().vertex < vertex)) {
+            // Distance in DRAM is closer; generate NOOP and update cache.
+            noop_q.try_write(/*is_push=*/false);
+            VLOG(5) << "task     -> NOOP";
+            entry.SetValue(vertex);
           } else {
-            noop_q.write(false);
+            // Distance in cache is closer; generate PUSH.
+            if (entry.GetTask().vertex.degree > 1) {
+              push_q.try_write(entry.GetTask());
+            } else {
+              noop_q.try_write(/*is_push=*/false);
+            }
+            VLOG(5) << "task     -> " << entry.GetTask();
+            entry.is_dirty = true;
+            VLOG(5) << "v$$$[" << entry.GetTask().vid << "] marked dirty";
+            ++write_hit;
           }
-          VLOG(5) << "task     -> " << entry.GetTask();
-          entry.is_dirty = true;
-          VLOG(5) << "v$$$[" << entry.GetTask().vid << "] marked dirty";
-          ++write_hit;
+          is_entry_updated = true;
         }
-        is_entry_updated = true;
-      } else if (is_task_valid) {
-        is_started = true;
 
-        const bool is_hit = entry.is_valid && entry.GetTask().vid == task.vid();
-
+        is_push_output_available = !push_out_q.full();
+      } else if (is_pop_valid) {
         const bool is_entry_busy =
             entry.is_valid && (entry.is_reading || entry.is_writing);
         const bool is_read_busy = read_addr_q.full() || read_vid_out_q.full();
@@ -2512,31 +2500,33 @@ exec:
         if (is_hit) {
           ++req_hit_count;
 
-          // req_q.read(nullptr);
-          is_task_valid = false;
-          VLOG(5) << "task     <- " << task;
+          if (!push_q.full() && !noop_q.full()) {
+            // req_q.read(nullptr);
+            is_task_valid = false;
+            VLOG(5) << "task     <- " << task;
 
-          // Update cache if new task has higher priority.
-          if ((is_entry_updated = entry.GetTask() < task)) {
-            entry.SetValue(task.vertex());
-          }
-
-          // Generate PUSH if and only if cache is updated and not reading.
-          // If reading, PUSH will be generated when read finishes, if
-          // necessary.
-          if (is_entry_updated && !entry.is_reading) {
-            if (entry.GetTask().vertex.degree > 1) {
-              push_q.write(entry.GetTask());
-            } else {
-              noop_q.write(false);
+            // Update cache if new task has higher priority.
+            if ((is_entry_updated = entry.GetTask() < task)) {
+              entry.SetValue(task.vertex());
             }
-            VLOG(5) << "task     -> " << entry.GetTask();
-            entry.is_dirty = true;
-            VLOG(5) << "v$$$[" << entry.GetTask().vid << "] marked dirty";
-            ++write_hit;
-          } else {
-            noop_q.write(false);
-            VLOG(5) << "task     -> NOOP";
+
+            // Generate PUSH if and only if cache is updated and not reading.
+            // If reading, PUSH will be generated when read finishes, if
+            // necessary.
+            if (is_entry_updated && !entry.is_reading) {
+              if (entry.GetTask().vertex.degree > 1) {
+                push_q.try_write(entry.GetTask());
+              } else {
+                noop_q.try_write(/*is_push=*/false);
+              }
+              VLOG(5) << "task     -> " << entry.GetTask();
+              entry.is_dirty = true;
+              VLOG(5) << "v$$$[" << entry.GetTask().vid << "] marked dirty";
+              ++write_hit;
+            } else {
+              noop_q.try_write(/*is_push=*/false);
+              VLOG(5) << "task     -> NOOP";
+            }
           }
 
           ++read_hit;
@@ -2585,8 +2575,12 @@ exec:
           ++write_busy_count;
         }
 
+        is_push_output_available = !push_out_q.full();
       } else if (is_started) {
+        is_push_output_available = !push_out_q.full();
         ++idle_count;
+      } else {
+        is_push_output_available = !push_out_q.full();
       }
 
       if (is_entry_updated) {
@@ -2596,6 +2590,15 @@ exec:
       prev_index = curr_index;
       prev_entry = entry;
 
+      if (!is_read_data_valid) {
+        is_read_data_valid = read_data_q.try_read(vertex);
+      }
+      if (!is_read_vid_valid) {
+        is_read_vid_valid = read_vid_in_q.try_read(read_vid);
+      }
+      if (!is_push_task_valid) {
+        is_push_task_valid = push_in_q.try_read(push_task);
+      }
       if (!is_task_valid) {
         is_task_valid = req_q.try_read(task);
       }
@@ -2647,32 +2650,23 @@ exec:
   }
 }
 
-void VertexNoopMerger(istreams<bool, kSubIntervalCount>& pkt_in_q,
-                      ostream<uint_vertex_noop_t>& pkt_out_q) {
+void VertexNoopMerger(istreams<bool, kSubIntervalCount>& noop_in_q,
+                      ostream<VertexNoop>& noop_out_q) {
 spin:
   for (;;) {
 #pragma HLS pipeline II = 1
-    uint_vertex_noop_t count = 0;
-    bool buf;
-    RANGE(iid, kSubIntervalCount, pkt_in_q[iid].try_read(buf) && ++count);
-    if (count) {
-      pkt_out_q.write(count);
-    }
-  }
-}
-
-void VertexFilterNoopMerger(
-    istreams<bool, kShardCount * kEdgeVecLen * kSwitchMuxDegree>& pkt_in_q,
-    ostream<uint_vertex_filter_noop_t>& pkt_out_q) {
-spin:
-  for (;;) {
-#pragma HLS pipeline II = 1
-    uint_vertex_filter_noop_t count = 0;
-    bool buf;
-    RANGE(i, kShardCount * kEdgeVecLen * kSwitchMuxDegree,
-          pkt_in_q[i].try_read(buf) && ++count);
-    if (count) {
-      pkt_out_q.write(count);
+    VertexNoop count = {0, 0};
+    RANGE(iid, kSubIntervalCount, {
+      if (bool is_push; noop_in_q[iid].try_read(is_push)) {
+        if (is_push) {
+          ++count.push_count;
+        } else {
+          ++count.pop_count;
+        }
+      }
+    });
+    if (count.push_count || count.pop_count) {
+      noop_out_q.write(count);
     }
   }
 }
@@ -2785,8 +2779,6 @@ void Dispatcher(
     // Metadata.
     tapa::mmap<int64_t> metadata,
     // Vertex cache control.
-    ostreams<bool, kShardCount * kEdgeVecLen * kSwitchMuxDegree>&
-        vertex_filter_done_q,
     ostreams<bool, kSubIntervalCount>& vertex_cache_done_q,
     istreams<int32_t, kSubIntervalCount>& vertex_cache_stat_q,
     ostreams<bool, kShardCount>& edge_done_q,
@@ -2802,8 +2794,7 @@ void Dispatcher(
     // Task stats of PEs.
     istream<int64_t>& task_stat_q,
     // Task count.
-    istream<uint_vertex_noop_t>& vertex_noop_q,
-    istream<uint_vertex_filter_noop_t>& vertex_filter_noop_q,
+    istream<VertexNoop>& vertex_noop_q,
     istream<uint_queue_noop_t>& queue_noop_q,
     istream<TaskCount>& task_count_q) {
   task_init_q.write(root);
@@ -2832,15 +2823,8 @@ spin:
     if (!vertex_noop_q.empty()) {
       const auto previous_task_count = active_task_count;
       const auto count = vertex_noop_q.read(nullptr);
-      active_task_count -= count;
-      VLOG(5) << "#task " << previous_task_count << " -> " << active_task_count;
-    }
-
-    if (!vertex_filter_noop_q.empty()) {
-      const auto previous_task_count = active_task_count;
-      const auto count = vertex_filter_noop_q.read(nullptr);
-      active_task_count -= count;
-      filtered_noop_count += count;
+      active_task_count -= count.push_count + count.pop_count;
+      filtered_noop_count += count.push_count;
       VLOG(5) << "#task " << previous_task_count << " -> " << active_task_count;
     }
 
@@ -2864,8 +2848,6 @@ spin:
 
   push_count += pop_valid_count;
 
-  RANGE(i, kShardCount * kEdgeVecLen * kSwitchMuxDegree,
-        vertex_filter_done_q[i].write(false));
   RANGE(iid, kSubIntervalCount, vertex_cache_done_q[iid].write(false));
   RANGE(sid, kShardCount, edge_done_q[sid].write(false));
   RANGE(qid, kQueueCount, queue_done_q[qid].write(false));
@@ -2983,20 +2965,18 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   streams<EdgeVec, kShardCount, 2> VAR(edge_read_data_q);
   streams<SourceVertex, kShardCount, 64> src_q("source_vertices");
 
-  streams<TaskOnChip, kShardCount * kEdgeVecLen, 2> xbar_in_q;
-  streams<TaskOnChip, kShardCount * kEdgeVecLen * kSwitchMuxDegree, 2>
-      xbar_out_q;
+  streams<TaskOnChip, kSwitchPortCount, 2> VAR(xbar_in_q);
   streams<TaskOnChip,
-          kShardCount * kEdgeVecLen * kSwitchMuxDegree*(kSwitchStageCount + 1),
-          32>
-      xbar_q;
+          kSwitchPortCount * kSwitchMuxDegree*(kSwitchStageCount + 1), 32>
+      VAR(xbar_q);
+  streams<TaskOnChip, kSwitchPortCount * kSwitchMuxDegree, 2> VAR(xbar_out_q);
+  streams<TaskOnChip, kSwitchPortCount, 2> VAR(xbar_out_qx);
 
   streams<TaskOnChip, kSubIntervalCount * kSwitchMuxDegree, 32> VAR(
       vertex_in_qii);
   streams<TaskOnChip, kSubIntervalCount, 2> VAR(vertex_in_qi);
   streams<TaskOnChip, kSubIntervalCount, 2> VAR(vertex_in_q);
   //   Connect the vertex readers and updaters.
-  streams<bool, kSubIntervalCount, 2> update_noop_qi1;
   streams<Vid, kSubIntervalCount, 2> vertex_read_addr_q;
   streams<Vertex, kSubIntervalCount, 2> vertex_read_data_q;
   streams<packet<Vid, Vertex>, kSubIntervalCount, 2> vertex_write_req_q;
@@ -3012,15 +2992,11 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   streams<bool, kSwitchCount, 2> switch_done_q;
   streams<int64_t, kSwitchCount, 2> switch_stat_q;
 
-  stream<uint_vertex_noop_t, 2> vertex_noop_q;
+  stream<VertexNoop, 2> VAR(vertex_noop_q);
+  streams<bool, kSubIntervalCount, 2> VAR(vertex_noop_qi);
 
-  streams<TaskOnChip, kShardCount * kEdgeVecLen * kSwitchMuxDegree, 2> VAR(
-      vertex_filter_out_q);
-  streams<bool, kShardCount * kEdgeVecLen * kSwitchMuxDegree, 2> VAR(
-      vertex_filter_noop_qi);
-  streams<bool, kShardCount * kEdgeVecLen * kSwitchMuxDegree, 2> VAR(
-      vertex_filter_done_q);
-  stream<uint_vertex_filter_noop_t, 2> VAR(vertex_filter_noop_q);
+  streams<TaskOnChip, kSubIntervalCount, 2> VAR(vertex_filter_out_q);
+  streams<TaskOnChip, kSubIntervalCount, 2> VAR(vertex_filter_out_qi);
 
   streams<bool, kQueueCount, 2> queue_noop_qi;
   stream<uint_queue_noop_t, 2> queue_noop_q;
@@ -3029,14 +3005,13 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   stream<TaskCount, 2> task_count_q;
 
   tapa::task()
-      .invoke(Dispatcher, root, metadata, vertex_filter_done_q,
-              vertex_cache_done_q, vertex_cache_stat_q, edge_done_q,
-              edge_stat_q, queue_done_q, queue_stat_q,
+      .invoke(
+          Dispatcher, root, metadata, vertex_cache_done_q, vertex_cache_stat_q,
+          edge_done_q, edge_stat_q, queue_done_q, queue_stat_q,
 #if TAPA_SSSP_SWITCH_PORT_COUNT > 1
-              switch_done_q, switch_stat_q,
+          switch_done_q, switch_stat_q,
 #endif  // TAPA_SSSP_SWITCH_PORT_COUNT
-              task_init_q, task_stat_q, vertex_noop_q, vertex_filter_noop_q,
-              queue_noop_q, task_count_q)
+          task_init_q, task_stat_q, vertex_noop_q, queue_noop_q, task_count_q)
 #ifdef TAPA_SSSP_IMMEDIATE_RELAX
       .invoke<detach>(
           TaskArbiter, task_init_q, task_stat_q, vertex_out_qi, task_req_qi
@@ -3046,11 +3021,6 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
 #endif  // TAPA_SSSP_IMMEDIATE_RELAX
           )
 #ifdef TAPA_SSSP_COARSE_PRIORITY
-      .invoke<detach, vertex_filter_done_q.length>(
-          VertexFilter, vertex_filter_done_q, xbar_out_q, vertex_filter_out_q,
-          vertex_filter_noop_qi)
-      .invoke<detach>(VertexFilterNoopMerger, vertex_filter_noop_qi,
-                      vertex_filter_noop_q)
       .invoke<join, kQueueCount>(
           TaskQueue, queue_done_q, queue_stat_q, seq(), vertex_filter_out_q,
           queue_noop_qi, queue_pop_q, is_log_bucket, min_distance, max_distance,
@@ -3104,20 +3074,28 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
       // Route updates via a kShardCount x kShardCount network.
       .invoke<detach, kShardCount * kEdgeVecLen>(SwitchDemux, xbar_in_q, xbar_q)
 #if TAPA_SSSP_SWITCH_PORT_COUNT >= 2
-      .invoke<join, kCgpqPushPortCount * kSwitchMuxDegree * kSwitchStageCount>(
+      .invoke<join, kSwitchMuxDegree * kSwitchStageCount>(
           SwitchStage, seq(), switch_done_q, switch_stat_q, xbar_q, xbar_q)
 #endif  // TAPA_SSSP_SWITCH_PORT_COUNT
       .invoke<detach>(PushAdapter, xbar_q, xbar_out_q)
+      .invoke<detach, kSubIntervalCount>(SwitchMux, xbar_out_q, xbar_out_qx)
+      .invoke<detach>(PopAdapter, vertex_filter_out_qi, vertex_filter_out_q)
+      .invoke<detach>(VertexNoopMerger, vertex_noop_qi, vertex_noop_q)
 
       .invoke<detach, kSubIntervalCount>(VertexMem, vertex_read_addr_q,
                                          vertex_read_data_q, vertex_write_req_q,
                                          vertex_write_resp_q, vertices)
       .invoke<detach, kSubIntervalCount>(
-          VertexCache, vertex_cache_done_q, vertex_cache_stat_q, vertex_in_q,
-          vertex_out_q, update_noop_qi1, read_vid_q, read_vid_q, write_vid_q,
-          write_vid_q, vertex_read_addr_q, vertex_read_data_q,
-          vertex_write_req_q, vertex_write_resp_q)
-      .invoke<detach>(VertexNoopMerger, update_noop_qi1, vertex_noop_q)
+          VertexCache, vertex_cache_done_q, vertex_cache_stat_q,
+          //
+          xbar_out_qx, vertex_filter_out_qi,
+          //
+          vertex_in_q, vertex_out_q,
+          //
+          vertex_noop_qi,
+          //
+          read_vid_q, read_vid_q, write_vid_q, write_vid_q, vertex_read_addr_q,
+          vertex_read_data_q, vertex_write_req_q, vertex_write_resp_q)
 
       // PEs.
       .invoke<detach, kPeCount>(EdgeReqGen, task_req_qi, task_count_qi, src_q,
