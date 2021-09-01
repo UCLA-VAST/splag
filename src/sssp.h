@@ -120,7 +120,7 @@ inline std::ostream& operator<<(std::ostream& os, const Task& obj) {
 
 #define TAPA_SSSP_SWITCH_PORT_COUNT 16
 
-constexpr int kQueueCount = 4;
+constexpr int kQueueCount = 1;
 
 #ifndef TAPA_SSSP_PHEAP_WIDTH
 #define TAPA_SSSP_PHEAP_WIDTH 16
@@ -210,7 +210,7 @@ constexpr int kPiHeapStatTaskCount =
 #ifdef TAPA_SSSP_COARSE_PRIORITY
 
 #ifndef TAPA_SSSP_CGPQ_PUSH_COUNT
-#define TAPA_SSSP_CGPQ_PUSH_COUNT 4
+#define TAPA_SSSP_CGPQ_PUSH_COUNT 16
 #endif  // TAPA_SSSP_CGPQ_PUSH_COUNT
 
 constexpr int kCgpqPushPortCount = TAPA_SSSP_CGPQ_PUSH_COUNT;
@@ -454,7 +454,7 @@ constexpr int kHeapOnChipWidth = 8;  // #children per on-heap element.
 
 constexpr int kHeapOffChipWidth = 16;  // #children per off-heap element.
 
-constexpr int kSpilledTaskVecLen = 4;
+constexpr int kSpilledTaskVecLen = 16;
 
 static_assert(kShardCount * kEdgeVecLen == kSubIntervalCount);
 
