@@ -466,6 +466,10 @@ constexpr int kPopSwitchStageCount = log2(kPopSwitchPortCount);
 
 using SpilledTask = std::array<TaskOnChip, kSpilledTaskVecLen>;
 
+constexpr int kCgpqMemCount = 4;
+
+constexpr int kCgpqBankCountPerMem = kCgpqPushPortCount / kCgpqMemCount;
+
 constexpr int kCgpqChunkSize = 1024;
 
 constexpr int kCgpqLevel = 14;
@@ -474,7 +478,7 @@ constexpr int kCgpqCapacity = (1 << kCgpqLevel) - 1;
 
 using uint_spill_addr_t =
     ap_uint<bit_length(kCgpqCapacity) +
-            log2(kCgpqChunkSize / kSpilledTaskVecLen * kCgpqPushPortCount)>;
+            log2(kCgpqChunkSize / kSpilledTaskVecLen * kCgpqBankCountPerMem)>;
 
 using uint_interval_t = ap_uint<3>;
 

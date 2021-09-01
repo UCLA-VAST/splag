@@ -1161,8 +1161,9 @@ void CgpqCore(
 #pragma HLS array_partition variable = chunk_buf cyclic factor = \
     kPosPartFac dim = 2
 
-  const uint_spill_addr_t spill_addr_base =
-      (1 << uint_spill_addr_t::width) / kCgpqPushPortCount * bank;
+  const uint_spill_addr_t spill_addr_base = (1 << uint_spill_addr_t::width) /
+                                            kCgpqBankCountPerMem *
+                                            (bank % kCgpqBankCountPerMem);
 
   bool is_spill_valid = false;
   uint_bbid_t spill_bbid = 0;
@@ -1657,11 +1658,11 @@ spin:
 }
 
 void CgpqReadAddrArbiter(  //
-    istreams<uint_spill_addr_t, kCgpqPushPortCount>& req_in_q,
+    istreams<uint_spill_addr_t, kCgpqBankCountPerMem>& req_in_q,
     ostream<cgpq::uint_bank_t>& req_id_q,
     ostream<uint_spill_addr_t>& req_out_q) {
 spin:
-  for (ap_uint<kCgpqPushPortCount> priority = 1;;) {
+  for (ap_uint<kCgpqBankCountPerMem> priority = 1;;) {
 #pragma HLS pipeline II = 1
     if (int bank; find_non_empty(req_in_q, priority, bank)) {
       req_id_q.write(bank);
@@ -1676,7 +1677,7 @@ spin:
 
 void CgpqReadDataArbiter(  //
     istream<cgpq::uint_bank_t>& req_id_q, istream<SpilledTask>& req_in_q,
-    ostreams<SpilledTask, kCgpqPushPortCount>& req_out_q) {
+    ostreams<SpilledTask, kCgpqBankCountPerMem>& req_out_q) {
 spin:
   for (;;) {
 #pragma HLS pipeline II = 1
@@ -1687,12 +1688,12 @@ spin:
 }
 
 void CgpqWriteReqArbiter(  //
-    istreams<packet<uint_spill_addr_t, SpilledTask>, kCgpqPushPortCount>&
+    istreams<packet<uint_spill_addr_t, SpilledTask>, kCgpqBankCountPerMem>&
         req_in_q,
     ostream<cgpq::uint_bank_t>& req_id_q,
     ostream<packet<uint_spill_addr_t, SpilledTask>>& req_out_q) {
 spin:
-  for (ap_uint<kCgpqPushPortCount> priority = 1;;) {
+  for (ap_uint<kCgpqBankCountPerMem> priority = 1;;) {
 #pragma HLS pipeline II = 1
     if (int bank; find_non_empty(req_in_q, priority, bank)) {
       req_id_q.write(bank);
@@ -1707,7 +1708,7 @@ spin:
 
 void CgpqWriteRespArbiter(  //
     istream<cgpq::uint_bank_t>& req_id_q, istream<bool>& req_in_q,
-    ostreams<bool, kCgpqPushPortCount>& req_out_q) {
+    ostreams<bool, kCgpqBankCountPerMem>& req_out_q) {
 spin:
   for (;;) {
 #pragma HLS pipeline II = 1
@@ -1945,10 +1946,11 @@ void TaskQueue(
     bool is_log_bucket, float min_distance, float max_distance,
     uint_interval_t interval,
     //
-    ostream<uint_spill_addr_t>& cgpq_spill_read_addr_q,
-    istream<SpilledTask>& cgpq_spill_read_data_q,
-    ostream<packet<uint_spill_addr_t, SpilledTask>>& cgpq_spill_write_req_q,
-    istream<bool>& cgpq_spill_write_resp_q
+    ostreams<uint_spill_addr_t, kCgpqMemCount>& cgpq_spill_read_addr_q,
+    istreams<SpilledTask, kCgpqMemCount>& cgpq_spill_read_data_q,
+    ostreams<packet<uint_spill_addr_t, SpilledTask>, kCgpqMemCount>&
+        cgpq_spill_write_req_q,
+    istreams<bool, kCgpqMemCount>& cgpq_spill_write_resp_q
 #else   // TAPA_SSSP_COARSE_PRIORITY
     //
     istream<bool>& done_q, ostream<PiHeapStat>& stat_q,
@@ -1992,8 +1994,8 @@ void TaskQueue(
   streams<packet<uint_spill_addr_t, SpilledTask>, kCgpqPushPortCount, 2> VAR(
       write_req_qi);
   streams<bool, kCgpqPushPortCount, 2> VAR(write_resp_qi);
-  stream<cgpq::uint_bank_t, 64> VAR(read_id_q);
-  stream<cgpq::uint_bank_t, 64> VAR(write_id_q);
+  streams<cgpq::uint_bank_t, kCgpqMemCount, 64> VAR(read_id_q);
+  streams<cgpq::uint_bank_t, kCgpqMemCount, 64> VAR(write_id_q);
 
   streams<cgpq::uint_bid_t, kCgpqPushPortCount, 2> VAR(min_bid_req_q);
   streams<cgpq::uint_bid_t, kCgpqPushPortCount, 2> VAR(min_bid_resp_q);
@@ -2021,16 +2023,13 @@ void TaskQueue(
       .invoke<detach>(CgpqMinBucketFinder, min_bid_req_q, min_bid_resp_q)
       .invoke(CgpqOutputArbiter, interval, done_qi, pop_qi, pop_q)
       .invoke<detach>(CgpqStatArbiter, stat_qi, stat_q)
-      .invoke<detach>(  //
-          CgpqReadAddrArbiter, read_addr_qi, read_id_q,
-          cgpq_spill_read_addr_q)
-      .invoke<detach>(  //
-          CgpqReadDataArbiter, read_id_q, cgpq_spill_read_data_q,
-          read_data_qi)
-      .invoke<detach>(  //
-          CgpqWriteReqArbiter, write_req_qi, write_id_q,
-          cgpq_spill_write_req_q)
-      .invoke<detach>(  //
+      .invoke<detach, kCgpqMemCount>(  //
+          CgpqReadAddrArbiter, read_addr_qi, read_id_q, cgpq_spill_read_addr_q)
+      .invoke<detach, kCgpqMemCount>(  //
+          CgpqReadDataArbiter, read_id_q, cgpq_spill_read_data_q, read_data_qi)
+      .invoke<detach, kCgpqMemCount>(  //
+          CgpqWriteReqArbiter, write_req_qi, write_id_q, cgpq_spill_write_req_q)
+      .invoke<detach, kCgpqMemCount>(  //
           CgpqWriteRespArbiter, write_id_q, cgpq_spill_write_resp_q,
           write_resp_qi);
 #else  // TAPA_SSSP_COARSE_PRIORITY
@@ -3179,7 +3178,7 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
 // For queues.
 #ifdef TAPA_SSSP_COARSE_PRIORITY
           bool is_log_bucket, float min_distance, float max_distance,
-          int32_t interval, tapa::mmaps<SpilledTask, kQueueCount> cgpq_spill
+          int32_t interval, tapa::mmaps<SpilledTask, kCgpqMemCount> cgpq_spill
 #else   // TAPA_SSSP_COARSE_PRIORITY
           tapa::mmap<HeapElemPacked> heap_array,
           tapa::mmap<HeapIndexEntry> heap_index
@@ -3192,11 +3191,11 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   streams<PiHeapStat, kQueueCount, 2> queue_stat_q;
 
 #ifdef TAPA_SSSP_COARSE_PRIORITY
-  streams<uint_spill_addr_t, kQueueCount, 2> VAR(cgpq_spill_read_addr_q);
-  streams<SpilledTask, kQueueCount, 2> VAR(cgpq_spill_read_data_q);
-  streams<packet<uint_spill_addr_t, SpilledTask>, kQueueCount, 2> VAR(
+  streams<uint_spill_addr_t, kCgpqMemCount, 2> VAR(cgpq_spill_read_addr_q);
+  streams<SpilledTask, kCgpqMemCount, 2> VAR(cgpq_spill_read_data_q);
+  streams<packet<uint_spill_addr_t, SpilledTask>, kCgpqMemCount, 2> VAR(
       cgpq_spill_write_req_q);
-  streams<bool, kQueueCount, 2> VAR(cgpq_spill_write_resp_q);
+  streams<bool, kCgpqMemCount, 2> VAR(cgpq_spill_write_resp_q);
 #else   // TAPA_SSSP_COARSE_PRIORITY
   streams<Vid, kQueueCount, 2> piheap_array_read_addr_q;
   streams<HeapElemPacked, kQueueCount, 2> piheap_array_read_data_q;
@@ -3315,7 +3314,7 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
 
   // Put mmaps are in the top level to enable flexible floorplanning.
 #ifdef TAPA_SSSP_COARSE_PRIORITY
-      .invoke<detach, kQueueCount>(
+      .invoke<detach, kCgpqMemCount>(
           CgpqSpillMem, cgpq_spill_read_addr_q, cgpq_spill_read_data_q,
           cgpq_spill_write_req_q, cgpq_spill_write_resp_q, cgpq_spill)
 #else   // TAPA_SSSP_COARSE_PRIORITY
