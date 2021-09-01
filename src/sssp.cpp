@@ -1338,8 +1338,11 @@ spin:
         !is_output_blocked_by_bank_conflict &&
 
         // if available output count is less than vector length, must not refill
-        // or enqueue the same bucket.
-        !is_output_blocked_by_alignment;
+        // or enqueue the same bucket, and
+        !is_output_blocked_by_alignment &&
+
+        // on-chip chunk has higher priority.
+        (!is_top_valid || output_bid <= top_bid);
 
     if (is_output_valid) {
       is_output_blocked_by_full_fifo && ++dequeue_full_count;
