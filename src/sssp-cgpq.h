@@ -182,8 +182,8 @@ struct Arbiter {
     output_bid = is_output_valid_0 ? output_bid_0 : output_bid_1;
     output_meta = is_output_valid_0 ? output_meta_0 : output_meta_1;
     is_full_valid = is_full_valid_0 || is_full_valid_1;
-    full_bid = is_full_valid_0 ? full_bid_0 : full_bid_1;
-    full_meta = is_full_valid_0 ? full_meta_0 : full_meta_1;
+    full_bid = is_full_valid_1 ? full_bid_1 : full_bid_0;
+    full_meta = is_full_valid_1 ? full_meta_1 : full_meta_0;
   }
 
   static void ReadChunk(
