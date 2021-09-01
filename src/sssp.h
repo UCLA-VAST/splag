@@ -217,7 +217,7 @@ constexpr int kCgpqPushPortCount = TAPA_SSSP_CGPQ_PUSH_COUNT;
 
 constexpr int kCgpqPushStageCount = log2(kCgpqPushPortCount);
 
-constexpr int kQueueStatCount = 7 + 4 * kCgpqPushPortCount;
+constexpr int kQueueStatCount = 11 * kCgpqPushPortCount;
 #else   // TAPA_SSSP_COARSE_PRIORITY
 constexpr int kQueueStatCount = kPiHeapStatTotalCount;
 #endif  // TAPA_SSSP_COARSE_PRIORITY
@@ -226,7 +226,10 @@ class TaskOnChip {
  public:
   TaskOnChip() {}
 
-  TaskOnChip(std::nullptr_t) { data = 0; }
+  TaskOnChip(std::nullptr_t) {
+    data = 0;
+    data.bit(vid_msb) = true;
+  }
 
   TaskOnChip(const Task& task) {
     set_vid(task.vid);
@@ -250,6 +253,8 @@ class TaskOnChip {
         .distance = bit_cast<float>(distance.to_uint()),
     };
   }
+
+  bool is_valid() const { return !data.bit(vid_msb); }
 
  private:
   void set_vid(Vid vid) { data.range(vid_msb, vid_lsb) = vid; }
@@ -463,11 +468,14 @@ using SpilledTask = std::array<TaskOnChip, kSpilledTaskVecLen>;
 
 constexpr int kCgpqChunkSize = 1024;
 
-constexpr int kCgpqLevel = 16;
+constexpr int kCgpqLevel = 14;
 
 constexpr int kCgpqCapacity = (1 << kCgpqLevel) - 1;
 
-using uint_spill_addr_t = ap_uint<bit_length(kCgpqCapacity) +
-                                  log2(kCgpqChunkSize / kSpilledTaskVecLen)>;
+using uint_spill_addr_t =
+    ap_uint<bit_length(kCgpqCapacity) +
+            log2(kCgpqChunkSize / kSpilledTaskVecLen * kCgpqPushPortCount)>;
+
+using uint_interval_t = ap_uint<3>;
 
 #endif  // TAPA_SSSP_H_

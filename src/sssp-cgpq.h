@@ -15,6 +15,8 @@ namespace cgpq {
 
 constexpr int kBucketCount = 128;
 
+constexpr int kBucketCountPerBank = kBucketCount / kCgpqPushPortCount;
+
 constexpr int kChunkSize = kCgpqChunkSize;
 
 constexpr int kVecCountPerChunk = kChunkSize / kSpilledTaskVecLen;
@@ -29,6 +31,8 @@ constexpr int kPosPartFac = kSpilledTaskVecLen;
 
 constexpr int kBucketPartFac = kCgpqPushPortCount;
 
+using uint_bank_t = ap_uint<bit_length(kCgpqPushPortCount - 1)>;
+
 using uint_bid_t = ap_uint<bit_length(kBucketCount - 1)>;
 
 using uint_chunk_size_t = ap_uint<bit_length(kChunkSize)>;
@@ -39,6 +43,11 @@ using uint_heap_pos_t = ap_uint<bit_length(kCgpqCapacity)>;
 
 using uint_heap_pair_pos_t = ap_uint<bit_length(kCgpqCapacity / 2)>;
 
+struct uint_bbid_t : public ap_uint<bit_length(kBucketCountPerBank - 1)> {
+  using ap_uint<bit_length(kBucketCountPerBank - 1)>::ap_uint;
+  uint_bid_t bid(uint_bank_t bank) const { return *this, bank; }
+};
+
 struct PushReq {
   uint_bid_t bid;
   TaskOnChip task;
@@ -48,6 +57,13 @@ struct PushBuf {
   bool is_valid = false;
   TaskOnChip task;
   uint_bid_t bid;
+};
+
+struct PopVec : public SpilledTask {
+  uint_bid_t bid;
+
+  // Compares priority.
+  bool operator<(const PopVec& other) const { return other.bid < bid; }
 };
 
 class ChunkMeta {
@@ -147,15 +163,13 @@ class ChunkMeta {
 
 struct ChunkRef {
   uint_spill_addr_t addr;
-  uint_bid_t bucket;
+  uint_bbid_t bbid;
 
   // Compares priority.
-  bool operator<(const ChunkRef& that) const {
-    return that.bucket < this->bucket;
-  }
+  bool operator<(const ChunkRef& that) const { return that.bbid < this->bbid; }
 
   bool operator==(const ChunkRef& that) const {
-    return this->addr == that.addr && this->bucket == that.bucket;
+    return this->addr == that.addr && this->bbid == that.bbid;
   }
 };
 
@@ -165,127 +179,52 @@ namespace internal {
 
 template <int begin, int len>
 struct Arbiter {
-  static void FindChunk(const ChunkMeta (&chunk_meta)[kBucketCount],
-                        bool& is_output_valid, uint_bid_t& output_bid,
+  static void FindChunk(const ChunkMeta (&chunk_meta)[kBucketCountPerBank],
+                        bool& is_output_valid, uint_bbid_t& output_bbid,
                         ChunkMeta& output_meta, bool& is_full_valid,
-                        uint_bid_t& full_bid, ChunkMeta& full_meta) {
+                        uint_bbid_t& full_bbid, ChunkMeta& full_meta) {
     bool is_output_valid_0, is_output_valid_1, is_full_valid_0, is_full_valid_1;
-    uint_bid_t output_bid_0, output_bid_1, full_bid_0, full_bid_1;
+    uint_bbid_t output_bbid_0, output_bbid_1, full_bbid_0, full_bbid_1;
     ChunkMeta output_meta_0, output_meta_1, full_meta_0, full_meta_1;
     Arbiter<begin, len / 2>::FindChunk(
-        chunk_meta, is_output_valid_0, output_bid_0, output_meta_0,
-        is_full_valid_0, full_bid_0, full_meta_0);
+        chunk_meta, is_output_valid_0, output_bbid_0, output_meta_0,
+        is_full_valid_0, full_bbid_0, full_meta_0);
     Arbiter<begin + len / 2, len - len / 2>::FindChunk(
-        chunk_meta, is_output_valid_1, output_bid_1, output_meta_1,
-        is_full_valid_1, full_bid_1, full_meta_1);
+        chunk_meta, is_output_valid_1, output_bbid_1, output_meta_1,
+        is_full_valid_1, full_bbid_1, full_meta_1);
     is_output_valid = is_output_valid_0 || is_output_valid_1;
-    output_bid = is_output_valid_0 ? output_bid_0 : output_bid_1;
+    output_bbid = is_output_valid_0 ? output_bbid_0 : output_bbid_1;
     output_meta = is_output_valid_0 ? output_meta_0 : output_meta_1;
     is_full_valid = is_full_valid_0 || is_full_valid_1;
-    full_bid = is_full_valid_1 ? full_bid_1 : full_bid_0;
+    full_bbid = is_full_valid_1 ? full_bbid_1 : full_bbid_0;
     full_meta = is_full_valid_1 ? full_meta_1 : full_meta_0;
-  }
-
-  static void ReadChunk(
-      // Inputs.
-      const TaskOnChip (&chunk_buf)[kBucketCount][kBufferSize],
-      const ap_uint<kBucketPartFac> is_spill, const uint_bid_t spill_bid,
-      const ChunkMeta::uint_pos_t spill_pos,
-      const ap_uint<kBucketPartFac> is_output, const uint_bid_t output_bid,
-      const ChunkMeta::uint_pos_t output_pos,
-      // Outputs.
-      bool& is_spill_written, SpilledTask& spill_task, bool& is_output_written,
-      SpilledTask& output_task) {
-    bool is_spill_written_0, is_spill_written_1, is_output_written_0,
-        is_output_written_1;
-    SpilledTask spill_task_0, spill_task_1, output_task_0, output_task_1;
-    Arbiter<begin, len / 2>::ReadChunk(
-        chunk_buf, is_spill, spill_bid, spill_pos, is_output, output_bid,
-        output_pos, is_spill_written_0, spill_task_0, is_output_written_0,
-        output_task_0);
-    Arbiter<begin + len / 2, len - len / 2>::ReadChunk(
-        chunk_buf, is_spill, spill_bid, spill_pos, is_output, output_bid,
-        output_pos, is_spill_written_1, spill_task_1, is_output_written_1,
-        output_task_1);
-    is_spill_written = is_spill_written_0 || is_spill_written_1;
-    spill_task = is_spill_written_0 ? spill_task_0 : spill_task_1;
-    is_output_written = is_output_written_0 || is_output_written_1;
-    output_task = is_output_written_0 ? output_task_0 : output_task_1;
   }
 };
 
 template <int begin>
 struct Arbiter<begin, 1> {
-  static void FindChunk(const ChunkMeta (&chunk_meta)[kBucketCount],
-                        bool& is_output_valid, uint_bid_t& output_bid,
+  static void FindChunk(const ChunkMeta (&chunk_meta)[kBucketCountPerBank],
+                        bool& is_output_valid, uint_bbid_t& output_bid,
                         ChunkMeta& output_meta, bool& is_full_valid,
-                        uint_bid_t& full_bid, ChunkMeta& full_meta) {
+                        uint_bbid_t& full_bid, ChunkMeta& full_meta) {
     output_meta = full_meta = chunk_meta[begin];
     is_output_valid = !output_meta.IsEmpty();
     is_full_valid = full_meta.IsAlmostFull();
     output_bid = begin;
     full_bid = begin;
   }
-
-  static void ReadChunk(
-      // Inputs.
-      const TaskOnChip (&chunk_buf)[kBucketCount][kBufferSize],
-      const ap_uint<kBucketPartFac> is_spill, const uint_bid_t spill_bid,
-      const ChunkMeta::uint_pos_t spill_pos,
-      const ap_uint<kBucketPartFac> is_output, const uint_bid_t output_bid,
-      const ChunkMeta::uint_pos_t output_pos,
-      // Outputs.
-      bool& is_spill_written, SpilledTask& spill_task, bool& is_output_written,
-      SpilledTask& output_task) {
-    is_spill_written = is_spill.bit(begin);
-    is_output_written = is_output.bit(begin);
-    const auto bid = is_spill_written ? spill_bid : output_bid;
-    const auto pos = is_spill_written ? spill_pos : output_pos;
-
-    // Read chunk_buf[bid][pos : pos+kPosPartFac).
-    RANGE(j, kPosPartFac, {
-      spill_task[j] = output_task[j] =
-          chunk_buf[assume_mod(bid, kBucketPartFac, begin)][assume_mod(
-              ChunkMeta::uint_pos_t(pos + (kPosPartFac - 1 - j)), kPosPartFac,
-              j)];
-
-      VLOG_IF(5, is_spill_written || is_output_written)
-          << "chunk_buf[" << assert_mod(bid, kBucketPartFac, begin) << "]["
-          << assume_mod(ChunkMeta::uint_pos_t(pos + (kPosPartFac - 1 - j)),
-                        kPosPartFac, j)
-          << "] -> " << spill_task[j];
-    });
-  }
 };
 
 }  // namespace internal
 
-inline void FindChunk(const ChunkMeta (&chunk_meta)[kBucketCount],
-                      bool& is_output_valid, uint_bid_t& output_bid,
+inline void FindChunk(const ChunkMeta (&chunk_meta)[kBucketCountPerBank],
+                      bool& is_output_valid, uint_bbid_t& output_bbid,
                       ChunkMeta& output_meta, bool& is_full_valid,
-                      uint_bid_t& full_bid, ChunkMeta& full_meta) {
+                      uint_bbid_t& full_bbid, ChunkMeta& full_meta) {
 #pragma HLS inline recursive
-  internal::Arbiter<0, kBucketCount>::FindChunk(
-      chunk_meta, is_output_valid, output_bid, output_meta, is_full_valid,
-      full_bid, full_meta);
-}
-
-inline void ReadChunk(
-    // Inputs.
-    const TaskOnChip (&chunk_buf)[kBucketCount][kBufferSize],
-    const bool is_spill_valid, const uint_bid_t spill_bid,
-    const ChunkMeta::uint_pos_t spill_pos, const bool is_output_valid,
-    const uint_bid_t output_bid, const ChunkMeta::uint_pos_t output_pos,
-    // Outputs.
-    SpilledTask& spill_task, SpilledTask& output_task) {
-#pragma HLS inline recursive
-  ap_uint<kBucketPartFac> is_spill = 0, is_output = 0;
-  is_spill.bit(spill_bid % kBucketPartFac) = is_spill_valid;
-  is_output.bit(output_bid % kBucketPartFac) = is_output_valid;
-  bool is_spill_written, is_output_written;
-  internal::Arbiter<0, kBucketPartFac>::ReadChunk(
-      chunk_buf, is_spill, spill_bid, spill_pos, is_output, output_bid,
-      output_pos, is_spill_written, spill_task, is_output_written, output_task);
+  internal::Arbiter<0, kBucketCountPerBank>::FindChunk(
+      chunk_meta, is_output_valid, output_bbid, output_meta, is_full_valid,
+      full_bbid, full_meta);
 }
 
 }  // namespace cgpq

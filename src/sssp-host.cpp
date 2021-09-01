@@ -46,6 +46,7 @@ DEFINE_string(bitstream, "", "path to bitstream file, run csim if empty");
 DEFINE_bool(is_log_bucket, true, "use logarithm bucket instead of linear");
 DEFINE_double(min_distance, 0, "min distance");
 DEFINE_double(max_distance, 0, "max distance");
+DEFINE_int32(interval, 1, "increment expected bid every this many cycles");
 
 template <typename T>
 bool IsValid(int64_t root, PackedEdgesView edges, WeightsView weights,
@@ -313,7 +314,7 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
           tapa::mmaps<Vertex, kIntervalCount> vertices,
 #ifdef TAPA_SSSP_COARSE_PRIORITY
           bool is_log_bucket, float min_distance, float max_distance,
-          tapa::mmaps<SpilledTask, kQueueCount> cgpq_spill
+          int32_t interval, tapa::mmaps<SpilledTask, kQueueCount> cgpq_spill
 #else   // TAPA_SSSP_COARSE_PRIORITY
           tapa::mmap<HeapElemPacked> heap_array,
           tapa::mmap<HeapIndexEntry> heap_index
@@ -539,6 +540,7 @@ int main(int argc, char* argv[]) {
             tapa::read_write_mmaps<Vertex, kIntervalCount>(vertices),
 #ifdef TAPA_SSSP_COARSE_PRIORITY
             FLAGS_is_log_bucket, arg_min_distance, arg_max_distance,
+            FLAGS_interval,
             tapa::placeholder_mmaps<SpilledTask, kQueueCount>(cgpq_spill)
 #else   // TAPA_SSSP_COARSE_PRIORITY
             tapa::read_only_mmap<HeapElemPacked>(heap_array),
@@ -694,43 +696,34 @@ int main(int argc, char* argv[]) {
       VLOG(3) << "  queue[" << qid << "]:";
 
 #ifdef TAPA_SSSP_COARSE_PRIORITY
-      const auto spill_count = *(metadata_it++);
-      const auto max_heap_size = *(metadata_it++);
-      const auto cycle_count = *(metadata_it++);
-      VLOG(3) << "    spill count  : " << setfill(' ') << setw(10)
-              << spill_count << " / "
-              << cgpq_spill[qid].size() / (kCgpqChunkSize / kSpilledTaskVecLen);
-      VLOG(3) << "    max heap size: " << setfill(' ') << setw(10)
-              << max_heap_size << " / " << kCgpqCapacity;
-      auto vlog = [&](const std::string& msg, int64_t var) {
-        VLOG(3) << "    " << msg << ": " << setfill(' ') << setw(10) << var
-                << " / " << cycle_count << " (" << std::fixed
-                << std::setprecision(1) << 100. * var / cycle_count << "%)";
-      };
+      for (int bank = 0; bank < kCgpqPushPortCount; ++bank) {
+        VLOG(3) << "    bank[" << bank << "]:";
 
-      for (int i = 0; i < kCgpqPushPortCount; ++i) {
-        const auto enqueue_full_count = *(metadata_it++);
-        const auto enqueue_current_refill_count = *(metadata_it++);
-        const auto enqueue_future_refill_count = *(metadata_it++);
-        const auto enqueue_bank_conflict_count = *(metadata_it++);
-        vlog("push[" + std::to_string(i) + "] blocked by full buffer   ",
-             enqueue_full_count);
-        vlog("push[" + std::to_string(i) + "] blocked by current refill",
-             enqueue_current_refill_count);
-        vlog("push[" + std::to_string(i) + "] blocked by future refill ",
-             enqueue_future_refill_count);
-        vlog("push[" + std::to_string(i) + "] blocked by bank conflict ",
-             enqueue_bank_conflict_count);
+        const auto spill_count = *(metadata_it++);
+        const auto max_heap_size = *(metadata_it++);
+        const auto cycle_count = *(metadata_it++);
+        VLOG(3) << "      spill count  : " << setfill(' ') << setw(10)
+                << spill_count << " / "
+                << cgpq_spill[qid].size() / kCgpqPushPortCount /
+                       (kCgpqChunkSize / kSpilledTaskVecLen);
+        VLOG(3) << "      max heap size: " << setfill(' ') << setw(10)
+                << max_heap_size << " / " << kCgpqCapacity;
+        auto vlog = [&](const char* msg, int64_t var) {
+          VLOG(3) << "      " << msg << ": " << setfill(' ') << setw(10) << var
+                  << " / " << cycle_count << " (" << fixed << setprecision(1)
+                  << 100. * var / cycle_count << "%)";
+        };
+
+        vlog("push blocked by full buffer   ", *(metadata_it++));
+        vlog("push blocked by current refill", *(metadata_it++));
+        vlog("push blocked by future refill ", *(metadata_it++));
+        vlog("push blocked by bank conflict ", *(metadata_it++));
+
+        vlog("pop blocked by full FIFO    ", *(metadata_it++));
+        vlog("pop blocked by spill        ", *(metadata_it++));
+        vlog("pop blocked by bank conflict", *(metadata_it++));
+        vlog("pop blocked by alignment    ", *(metadata_it++));
       }
-
-      const auto dequeue_full_count = *(metadata_it++);
-      const auto dequeue_spilling_count = *(metadata_it++);
-      const auto dequeue_bank_conflict_count = *(metadata_it++);
-      const auto dequeue_alignment_count = *(metadata_it++);
-      vlog("pop blocked by full FIFO    ", dequeue_full_count);
-      vlog("pop blocked by spill        ", dequeue_spilling_count);
-      vlog("pop blocked by bank conflict", dequeue_bank_conflict_count);
-      vlog("pop blocked by alignment    ", dequeue_alignment_count);
 #else   // TAPA_SSSP_COARSE_PRIORITY
 
       // Queue op counts.
