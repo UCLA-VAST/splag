@@ -3026,7 +3026,8 @@ spin:
     if (!vertex_noop_q.empty()) {
       const auto previous_task_count = active_task_count;
       const auto count = vertex_noop_q.read(nullptr);
-      active_task_count -= count.push_count + count.pop_count;
+      active_task_count -= count.push_count;
+      active_task_count -= count.pop_count;
       filtered_noop_count += count.push_count;
       VLOG(4) << "#task " << previous_task_count << " -> " << active_task_count;
     }

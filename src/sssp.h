@@ -226,10 +226,7 @@ class TaskOnChip {
  public:
   TaskOnChip() {}
 
-  TaskOnChip(std::nullptr_t) {
-    data = 0;
-    data.bit(vid_msb) = true;
-  }
+  TaskOnChip(std::nullptr_t) : data(-1) {}
 
   TaskOnChip(const Task& task) {
     set_vid(task.vid);
@@ -254,7 +251,9 @@ class TaskOnChip {
     };
   }
 
-  bool is_valid() const { return !data.bit(vid_msb); }
+  bool is_valid() const {
+    return ap_int<kFloatWidth>(data.range(distance_msb, distance_lsb)) != -1;
+  }
 
  private:
   void set_vid(Vid vid) { data.range(vid_msb, vid_lsb) = vid; }
