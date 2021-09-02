@@ -314,7 +314,8 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
           tapa::mmaps<Vertex, kIntervalCount> vertices,
 #ifdef TAPA_SSSP_COARSE_PRIORITY
           bool is_log_bucket, float min_distance, float max_distance,
-          int32_t interval, tapa::mmaps<SpilledTask, kCgpqMemCount> cgpq_spill
+          int32_t interval,
+          tapa::mmaps<SpilledTaskPerMem, kCgpqPhysMemCount> cgpq_spill
 #else   // TAPA_SSSP_COARSE_PRIORITY
           tapa::mmap<HeapElemPacked> heap_array,
           tapa::mmap<HeapIndexEntry> heap_index
@@ -439,7 +440,7 @@ int main(int argc, char* argv[]) {
   for (auto& interval : vertices) {
     interval.resize(tapa::round_up_div<kIntervalCount>(vertex_count));
   }
-  array<aligned_vector<SpilledTask>, kCgpqMemCount> cgpq_spill;
+  array<aligned_vector<SpilledTaskPerMem>, kCgpqPhysMemCount> cgpq_spill;
   for (auto& spill : cgpq_spill) {
     spill.resize(1 << uint_spill_addr_t::width);
   }
@@ -541,7 +542,8 @@ int main(int argc, char* argv[]) {
 #ifdef TAPA_SSSP_COARSE_PRIORITY
             FLAGS_is_log_bucket, arg_min_distance, arg_max_distance,
             FLAGS_interval,
-            tapa::placeholder_mmaps<SpilledTask, kCgpqMemCount>(cgpq_spill)
+            tapa::placeholder_mmaps<SpilledTaskPerMem, kCgpqPhysMemCount>(
+                cgpq_spill)
 #else   // TAPA_SSSP_COARSE_PRIORITY
             tapa::read_only_mmap<HeapElemPacked>(heap_array),
             tapa::read_only_mmap<HeapIndexEntry>(heap_index)

@@ -466,9 +466,18 @@ constexpr int kPopSwitchStageCount = log2(kPopSwitchPortCount);
 
 using SpilledTask = std::array<TaskOnChip, kSpilledTaskVecLen>;
 
-constexpr int kCgpqMemCount = 4;
+constexpr int kCgpqPhysMemCount = 4;
 
-constexpr int kCgpqBankCountPerMem = kCgpqPushPortCount / kCgpqMemCount;
+constexpr int kCgpqLogicMemCount = 2;
+
+constexpr int kCgpqLogicMemWidth = kCgpqPhysMemCount / kCgpqLogicMemCount;
+
+constexpr int kCgpqBankCountPerMem = kCgpqPushPortCount / kCgpqLogicMemCount;
+
+constexpr int kSpilledTaskVecLenPerMem =
+    kSpilledTaskVecLen / kCgpqLogicMemWidth;
+
+using SpilledTaskPerMem = std::array<TaskOnChip, kSpilledTaskVecLenPerMem>;
 
 constexpr int kCgpqChunkSize = 1024;
 
