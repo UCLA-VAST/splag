@@ -1102,6 +1102,25 @@ spin:
   }
 }
 
+void CgpqMinBucketFinder(
+    istreams<cgpq::uint_bid_t, kCgpqPushPortCount>& bid_in_q,
+    ostreams<cgpq::uint_bid_t, kCgpqPushPortCount>& bid_out_q) {
+  using namespace cgpq;
+
+  DECL_ARRAY(uint_bid_t, bid, kCgpqPushPortCount, kBucketCount - 1);
+  uint_bid_t prev_min_bid = kBucketCount - 1;
+
+spin:
+  for (;;) {
+    RANGE(bank, kCgpqPushPortCount, bid_in_q[bank].try_read(bid[bank]));
+    const auto min_bid = find_min(bid);
+    RANGE(bank, kCgpqPushPortCount, bid_out_q[bank].try_write(min_bid));
+    VLOG_IF(4, prev_min_bid != min_bid)
+        << "min bid: " << prev_min_bid << " -> " << min_bid;
+    prev_min_bid = min_bid;
+  }
+}
+
 // Coarse-grained priority queue.
 // Implements chunks of buckets.
 void CgpqCore(
@@ -1109,6 +1128,8 @@ void CgpqCore(
     istream<bool>& done_q, ostream<PiHeapStat>& stat_q,
     // Scalar
     cgpq::uint_bank_t bank,
+    //
+    ostream<cgpq::uint_bid_t>& bid_out_q, istream<cgpq::uint_bid_t>& bid_in_q,
     // Queue requests.
     istream<PushReq>& push_req_q,
     // Queue outputs.
@@ -1188,6 +1209,8 @@ void CgpqCore(
   // Cannot dequeue due to alignment, which means the dequeue bucket is being
   // refilled or enqueued at the same piece of aligned memory space.
   int32_t dequeue_alignment_count = 0;
+
+  uint_bid_t min_bid = 0;
 
 spin:
   for (; done_q.empty();) {
@@ -1295,6 +1318,8 @@ spin:
     // Pop from highest-priority chunk buffer and write output data if
     const bool can_dequeue =
         is_output_valid &&  // there is a non-empty chunk, and
+
+        output_bbid.bid(bank) == min_bid &&  // output bid is the minimum, and
 
         // output is available for write, and
         !is_output_blocked_by_full_fifo &&
@@ -1463,6 +1488,14 @@ spin:
       }
 
       is_active = true;
+    }
+
+    bid_in_q.try_read(min_bid);
+    if (!is_output_valid ||
+        (can_dequeue && output_meta.GetSize() <= kCgpqPushPortCount)) {
+      bid_out_q.write(kBucketCount - 1);  // Invalidate this bank's vote.
+    } else {
+      bid_out_q.try_write(output_bbid.bid(bank));  // Vote for min bid.
     }
 
     {
@@ -1962,6 +1995,9 @@ void TaskQueue(
   stream<cgpq::uint_bank_t, 64> VAR(read_id_q);
   stream<cgpq::uint_bank_t, 64> VAR(write_id_q);
 
+  streams<cgpq::uint_bid_t, kCgpqPushPortCount, 2> VAR(min_bid_req_q);
+  streams<cgpq::uint_bid_t, kCgpqPushPortCount, 2> VAR(min_bid_resp_q);
+
   task()
       .invoke<detach>(CgpqDuplicateDone, done_q, done_qi)
       .invoke<join, kCgpqPushPortCount>(CgpqBucketGen, is_log_bucket,
@@ -1976,11 +2012,13 @@ void TaskQueue(
       .invoke<detach, kCgpqPushPortCount>(CgpqSwitchMux, xbar_out_qi,
                                           xbar_out_q)
       .invoke<detach, kCgpqPushPortCount>(CgpqHeap, heap_req_q, heap_resp_q)
-      .invoke<detach, kCgpqPushPortCount>(CgpqCore, done_qi, stat_qi, seq(),
-                                          xbar_out_q,  //
+      .invoke<detach, kCgpqPushPortCount>(CgpqCore, done_qi, stat_qi, seq(),  //
+                                          min_bid_req_q, min_bid_resp_q,      //
+                                          xbar_out_q,                         //
                                           pop_qi, heap_req_q, heap_resp_q,
                                           read_addr_qi, read_data_qi,
                                           write_req_qi, write_resp_qi)
+      .invoke<detach>(CgpqMinBucketFinder, min_bid_req_q, min_bid_resp_q)
       .invoke(CgpqOutputArbiter, interval, done_qi, pop_qi, pop_q)
       .invoke<detach>(CgpqStatArbiter, stat_qi, stat_q)
       .invoke<detach>(  //
