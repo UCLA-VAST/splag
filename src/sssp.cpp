@@ -1946,6 +1946,7 @@ void PopAdapter(istreams<TaskOnChip, kSubIntervalCount>& in_q,
       });
 }
 
+#ifndef TAPA_SSSP_COARSE_PRIORITY
 // Each push request puts the task in the queue if there isn't a task for the
 // same vertex in the queue, or decreases the priority of the existing task
 // using the new value. Whether a new task is created is returned in the
@@ -1954,27 +1955,6 @@ void PopAdapter(istreams<TaskOnChip, kSubIntervalCount>& in_q,
 // Each pop removes a task if the queue is not empty, otherwise the response
 // indicates that the queue is empty.
 void TaskQueue(
-#ifdef TAPA_SSSP_COARSE_PRIORITY
-    //
-    istream<bool>& done_q, ostream<PiHeapStat>& stat_q,
-    // Scalar
-    uint_qid_t qid,
-    // Queue requests.
-    istreams<TaskOnChip, kCgpqPushPortCount>& push_req_q,
-    // NOOP acknowledgements
-    ostream<bool>& noop_q,
-    // Queue outputs.
-    ostreams<TaskOnChip, kSpilledTaskVecLen>& pop_q,
-    //
-    bool is_log_bucket, float min_distance, float max_distance,
-    uint_interval_t interval,
-    //
-    ostreams<uint_spill_addr_t, kCgpqPhysMemCount>& cgpq_spill_read_addr_q,
-    istreams<SpilledTaskPerMem, kCgpqPhysMemCount>& cgpq_spill_read_data_q,
-    ostreams<packet<uint_spill_addr_t, SpilledTaskPerMem>, kCgpqPhysMemCount>&
-        cgpq_spill_write_req_q,
-    istreams<bool, kCgpqPhysMemCount>& cgpq_spill_write_resp_q
-#else   // TAPA_SSSP_COARSE_PRIORITY
     //
     istream<bool>& done_q, ostream<PiHeapStat>& stat_q,
     // Scalar
@@ -1994,68 +1974,7 @@ void TaskQueue(
     ostream<Vid>& piheap_index_read_addr_q,
     istream<HeapIndexEntry>& piheap_index_read_data_q,
     ostream<packet<Vid, HeapIndexEntry>>& piheap_index_write_req_q,
-    istream<bool>& piheap_index_write_resp_q
-#endif  // TAPA_SSSP_COARSE_PRIORITY
-) {
-#ifdef TAPA_SSSP_COARSE_PRIORITY
-  streams<PushReq, kCgpqPushPortCount, 2> VAR(push_req_qi);
-  streams<PushReq,
-          kCgpqPushPortCount * kSwitchMuxDegree*(kCgpqPushStageCount + 1), 32>
-      VAR(xbar_q);
-  streams<PushReq, kCgpqPushPortCount * kSwitchMuxDegree, 32> VAR(xbar_out_qi);
-  streams<PushReq, kCgpqPushPortCount, 32> VAR(xbar_out_q);
-
-  streams<CgpqHeapReq, kCgpqPushPortCount, 2> VAR(heap_req_q);
-  streams<cgpq::ChunkRef, kCgpqPushPortCount, 2> VAR(heap_resp_q);
-
-  streams<cgpq::PopVec, kCgpqPushPortCount, 2> VAR(pop_qi);
-  streams<bool, kCgpqPushPortCount * 2 + 1, 2> VAR(done_qi);
-  streams<PiHeapStat, kCgpqPushPortCount, 2> VAR(stat_qi);
-
-  streams<uint_spill_addr_t, kCgpqPushPortCount, 2> VAR(read_addr_qi);
-  streams<SpilledTask, kCgpqPushPortCount, 2> VAR(read_data_qi);
-  streams<packet<uint_spill_addr_t, SpilledTask>, kCgpqPushPortCount, 2> VAR(
-      write_req_qi);
-  streams<bool, kCgpqPushPortCount, 2> VAR(write_resp_qi);
-  streams<cgpq::uint_bank_t, kCgpqLogicMemCount, 64> VAR(read_id_q);
-  streams<cgpq::uint_bank_t, kCgpqLogicMemCount, 64> VAR(write_id_q);
-
-  streams<cgpq::uint_bid_t, kCgpqPushPortCount, 2> VAR(min_bid_req_q);
-  streams<cgpq::uint_bid_t, kCgpqPushPortCount, 2> VAR(min_bid_resp_q);
-
-  task()
-      .invoke<detach>(CgpqDuplicateDone, done_q, done_qi)
-      .invoke<join, kCgpqPushPortCount>(CgpqBucketGen, is_log_bucket,
-                                        min_distance, max_distance, done_qi,
-                                        push_req_q, push_req_qi)
-      .invoke<detach, kCgpqPushPortCount>(CgpqSwitchDemux, push_req_qi, xbar_q)
-#if TAPA_SSSP_CGPQ_PUSH_COUNT >= 2
-      .invoke<detach, kSwitchMuxDegree * kCgpqPushStageCount>(
-          CgpqSwitchStage, seq(), xbar_q, xbar_q)
-#endif  // TAPA_SSSP_CGPQ_PUSH_COUNT
-      .invoke<detach>(CgpqPushAdapter, xbar_q, xbar_out_qi)
-      .invoke<detach, kCgpqPushPortCount>(CgpqSwitchMux, xbar_out_qi,
-                                          xbar_out_q)
-      .invoke<detach, kCgpqPushPortCount>(CgpqHeap, heap_req_q, heap_resp_q)
-      .invoke<detach, kCgpqPushPortCount>(CgpqCore, done_qi, stat_qi, seq(),  //
-                                          min_bid_req_q, min_bid_resp_q,      //
-                                          xbar_out_q,                         //
-                                          pop_qi, heap_req_q, heap_resp_q,
-                                          read_addr_qi, read_data_qi,
-                                          write_req_qi, write_resp_qi)
-      .invoke<detach>(CgpqMinBucketFinder, min_bid_req_q, min_bid_resp_q)
-      .invoke(CgpqOutputArbiter, interval, done_qi, pop_qi, pop_q)
-      .invoke<detach>(CgpqStatArbiter, stat_qi, stat_q)
-      .invoke<detach, kCgpqLogicMemCount>(  //
-          CgpqReadAddrArbiter, read_addr_qi, read_id_q, cgpq_spill_read_addr_q)
-      .invoke<detach, kCgpqLogicMemCount>(  //
-          CgpqReadDataArbiter, read_id_q, cgpq_spill_read_data_q, read_data_qi)
-      .invoke<detach, kCgpqLogicMemCount>(  //
-          CgpqWriteReqArbiter, write_req_qi, write_id_q, cgpq_spill_write_req_q)
-      .invoke<detach, kCgpqLogicMemCount>(  //
-          CgpqWriteRespArbiter, write_id_q, cgpq_spill_write_resp_q,
-          write_resp_qi);
-#else  // TAPA_SSSP_COARSE_PRIORITY
+    istream<bool>& piheap_index_write_resp_q) {
   // Heap rule: child <= parent
   streams<HeapReq, kLevelCount, 1> req_q;
   streams<HeapResp, kLevelCount, 1> resp_q;
@@ -2167,8 +2086,8 @@ void TaskQueue(
                       piheap_index_write_req_q, piheap_index_write_resp_q,
                       acquire_index_ctx_q, acquire_index_ctx_q)
       .invoke<detach>(PiHeapIndexRespArbiter, index_resp_q, index_resp_qs);
-#endif  // TAPA_SSSP_COARSE_PRIORITY
 }
+#endif  // TAPA_SSSP_COARSE_PRIORITY
 
 #if TAPA_SSSP_SWITCH_PORT_COUNT >= 2
 void Switch2x2(
@@ -3077,7 +2996,9 @@ void Dispatcher(
     istream<int64_t>& task_stat_q,
     // Task count.
     istream<VertexNoop>& vertex_noop_q,
+#ifndef TAPA_SSSP_COARSE_PRIORITY
     istream<uint_queue_noop_t>& queue_noop_q,
+#endif  // TAPA_SSSP_COARSE_PRIORITY
     istream<TaskCount>& task_count_q) {
   task_init_q.write(root);
 
@@ -3110,6 +3031,7 @@ spin:
       VLOG(4) << "#task " << previous_task_count << " -> " << active_task_count;
     }
 
+#ifndef TAPA_SSSP_COARSE_PRIORITY
     if (!queue_noop_q.empty()) {
       const auto previous_task_count = active_task_count;
       const auto count = queue_noop_q.read(nullptr);
@@ -3117,6 +3039,7 @@ spin:
       push_count += count;
       VLOG(4) << "#task " << previous_task_count << " -> " << active_task_count;
     }
+#endif  // TAPA_SSSP_COARSE_PRIORITY
 
     if (!task_count_q.empty()) {
       const auto previous_task_count = active_task_count;
@@ -3281,20 +3204,53 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   streams<TaskOnChip, kSubIntervalCount, 2> VAR(vertex_filter_out_q);
   streams<TaskOnChip, kSubIntervalCount, 2> VAR(vertex_filter_out_qi);
 
+#ifndef TAPA_SSSP_COARSE_PRIORITY
   streams<bool, kQueueCount, 2> queue_noop_qi;
   stream<uint_queue_noop_t, 2> queue_noop_q;
+#endif  // TAPA_SSSP_COARSE_PRIORITY
 
   streams<uint_vid_t, kPeCount, 2> task_count_qi;
   stream<TaskCount, 2> task_count_q;
 
+  streams<PushReq, kCgpqPushPortCount, 2> VAR(cgpq_push_req_q);
+  streams<PushReq,
+          kCgpqPushPortCount * kSwitchMuxDegree*(kCgpqPushStageCount + 1), 32>
+      VAR(cgpq_xbar_q);
+  streams<PushReq, kCgpqPushPortCount * kSwitchMuxDegree, 32> VAR(
+      cgpq_xbar_out_qi);
+  streams<PushReq, kCgpqPushPortCount, 32> VAR(cgpq_xbar_out_q);
+
+  streams<cgpq::PopVec, kCgpqPushPortCount, 2> VAR(cgpq_pop_qi);
+
+  streams<CgpqHeapReq, kCgpqPushPortCount, 2> VAR(cgpq_heap_req_q);
+  streams<cgpq::ChunkRef, kCgpqPushPortCount, 2> VAR(cgpq_heap_resp_q);
+
+  streams<uint_spill_addr_t, kCgpqPushPortCount, 2> VAR(cgpq_read_addr_qi);
+  streams<SpilledTask, kCgpqPushPortCount, 2> VAR(cgpq_read_data_qi);
+  streams<packet<uint_spill_addr_t, SpilledTask>, kCgpqPushPortCount, 2> VAR(
+      cgpq_write_req_qi);
+  streams<bool, kCgpqPushPortCount, 2> VAR(cgpq_write_resp_qi);
+  streams<cgpq::uint_bank_t, kCgpqLogicMemCount, 64> VAR(cgpq_read_id_q);
+  streams<cgpq::uint_bank_t, kCgpqLogicMemCount, 64> VAR(cgpq_write_id_q);
+
+  streams<cgpq::uint_bid_t, kCgpqPushPortCount, 2> VAR(cgpq_min_bid_req_q);
+  streams<cgpq::uint_bid_t, kCgpqPushPortCount, 2> VAR(cgpq_min_bid_resp_q);
+
+  streams<bool, kCgpqPushPortCount * 2 + 1, 2> VAR(cgpq_done_qi);
+  streams<PiHeapStat, kCgpqPushPortCount, 2> VAR(cgpq_stat_qi);
+
   tapa::task()
-      .invoke(
+      .invoke(  //
           Dispatcher, root, metadata, vertex_cache_done_q, vertex_cache_stat_q,
           edge_done_q, edge_stat_q, queue_done_q, queue_stat_q,
 #if TAPA_SSSP_SWITCH_PORT_COUNT > 1
           switch_done_q, switch_stat_q,
 #endif  // TAPA_SSSP_SWITCH_PORT_COUNT
-          task_init_q, task_stat_q, vertex_noop_q, queue_noop_q, task_count_q)
+          task_init_q, task_stat_q, vertex_noop_q,
+#ifndef TAPA_SSSP_COARSE_PRIORITY
+          queue_noop_q,
+#endif  // TAPA_SSSP_COARSE_PRIORITY
+          task_count_q)
 #ifdef TAPA_SSSP_IMMEDIATE_RELAX
       .invoke<detach>(
           TaskArbiter, task_init_q, task_stat_q, vertex_out_qi, task_req_qi
@@ -3304,13 +3260,45 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
 #endif  // TAPA_SSSP_IMMEDIATE_RELAX
           )
 #ifdef TAPA_SSSP_COARSE_PRIORITY
-      .invoke<join, kQueueCount>(
-          TaskQueue, queue_done_q, queue_stat_q, seq(), vertex_filter_out_q,
-          queue_noop_qi, queue_pop_q, is_log_bucket, min_distance, max_distance,
-          interval,
-          //
-          cgpq_spill_read_addr_q, cgpq_spill_read_data_q,
-          cgpq_spill_write_req_q, cgpq_spill_write_resp_q)
+      .invoke<join, kCgpqPushPortCount>(
+          CgpqBucketGen, is_log_bucket, min_distance, max_distance,
+          cgpq_done_qi, vertex_filter_out_q, cgpq_push_req_q)
+      .invoke<detach, kCgpqPushPortCount>(CgpqSwitchDemux, cgpq_push_req_q,
+                                          cgpq_xbar_q)
+#if TAPA_SSSP_CGPQ_PUSH_COUNT >= 2
+      .invoke<detach, kSwitchMuxDegree * kCgpqPushStageCount>(
+          CgpqSwitchStage, seq(), cgpq_xbar_q, cgpq_xbar_q)
+#endif  // TAPA_SSSP_CGPQ_PUSH_COUNT
+      .invoke<detach>(CgpqPushAdapter, cgpq_xbar_q, cgpq_xbar_out_qi)
+      .invoke<detach, kCgpqPushPortCount>(  //
+          CgpqSwitchMux, cgpq_xbar_out_qi, cgpq_xbar_out_q)
+      .invoke<detach, kCgpqPushPortCount>(
+          CgpqCore, cgpq_done_qi, cgpq_stat_qi, seq(),  //
+          cgpq_min_bid_req_q, cgpq_min_bid_resp_q,      //
+          cgpq_xbar_out_q, cgpq_pop_qi,                 //
+          cgpq_heap_req_q, cgpq_heap_resp_q,            //
+          cgpq_read_addr_qi, cgpq_read_data_qi,         //
+          cgpq_write_req_qi, cgpq_write_resp_qi)
+      .invoke(  //
+          CgpqOutputArbiter, interval, cgpq_done_qi, cgpq_pop_qi, queue_pop_q)
+      .invoke<detach, kCgpqPushPortCount>(  //
+          CgpqHeap, cgpq_heap_req_q, cgpq_heap_resp_q)
+      .invoke<detach>(  //
+          CgpqMinBucketFinder, cgpq_min_bid_req_q, cgpq_min_bid_resp_q)
+      .invoke<detach, kCgpqLogicMemCount>(  //
+          CgpqReadAddrArbiter, cgpq_read_addr_qi, cgpq_read_id_q,
+          cgpq_spill_read_addr_q)
+      .invoke<detach, kCgpqLogicMemCount>(  //
+          CgpqReadDataArbiter, cgpq_read_id_q, cgpq_spill_read_data_q,
+          cgpq_read_data_qi)
+      .invoke<detach, kCgpqLogicMemCount>(  //
+          CgpqWriteReqArbiter, cgpq_write_req_qi, cgpq_write_id_q,
+          cgpq_spill_write_req_q)
+      .invoke<detach, kCgpqLogicMemCount>(  //
+          CgpqWriteRespArbiter, cgpq_write_id_q, cgpq_spill_write_resp_q,
+          cgpq_write_resp_qi)
+      .invoke<detach>(CgpqDuplicateDone, queue_done_q, cgpq_done_qi)
+      .invoke<detach>(CgpqStatArbiter, cgpq_stat_qi, queue_stat_q)
       .invoke<detach, kSubIntervalCount>(SwitchDemux, queue_pop_q, pop_xbar_q)
       .invoke<detach, kQueueCount * kSwitchMuxDegree * kPopSwitchStageCount>(
           PopSwitchStage, seq(), pop_xbar_q, pop_xbar_q)
@@ -3325,8 +3313,8 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
           piheap_array_write_req_q, piheap_array_write_resp_q,
           piheap_index_read_addr_q, piheap_index_read_data_q,
           piheap_index_write_req_q, piheap_index_write_resp_q)
-#endif  // TAPA_SSSP_COARSE_PRIORITY
       .invoke<detach>(QueueNoopMerger, queue_noop_qi, queue_noop_q)
+#endif  // TAPA_SSSP_COARSE_PRIORITY
       .invoke<detach>(VertexOutputAdapter, vertex_out_q, vertex_out_qx)
       .invoke<detach, kShardCount>(VertexOutputArbiter, vertex_out_qx,
 #ifdef TAPA_SSSP_IMMEDIATE_RELAX
