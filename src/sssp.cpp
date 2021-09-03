@@ -1134,7 +1134,7 @@ void CgpqCore(
     // Queue requests.
     istream<PushReq>& push_req_q,
     // Queue outputs.
-    ostream<cgpq::PopVec>& pop_q,
+    ostream<SpilledTask>& pop_q,
     //
     ostream<CgpqHeapReq>& heap_req_q, istream<cgpq::ChunkRef>& heap_resp_q,
     //
@@ -1471,16 +1471,12 @@ spin:
     }
 
     if (can_dequeue) {
-      PopVec output_vec;
-      output_vec.bid = output_bbid.bid(bank);
       RANGE(i, kSpilledTaskVecLen, {
-        if (i < output_meta.GetSize()) {
-          output_vec[i] = output_task[i];
-        } else {
-          output_vec[i] = nullptr;
+        if (i >= output_meta.GetSize()) {
+          output_task[i] = nullptr;
         }
       });
-      pop_q.try_write(output_vec);
+      pop_q.try_write(output_task);
 
       for (int i = 0; i < kSpilledTaskVecLen; ++i) {
         VLOG_IF(5, i < output_meta.GetSize())
@@ -1765,32 +1761,19 @@ spin:
 }
 
 void CgpqOutputArbiter(uint_interval_t interval, istream<bool>& done_q,
-                       istreams<cgpq::PopVec, kCgpqPushPortCount>& in_q,
+                       istreams<SpilledTask, kCgpqPushPortCount>& in_q,
                        ostreams<TaskOnChip, kSpilledTaskVecLen>& out_q) {
-  // The expected bid will be incremented every interval cycles if no expected
-  // input exists.
-  cgpq::uint_bid_t expected_bid = 0;
-  uint_interval_t inactive_count = 0;
-
 spin:
-  for (; done_q.empty();) {
+  for (ap_uint<kCgpqPushPortCount> priority = 1; done_q.empty();
+       priority.lrotate(1)) {
 #pragma HLS pipeline II = 1
-    cgpq::PopVec vec;
-    cgpq::uint_bank_t bank;
-    if (find_max_non_empty(in_q, vec, bank) && vec.bid <= expected_bid) {
-      in_q[bank].read(nullptr);
+    if (int bank; find_non_empty(in_q, priority, bank)) {
+      const auto vec = in_q[bank].read(nullptr);
       RANGE(i, kSpilledTaskVecLen, {
         if (vec[i].is_valid()) {
           out_q[i].write(vec[i]);
         };
       });
-      expected_bid = vec.bid;
-      inactive_count = 0;
-    } else if (inactive_count < interval) {
-      ++inactive_count;
-    } else if (expected_bid < cgpq::kBucketCount - 1) {
-      ++expected_bid;
-      inactive_count = 0;
     }
   }
   done_q.read(nullptr);
@@ -3221,7 +3204,7 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
       cgpq_xbar_out_qi);
   streams<PushReq, kCgpqPushPortCount, 32> VAR(cgpq_xbar_out_q);
 
-  streams<cgpq::PopVec, kCgpqPushPortCount, 2> VAR(cgpq_pop_qi);
+  streams<SpilledTask, kCgpqPushPortCount, 2> VAR(cgpq_pop_qi);
 
   streams<CgpqHeapReq, kCgpqPushPortCount, 2> VAR(cgpq_heap_req_q);
   streams<cgpq::ChunkRef, kCgpqPushPortCount, 2> VAR(cgpq_heap_resp_q);

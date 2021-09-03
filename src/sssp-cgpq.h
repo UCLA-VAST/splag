@@ -59,13 +59,6 @@ struct PushBuf {
   uint_bid_t bid;
 };
 
-struct PopVec : public SpilledTask {
-  uint_bid_t bid;
-
-  // Compares priority.
-  bool operator<(const PopVec& other) const { return other.bid < bid; }
-};
-
 class ChunkMeta {
  public:
   ~ChunkMeta() {
