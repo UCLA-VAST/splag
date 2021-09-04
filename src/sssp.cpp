@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <iomanip>
 
+#include <glog/logging.h>
 #include <tapa.h>
 #include <tapa/synthesizable/util.h>
 
@@ -2327,7 +2328,7 @@ void VertexCache(
     //
     istream<TaskOnChip>& push_in_q, ostream<TaskOnChip>& push_out_q,
     //
-    istream<TaskOnChip>& req_q, ostream<Task>& push_q,
+    istream<TaskOnChip>& pop_in_q, ostream<Task>& pop_out_q,
     //
     ostream<bool>& noop_q,
     //
@@ -2336,6 +2337,8 @@ void VertexCache(
     //
     ostream<Vid>& read_addr_q, istream<Vertex>& read_data_q,
     ostream<packet<Vid, Vertex>>& write_req_q, istream<bool>& write_resp_q) {
+  constexpr int kLogLevel = 5;
+
   constexpr int kVertexCacheSize = 4096;
   VertexCacheEntry cache[kVertexCacheSize];
 #pragma HLS bind_storage variable = cache type = RAM_S2P impl = URAM
@@ -2385,14 +2388,12 @@ exec:
     TaskOnChip push_task = nullptr;
     bool is_push_task_valid = false;
 
-    TaskOnChip task = nullptr;
-    bool is_task_valid = false;
+    TaskOnChip pop_task = nullptr;
+    bool is_pop_task_valid = false;
 
     using uint_cache_index_t = ap_uint<log2(kVertexCacheSize)>;
     uint_cache_index_t prev_index = 0;
     VertexCacheEntry prev_entry = nullptr;
-
-    bool is_push_output_available = true;
 
   spin:
     for (; done_q.empty();) {
@@ -2406,14 +2407,10 @@ exec:
 
       const bool is_read_ack_valid = is_read_data_valid && is_read_vid_valid;
 
-      const bool is_push_valid = is_push_task_valid && is_push_output_available;
-
-      const bool is_pop_valid = is_task_valid;
-
-      const auto vid = is_push_valid        ? push_task.vid()
-                       : is_write_ack_valid ? write_vid
+      const auto vid = is_write_ack_valid   ? write_vid
                        : is_read_ack_valid  ? read_vid
-                                            : task.vid();
+                       : is_push_task_valid ? push_task.vid()
+                                            : pop_task.vid();
 
       // curr_index = vid / kSubIntervalCount but HLS seems to have trouble
       // optimizing this, thus the following.
@@ -2428,23 +2425,7 @@ exec:
 
       const bool is_hit = entry.is_valid && entry.GetTask().vid == vid;
 
-      if (is_push_valid) {
-        is_started = true;
-
-        CHECK_EQ(vid, push_task.vid());
-
-        if (is_hit && !(entry.GetTask() < push_task)) {
-          if (is_hit) {
-            ++read_hit;
-          }
-          is_push_output_available = !push_out_q.full();
-          noop_q.write(/*is_push=*/true);
-          is_push_task_valid = false;
-        } else {
-          is_push_output_available = push_out_q.try_write(push_task);
-          is_push_task_valid = !is_push_output_available;
-        }
-      } else if (is_write_ack_valid) {
+      if (is_write_ack_valid) {
         ++write_resp_count;
 
         write_resp_q.read(nullptr);
@@ -2456,14 +2437,12 @@ exec:
         is_entry_updated = true;
         CHECK_GT(active_write_count, 0);
         --active_write_count;
-
-        is_push_output_available = !push_out_q.full();
       } else if (is_read_ack_valid) {
         ++read_resp_count;
 
-        if (!push_q.full() && !noop_q.full()) {
+        if (!push_out_q.full() && !noop_q.full()) {
           is_read_data_valid = is_read_vid_valid = false;
-          VLOG(5) << "vmem[" << vid << "] -> " << vertex;
+          VLOG(kLogLevel) << "vmem[" << vid << "] -> " << vertex;
           CHECK(entry.is_valid);
           CHECK_EQ(entry.GetTask().vid, vid);
           CHECK(entry.is_reading);
@@ -2471,28 +2450,44 @@ exec:
           // Vertex updates do not have metadata of the destination vertex, so
           // update cache using metadata from DRAM.
           entry.SetMetadata(vertex);
-          if (!(entry.GetTask().vertex < vertex)) {
-            // Distance in DRAM is closer; generate NOOP and update cache.
-            noop_q.try_write(/*is_push=*/false);
-            VLOG(5) << "task     -> NOOP";
-            entry.SetValue(vertex);
-          } else {
-            // Distance in cache is closer; generate PUSH.
-            if (entry.GetTask().vertex.degree > 1) {
-              push_q.try_write(entry.GetTask());
+          if (entry.is_push) {  // Reading for PUSH.
+            if (!(entry.GetTask().vertex < vertex)) {
+              // Distance in DRAM is closer; generate NOOP and update cache.
+              noop_q.try_write(/*is_push=*/true);
+              VLOG(kLogLevel) << "task     -> NOOP";
+              entry.SetValue(vertex);
             } else {
-              noop_q.try_write(/*is_push=*/false);
+              // Distance in cache is closer; generate PUSH.
+              if (entry.GetTask().vertex.degree > 1) {
+                push_out_q.try_write(entry.GetTask());
+                VLOG(kLogLevel) << "task     -> PUSH " << entry.GetTask();
+              } else {
+                noop_q.try_write(/*is_push=*/true);
+                VLOG(kLogLevel) << "task     -> NOOP";
+              }
+              entry.is_dirty = true;
+              VLOG(kLogLevel)
+                  << "v$$$[" << entry.GetTask().vid << "] marked dirty";
+              ++write_hit;
             }
-            VLOG(5) << "task     -> " << entry.GetTask();
-            entry.is_dirty = true;
-            VLOG(5) << "v$$$[" << entry.GetTask().vid << "] marked dirty";
-            ++write_hit;
+          } else {  // Reading for POP.
+            if (vertex < entry.GetTask().vertex) {
+              // Distance in DRAM is closer; update cache.
+              entry.SetValue(vertex);
+            } else if (entry.GetTask().vertex < vertex) {
+              // Distance in cache is closer; mark cache dirty.
+              entry.is_dirty = true;
+              VLOG(kLogLevel)
+                  << "v$$$[" << entry.GetTask().vid << "] marked dirty";
+              ++write_hit;
+            }
           }
           is_entry_updated = true;
         }
+      } else if (is_push_task_valid) {
+        is_started = true;
+        CHECK_EQ(vid, push_task.vid());
 
-        is_push_output_available = !push_out_q.full();
-      } else if (is_pop_valid) {
         const bool is_entry_busy =
             entry.is_valid && (entry.is_reading || entry.is_writing);
         const bool is_read_busy = read_addr_q.full() || read_vid_out_q.full();
@@ -2503,32 +2498,47 @@ exec:
         if (is_hit) {
           ++req_hit_count;
 
-          if (!push_q.full() && !noop_q.full()) {
-            // req_q.read(nullptr);
-            is_task_valid = false;
-            VLOG(5) << "task     <- " << task;
+          if (!push_out_q.full() && !noop_q.full()) {
+            is_push_task_valid = false;
+            VLOG(kLogLevel) << "task     <- " << push_task;
 
-            // Update cache if new task has higher priority.
-            if ((is_entry_updated = entry.GetTask() < task)) {
-              entry.SetValue(task.vertex());
-            }
+            if (entry.is_reading && !entry.is_push) {  // Reading for POP.
 
-            // Generate PUSH if and only if cache is updated and not reading.
-            // If reading, PUSH will be generated when read finishes, if
-            // necessary.
-            if (is_entry_updated && !entry.is_reading) {
-              if (entry.GetTask().vertex.degree > 1) {
-                push_q.try_write(entry.GetTask());
+              // Discard PUSH task because POP is on the way.
+              noop_q.try_write(/*is_push=*/true);
+              VLOG(kLogLevel) << "task     -> NOOP";
+
+              // Update cache if new task has higher priority.
+              if ((is_entry_updated = entry.GetTask() < push_task)) {
+                entry.SetValue(push_task.vertex());
+              }
+            } else {  // Reading for PUSH or not reading.
+
+              // Update cache if new task has higher priority.
+              if ((is_entry_updated = entry.GetTask() < push_task)) {
+                entry.SetValue(push_task.vertex());
+              }
+
+              // Generate PUSH if and only if cache is updated and not reading.
+              // If reading, PUSH will be generated when read finishes, if
+              // necessary.
+              if (is_entry_updated && !entry.is_reading) {
+                if (entry.GetTask().vertex.degree > 1) {
+                  push_out_q.try_write(entry.GetTask());
+                  VLOG(kLogLevel) << "task     -> PUSH " << entry.GetTask();
+                } else {
+                  noop_q.try_write(/*is_push=*/false);
+                  VLOG(kLogLevel) << "task     -> NOOP";
+                }
+
+                entry.is_dirty = true;
+                VLOG(kLogLevel)
+                    << "v$$$[" << entry.GetTask().vid << "] marked dirty";
+                ++write_hit;
               } else {
                 noop_q.try_write(/*is_push=*/false);
+                VLOG(kLogLevel) << "task     -> NOOP";
               }
-              VLOG(5) << "task     -> " << entry.GetTask();
-              entry.is_dirty = true;
-              VLOG(5) << "v$$$[" << entry.GetTask().vid << "] marked dirty";
-              ++write_hit;
-            } else {
-              noop_q.try_write(/*is_push=*/false);
-              VLOG(5) << "task     -> NOOP";
             }
           }
 
@@ -2536,13 +2546,12 @@ exec:
         } else if (!is_entry_busy && !is_read_busy && !is_write_busy) {
           ++req_miss_count;
 
-          // req_q.read(nullptr);
-          is_task_valid = false;
-          VLOG(5) << "task     <- " << task;
+          is_push_task_valid = false;
+          VLOG(kLogLevel) << "task     <- " << push_task;
 
           // Issue DRAM read request.
           read_addr_q.try_write(vid / kIntervalCount);
-          VLOG(5) << "vmem[" << vid << "] ?";
+          VLOG(kLogLevel) << "vmem[" << vid << "] ?";
           read_vid_out_q.try_write(vid);
 
           // Issue DRAM write request.
@@ -2554,8 +2563,8 @@ exec:
             CHECK_LT(active_write_count, kMaxActiveWriteCount);
             ++active_write_count;
             ++write_miss;
-            VLOG(5) << "vmem[" << entry.GetTask().vid << "] <- "
-                    << entry.GetTask();
+            VLOG(kLogLevel)
+                << "vmem[" << entry.GetTask().vid << "] <- " << entry.GetTask();
           } else {
             entry.is_writing = false;
           }
@@ -2564,8 +2573,9 @@ exec:
           entry.is_valid = true;
           entry.is_reading = true;
           entry.is_dirty = false;
+          entry.is_push = true;
           entry.SetVid(vid);
-          entry.SetValue(task.vertex());
+          entry.SetValue(push_task.vertex());
           is_entry_updated = true;
 
           ++read_miss;
@@ -2577,18 +2587,112 @@ exec:
           CHECK(is_write_busy);
           ++write_busy_count;
         }
+      } else if (is_pop_task_valid) {
+        CHECK_EQ(vid, pop_task.vid());
 
-        is_push_output_available = !push_out_q.full();
+        const bool is_entry_busy =
+            entry.is_valid && (entry.is_reading || entry.is_writing);
+        const bool is_read_busy = read_addr_q.full() || read_vid_out_q.full();
+        const bool is_write_busy =
+            entry.is_valid && entry.is_dirty &&
+            (write_req_q.full() || write_vid_out_q.full());
+
+        if (is_hit) {
+          ++req_hit_count;
+
+          if (!pop_out_q.full() && !noop_q.full()) {
+            if (entry.is_reading) {
+              if (entry.is_push) {  // Reading for PUSH.
+
+                // Discard the PUSH task.
+                noop_q.try_write(/*is_push=*/true);
+
+                // Entry becomes reading for POP.
+                entry.is_push = false;
+                is_entry_updated = true;
+
+                // If POP task has higher priority than PUSH task, update cache.
+                if (entry.GetTask() < pop_task) {
+                  entry.SetValue(pop_task.vertex());
+                }
+              } else {  // Reading for POP.
+
+                // If POP task has higher priority than PUSH task, update cache.
+                if (entry.GetTask() < pop_task) {
+                  entry.SetValue(pop_task.vertex());
+                  is_entry_updated = true;
+                }
+              }
+            } else {  // Not reading.
+              is_pop_task_valid = false;
+              VLOG(kLogLevel) << "task     <- " << pop_task;
+
+              // Always pop the latest version.
+              pop_out_q.try_write(entry.GetTask());
+              VLOG(kLogLevel) << "task     -> POP " << entry.GetTask();
+
+              // If POP task is not stale, it must be exactly the same as in
+              // cache.
+              if (!(pop_task < entry.GetTask())) {
+                CHECK_EQ(entry.GetTask().vertex.distance,
+                         pop_task.vertex().distance)
+                    << vid;
+                CHECK_EQ(entry.GetTask().vertex.parent,
+                         pop_task.vertex().parent)
+                    << vid;
+                CHECK_GT(entry.GetTask().vertex.degree, 1) << vid;
+              }
+            }
+          }
+
+        } else if (!is_entry_busy && !is_read_busy && !is_write_busy) {
+          ++req_miss_count;
+
+          // Issue DRAM read request.
+          read_addr_q.try_write(vid / kIntervalCount);
+          VLOG(kLogLevel) << "vmem[" << vid << "] ?";
+          read_vid_out_q.try_write(vid);
+
+          // Issue DRAM write request.
+          if (entry.is_valid && entry.is_dirty) {
+            entry.is_writing = true;
+            write_req_q.try_write(
+                {entry.GetTask().vid / kIntervalCount, entry.GetTask().vertex});
+            write_vid_out_q.try_write(entry.GetTask().vid);
+            CHECK_LT(active_write_count, kMaxActiveWriteCount);
+            ++active_write_count;
+            ++write_miss;
+            VLOG(kLogLevel)
+                << "vmem[" << entry.GetTask().vid << "] <- " << entry.GetTask();
+          } else {
+            entry.is_writing = false;
+          }
+
+          // Replace cache with new task.
+          entry.is_valid = true;
+          entry.is_reading = true;
+          entry.is_dirty = false;
+          entry.is_push = false;
+          entry.SetVid(vid);
+          entry.SetValue(pop_task.vertex());
+          is_entry_updated = true;
+
+          ++read_miss;
+        } else if (is_entry_busy) {
+          ++entry_busy_count;
+        } else if (is_read_busy) {
+          ++read_busy_count;
+        } else {
+          CHECK(is_write_busy);
+          ++write_busy_count;
+        }
       } else if (is_started) {
-        is_push_output_available = !push_out_q.full();
         ++idle_count;
-      } else {
-        is_push_output_available = !push_out_q.full();
       }
 
       if (is_entry_updated) {
         cache[curr_index] = entry;
-        VLOG(5) << "v$$$[" << vid << "] <- " << entry.GetTask();
+        VLOG(kLogLevel) << "v$$$[" << vid << "] <- " << entry.GetTask();
       }
       prev_index = curr_index;
       prev_entry = entry;
@@ -2599,11 +2703,11 @@ exec:
       if (!is_read_vid_valid) {
         is_read_vid_valid = read_vid_in_q.try_read(read_vid);
       }
+      if (!is_pop_task_valid) {
+        is_pop_task_valid = pop_in_q.try_read(pop_task);
+      }
       if (!is_push_task_valid) {
         is_push_task_valid = push_in_q.try_read(push_task);
-      }
-      if (!is_task_valid) {
-        is_task_valid = req_q.try_read(task);
       }
     }
 
@@ -2625,8 +2729,8 @@ exec:
               {entry.GetTask().vid / kIntervalCount, entry.GetTask().vertex});
           ++active_write_count;
           ++write_miss;
-          VLOG(5) << "vmem[" << entry.GetTask().vid << "] <- "
-                  << entry.GetTask();
+          VLOG(kLogLevel) << "vmem[" << entry.GetTask().vid << "] <- "
+                          << entry.GetTask();
         }
 
         entry.is_valid = false;
@@ -2828,7 +2932,7 @@ spin:
       const auto count = vertex_noop_q.read(nullptr);
       active_task_count -= count.push_count + count.pop_count;
       filtered_noop_count += count.push_count;
-      VLOG(5) << "#task " << previous_task_count << " -> " << active_task_count;
+      VLOG(4) << "#task " << previous_task_count << " -> " << active_task_count;
     }
 
     if (!queue_noop_q.empty()) {
@@ -2836,7 +2940,7 @@ spin:
       const auto count = queue_noop_q.read(nullptr);
       active_task_count -= count;
       push_count += count;
-      VLOG(5) << "#task " << previous_task_count << " -> " << active_task_count;
+      VLOG(4) << "#task " << previous_task_count << " -> " << active_task_count;
     }
 
     if (!task_count_q.empty()) {
@@ -2845,7 +2949,7 @@ spin:
       active_task_count += count.new_task_count - count.old_task_count;
       visited_edge_count += count.new_task_count;
       pop_valid_count += count.old_task_count;
-      VLOG(5) << "#task " << previous_task_count << " -> " << active_task_count;
+      VLOG(4) << "#task " << previous_task_count << " -> " << active_task_count;
     }
   }
 

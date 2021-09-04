@@ -123,6 +123,7 @@ struct VertexCacheEntry {
   bool is_reading;
   bool is_writing;
   bool is_dirty;
+  bool is_push;
 
   VertexCacheEntry() {}
 
@@ -131,6 +132,7 @@ struct VertexCacheEntry {
     is_reading = false;
     is_writing = false;
     is_dirty = false;
+    is_push = false;
   }
 
   Task GetTask() const {
