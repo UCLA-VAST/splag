@@ -2504,13 +2504,16 @@ exec:
 
             if (entry.is_reading && !entry.is_push) {  // Reading for POP.
 
-              // Discard PUSH task because POP is on the way.
-              noop_q.try_write(/*is_push=*/true);
-              VLOG(kLogLevel) << "task     -> NOOP";
-
-              // Update cache if new task has higher priority.
               if ((is_entry_updated = entry.GetTask() < push_task)) {
+                // New PUSH task has higher priority.
+                // Update cache and read for PUSH.
                 entry.SetValue(push_task.vertex());
+                entry.is_push = true;
+              } else {
+                // New PUSH task does not have higher priority.
+                // Discard PUSH task.
+                noop_q.try_write(/*is_push=*/true);
+                VLOG(kLogLevel) << "task     -> NOOP";
               }
             } else {  // Reading for PUSH or not reading.
 
@@ -2603,37 +2606,35 @@ exec:
           if (!pop_out_q.full() && !noop_q.full()) {
             if (entry.is_reading) {
               if (entry.is_push) {  // Reading for PUSH.
-
-                // Discard the PUSH task.
-                noop_q.try_write(/*is_push=*/true);
-
-                // Entry becomes reading for POP.
-                entry.is_push = false;
-                is_entry_updated = true;
-
-                // If POP task has higher priority than PUSH task, update cache.
-                if (entry.GetTask() < pop_task) {
-                  entry.SetValue(pop_task.vertex());
-                }
-              } else {  // Reading for POP.
-
-                // If POP task has higher priority than PUSH task, update cache.
-                if (entry.GetTask() < pop_task) {
-                  entry.SetValue(pop_task.vertex());
+                if (pop_task < entry.GetTask()) {
+                  // PUSH task has higher priority.
+                  // Discard POP task.
+                  is_pop_task_valid = false;
+                  noop_q.try_write(/*is_push=*/false);
+                  VLOG(kLogLevel) << "task     -> NOOP";
+                } else {
+                  // PUSH task does not have higher priority.
+                  // Discard PUSH task.
+                  // Read for POP.
+                  noop_q.try_write(/*is_push=*/true);
+                  VLOG(kLogLevel) << "task     -> NOOP";
+                  entry.is_push = false;
                   is_entry_updated = true;
                 }
+              } else {  // Reading for POP.
+                // Just wait for read data.
               }
             } else {  // Not reading.
               is_pop_task_valid = false;
               VLOG(kLogLevel) << "task     <- " << pop_task;
 
-              // Always pop the latest version.
-              pop_out_q.try_write(entry.GetTask());
-              VLOG(kLogLevel) << "task     -> POP " << entry.GetTask();
-
-              // If POP task is not stale, it must be exactly the same as in
-              // cache.
-              if (!(pop_task < entry.GetTask())) {
+              if (pop_task < entry.GetTask()) {
+                // POP task is stale.
+                noop_q.try_write(/*is_push=*/false);
+                VLOG(kLogLevel) << "task     -> NOOP";
+              } else {
+                // POP task is not stale.
+                // It must be exactly the same as in the cache.
                 CHECK_EQ(entry.GetTask().vertex.distance,
                          pop_task.vertex().distance)
                     << vid;
@@ -2641,6 +2642,9 @@ exec:
                          pop_task.vertex().parent)
                     << vid;
                 CHECK_GT(entry.GetTask().vertex.degree, 1) << vid;
+
+                pop_out_q.try_write(entry.GetTask());
+                VLOG(kLogLevel) << "task     -> POP " << entry.GetTask();
               }
             }
           }
