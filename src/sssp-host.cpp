@@ -434,8 +434,7 @@ int main(int argc, char* argv[]) {
   // Other kernel arguments.
   aligned_vector<int64_t> metadata(9 + kSubIntervalCount * kVertexUniStatCount +
                                    kShardCount * kEdgeUnitStatCount +
-                                   kQueueCount * kQueueStatCount +
-                                   kSwitchCount * kSwitchStatCount);
+                                   kQueueCount * kQueueStatCount);
   array<aligned_vector<Vertex>, kIntervalCount> vertices;
   for (auto& interval : vertices) {
     interval.resize(tapa::round_up_div<kIntervalCount>(vertex_count));
@@ -857,24 +856,6 @@ int main(int argc, char* argv[]) {
         }
       }
 #endif  // TAPA_SSSP_COARSE_PRIORITY
-    }
-
-    for (int swid = 0; swid < kSwitchCount; ++swid) {
-      VLOG(3) << "  switch[" << swid << "]:";
-
-      constexpr const char* kSwitchStatNames[] = {
-          "0 full    ",  //
-          "1 full    ",  //
-          "0 conflict",  //
-          "1 conflict",  //
-      };
-      const auto total_count = *(metadata_it++);
-      for (int i = 0; i < kSwitchStatCount - 1; ++i) {
-        const auto stall_count = *(metadata_it++);
-        VLOG(3) << "    " << kSwitchStatNames[i] << ": " << setfill(' ')
-                << setw(10) << stall_count << " ( " << fixed << setprecision(1)
-                << setw(5) << 100. * stall_count / total_count << "%)";
-      }
     }
 
     if (!IsValid(root, edges_view, weights_view, indexed_weights,

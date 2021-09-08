@@ -2077,8 +2077,6 @@ void Switch2x2(
     //
     int b,
     //
-    istream<bool>& done_q, ostream<int64_t>& stat_q,
-    //
     istream<TaskOnChip>& in_q0, istream<TaskOnChip>& in_q1,
     //
     ostreams<TaskOnChip, 2>& out_q) {
@@ -2092,7 +2090,7 @@ void Switch2x2(
   int64_t conflict_1_cycle_count = 0;
 
 spin:
-  for (bool is_pkt_0_valid, is_pkt_1_valid; done_q.empty();) {
+  for (bool is_pkt_0_valid, is_pkt_1_valid;;) {
 #pragma HLS pipeline II = 1
 #pragma HLS latency max = 0
     const auto pkt_0 = in_q0.peek(is_pkt_0_valid);
@@ -2159,29 +2157,18 @@ spin:
     }
     ++total_cycle_count;
   }
-
-  done_q.read(nullptr);
-  stat_q.write(total_cycle_count);
-  stat_q.write(full_0_cycle_count);
-  stat_q.write(full_1_cycle_count);
-  stat_q.write(conflict_0_cycle_count);
-  stat_q.write(conflict_1_cycle_count);
 }
 
-void SwitchInnerStage(int b, istreams<bool, kSwitchPortCount / 2>& done_q,
-                      ostreams<int64_t, kSwitchPortCount / 2>& stat_q,
-                      istreams<TaskOnChip, kSwitchPortCount / 2>& in_q0,
+void SwitchInnerStage(int b, istreams<TaskOnChip, kSwitchPortCount / 2>& in_q0,
                       istreams<TaskOnChip, kSwitchPortCount / 2>& in_q1,
                       ostreams<TaskOnChip, kSwitchPortCount>& out_q) {
-  task().invoke<join, kSwitchPortCount / 2>(Switch2x2, b, done_q, stat_q, in_q0,
-                                            in_q1, out_q);
+  task().invoke<detach, kSwitchPortCount / 2>(Switch2x2, b, in_q0, in_q1,
+                                              out_q);
 }
 
-void SwitchStage(int b, istreams<bool, kSwitchPortCount / 2>& done_q,
-                 ostreams<int64_t, kSwitchPortCount / 2>& stat_q,
-                 istreams<TaskOnChip, kSwitchPortCount>& in_q,
+void SwitchStage(int b, istreams<TaskOnChip, kSwitchPortCount>& in_q,
                  ostreams<TaskOnChip, kSwitchPortCount>& out_q) {
-  task().invoke(SwitchInnerStage, b, done_q, stat_q, in_q, in_q, out_q);
+  task().invoke<detach>(SwitchInnerStage, b, in_q, in_q, out_q);
 }
 
 void PopSwitch2x2(
@@ -2964,10 +2951,6 @@ void Dispatcher(
     istreams<int64_t, kShardCount>& edge_stat_q,
     ostreams<bool, kQueueCount>& queue_done_q,
     istreams<PiHeapStat, kQueueCount>& queue_stat_q,
-#if TAPA_SSSP_SWITCH_PORT_COUNT > 1
-    ostreams<bool, kSwitchCount>& switch_done_q,
-    istreams<int64_t, kSwitchCount>& switch_stat_q,
-#endif  // TAPA_SSSP_SWITCH_PORT_COUNT
     // Task initialization.
     ostream<Task>& task_init_q,
     // Task count.
@@ -3033,9 +3016,6 @@ spin:
   RANGE(iid, kSubIntervalCount, vertex_cache_done_q[iid].write(false));
   RANGE(sid, kShardCount, edge_done_q[sid].write(false));
   RANGE(qid, kQueueCount, queue_done_q[qid].write(false));
-#if TAPA_SSSP_SWITCH_PORT_COUNT > 1
-  RANGE(swid, kSwitchCount, switch_done_q[swid].write(false));
-#endif  // TAPA_SSSP_SWITCH_PORT_COUNT
   task_init_q.close();
 
   metadata[0] = visited_edge_count;
@@ -3071,19 +3051,6 @@ queue_stat:
                j] = queue_stat_q[i].read();
     }
   }
-
-#if TAPA_SSSP_SWITCH_PORT_COUNT > 1
-switch_stat:
-  for (int i = 0; i < kSwitchCount; ++i) {
-    for (int j = 0; j < kSwitchStatCount; ++j) {
-#pragma HLS pipeline II = 1
-      metadata[9 + kShardCount * kEdgeUnitStatCount +
-               kSubIntervalCount * kVertexUniStatCount +
-               kQueueCount * kQueueStatCount + i * kSwitchStatCount + j] =
-          switch_stat_q[i].read();
-    }
-  }
-#endif  // TAPA_SSSP_SWITCH_PORT_COUNT
 }
 
 void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
@@ -3162,9 +3129,6 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   streams<bool, kShardCount, 2> edge_done_q;
   streams<int64_t, kShardCount, 2> edge_stat_q;
 
-  streams<bool, kSwitchCount, 2> switch_done_q;
-  streams<int64_t, kSwitchCount, 2> switch_stat_q;
-
   stream<VertexNoop, 2> VAR(vertex_noop_q);
   streams<bool, kSubIntervalCount, 2> VAR(vertex_noop_qi);
 
@@ -3209,11 +3173,8 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   tapa::task()
       .invoke(  //
           Dispatcher, root, metadata, vertex_cache_done_q, vertex_cache_stat_q,
-          edge_done_q, edge_stat_q, queue_done_q, queue_stat_q,
-#if TAPA_SSSP_SWITCH_PORT_COUNT > 1
-          switch_done_q, switch_stat_q,
-#endif  // TAPA_SSSP_SWITCH_PORT_COUNT
-          task_init_q, vertex_noop_q,
+          edge_done_q, edge_stat_q, queue_done_q, queue_stat_q, task_init_q,
+          vertex_noop_q,
 #ifndef TAPA_SSSP_COARSE_PRIORITY
           queue_noop_q,
 #endif  // TAPA_SSSP_COARSE_PRIORITY
@@ -3306,8 +3267,8 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
       // Route updates via a kShardCount x kShardCount network.
       .invoke<detach, kShardCount * kEdgeVecLen>(SwitchDemux, xbar_in_q, xbar_q)
 #if TAPA_SSSP_SWITCH_PORT_COUNT >= 2
-      .invoke<join, kSwitchMuxDegree * kSwitchStageCount>(
-          SwitchStage, seq(), switch_done_q, switch_stat_q, xbar_q, xbar_q)
+      .invoke<detach, kSwitchMuxDegree * kSwitchStageCount>(  //
+          SwitchStage, seq(), xbar_q, xbar_q)
 #endif  // TAPA_SSSP_SWITCH_PORT_COUNT
       .invoke<detach>(PushAdapter, xbar_q, xbar_out_q)
       .invoke<detach, kSubIntervalCount>(SwitchMux, xbar_out_q, xbar_out_qx)
