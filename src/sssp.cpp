@@ -2590,7 +2590,7 @@ exec:
                   push_out_q.try_write(entry.GetTask());
                   VLOG(kLogLevel) << "task     -> PUSH " << entry.GetTask();
                 } else {
-                  noop_q.try_write(/*is_push=*/false);
+                  noop_q.try_write(/*is_push=*/true);
                   VLOG(kLogLevel) << "task     -> NOOP";
                 }
 
@@ -2599,7 +2599,7 @@ exec:
                     << "v$$$[" << entry.GetTask().vid << "] marked dirty";
                 ++write_hit;
               } else {
-                noop_q.try_write(/*is_push=*/false);
+                noop_q.try_write(/*is_push=*/true);
                 VLOG(kLogLevel) << "task     -> NOOP";
               }
             }
@@ -2962,11 +2962,10 @@ void Dispatcher(
   task_init_q.write(root);
 
   // Statistics.
-  int32_t visited_edge_count = 0;
-  int32_t push_count = 0;
-  int32_t pushpop_count = 0;
-  int32_t pop_valid_count = 0;
-  int32_t filtered_noop_count = 0;
+  int32_t visited_edge_count = 1;
+  int32_t visited_vertex_count = -1;
+  int32_t push_noop_count = 0;
+  int32_t pop_noop_count = 0;
   int64_t cycle_count = 0;
 
   constexpr int kTerminationHold = 500;
@@ -2987,7 +2986,8 @@ spin:
       const auto count = vertex_noop_q.read(nullptr);
       active_task_count -= count.push_count;
       active_task_count -= count.pop_count;
-      filtered_noop_count += count.push_count;
+      push_noop_count += count.push_count;
+      pop_noop_count += count.pop_count;
       VLOG(4) << "#task " << previous_task_count << " -> " << active_task_count;
     }
 
@@ -3006,12 +3006,10 @@ spin:
       const auto count = task_count_q.read(nullptr);
       active_task_count += count.new_task_count - count.old_task_count;
       visited_edge_count += count.new_task_count;
-      pop_valid_count += count.old_task_count;
+      visited_vertex_count += count.old_task_count;
       VLOG(4) << "#task " << previous_task_count << " -> " << active_task_count;
     }
   }
-
-  push_count += pop_valid_count;
 
   RANGE(iid, kSubIntervalCount, vertex_cache_done_q[iid].write(false));
   RANGE(sid, kShardCount, edge_done_q[sid].write(false));
@@ -3019,17 +3017,17 @@ spin:
   task_init_q.close();
 
   metadata[0] = visited_edge_count;
-  metadata[1] = push_count;
-  metadata[2] = pushpop_count;
-  metadata[3] = pop_valid_count;
-  metadata[5] = filtered_noop_count;
-  metadata[6] = cycle_count;
+  metadata[1] = visited_vertex_count;
+  metadata[2] = push_noop_count;
+  metadata[3] = pop_noop_count;
+  metadata[4] = cycle_count;
 
 vertex_cache_stat:
   for (int i = 0; i < kSubIntervalCount; ++i) {
     for (int j = 0; j < kVertexUniStatCount; ++j) {
 #pragma HLS pipeline II = 1
-      metadata[9 + i * kVertexUniStatCount + j] = vertex_cache_stat_q[i].read();
+      metadata[kGlobalStatCount + i * kVertexUniStatCount + j] =
+          vertex_cache_stat_q[i].read();
     }
   }
 
@@ -3037,7 +3035,7 @@ edge_stat:
   for (int i = 0; i < kShardCount; ++i) {
     for (int j = 0; j < kEdgeUnitStatCount; ++j) {
 #pragma HLS pipeline II = 1
-      metadata[9 + kSubIntervalCount * kVertexUniStatCount +
+      metadata[kGlobalStatCount + kSubIntervalCount * kVertexUniStatCount +
                i * kEdgeUnitStatCount + j] = edge_stat_q[i].read();
     }
   }
@@ -3046,7 +3044,7 @@ queue_stat:
   for (int i = 0; i < kQueueCount; ++i) {
     for (int j = 0; j < kQueueStatCount; ++j) {
 #pragma HLS pipeline II = 1
-      metadata[9 + kShardCount * kEdgeUnitStatCount +
+      metadata[kGlobalStatCount + kShardCount * kEdgeUnitStatCount +
                kSubIntervalCount * kVertexUniStatCount + i * kQueueStatCount +
                j] = queue_stat_q[i].read();
     }

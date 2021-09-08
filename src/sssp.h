@@ -193,6 +193,8 @@ inline int GetAddrOfOffChipHeapElem(int level, int idx, int qid) {
          ap_uint<kQidWidth>(qid), ap_uint<kOffsetWidth>(idx / 2);
 }
 
+constexpr int kGlobalStatCount = 5;
+
 constexpr int kEdgeUnitStatCount = 4;
 
 constexpr int kVertexUniStatCount = 12;

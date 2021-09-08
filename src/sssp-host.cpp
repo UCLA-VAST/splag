@@ -432,9 +432,9 @@ int main(int argc, char* argv[]) {
   }
 
   // Other kernel arguments.
-  aligned_vector<int64_t> metadata(9 + kSubIntervalCount * kVertexUniStatCount +
-                                   kShardCount * kEdgeUnitStatCount +
-                                   kQueueCount * kQueueStatCount);
+  aligned_vector<int64_t> metadata(
+      kGlobalStatCount + kSubIntervalCount * kVertexUniStatCount +
+      kShardCount * kEdgeUnitStatCount + kQueueCount * kQueueStatCount);
   array<aligned_vector<Vertex>, kIntervalCount> vertices;
   for (auto& interval : vertices) {
     interval.resize(tapa::round_up_div<kIntervalCount>(vertex_count));
@@ -576,40 +576,45 @@ int main(int argc, char* argv[]) {
     }
     teps.push_back(connected_edge_count / (elapsed_time + refine_time));
     auto metadata_it = metadata.begin();
-    auto visited_edge_count = *(metadata_it++);
-    auto push_count = *(metadata_it++);
-    auto pushpop_count = *(metadata_it++);
-    auto pop_valid_count = *(metadata_it++);
-    auto pop_noop_count = *(metadata_it++);
-    const auto pre_relaxation_count = *(metadata_it++);
-    auto cycle_count = *(metadata_it++);
-    auto queue_full_count = *(metadata_it++);
-    auto pe_full_count = *(metadata_it++);
+    const auto visited_edge_count = *(metadata_it++);
+    const auto visited_vertex_count = *(metadata_it++);
+    const auto push_noop_count = *(metadata_it++);
+    const auto pop_noop_count = *(metadata_it++);
+    const auto cycle_count = *(metadata_it++);
+    // #(EF -> CVC) = visited_edge_count + 1, because root is not visited by EF
+    // #(CVC -> EF) = pop_valid_count - 1, because root is not processed by CVC
+    // #(CVC -> CGPQ) = #(EF -> CVC) - push_noop_count
+    // #(CGPQ -> CVC) = #(CVC -> EF) + pop_noop_count
+    const auto push_count = visited_edge_count - push_noop_count;
+    const auto pop_count = visited_vertex_count + pop_noop_count;
     int64_t coarsened_edge_count = 0;
     for (auto& shard : edges) coarsened_edge_count += shard.size();
-    VLOG(3) << "  TEPS:                  " << *teps.rbegin() << " ("
-            << 1e9 * elapsed_time / visited_edge_count << " ns/edge visited + "
-            << refine_time << " s refinement)";
-    VLOG(3) << "  #edges connected:      " << connected_edge_count;
-    VLOG(3) << "  #edges visited:        " << visited_edge_count << " ("
-            << std::fixed << std::setprecision(1) << std::showpos
+    VLOG(3) << "  TEPS:                 " << setfill(' ') << setw(10)
+            << *teps.rbegin() << " (" << 1e9 * elapsed_time / visited_edge_count
+            << " ns/edge visited + " << refine_time << " s refinement)";
+    VLOG(3) << "  #edges connected:     " << setfill(' ') << setw(10)
+            << connected_edge_count;
+    VLOG(3) << "  #edges visited:       " << setfill(' ') << setw(10)
+            << visited_edge_count << " (" << fixed << setprecision(1)
+            << std::showpos
             << 100. * visited_edge_count / coarsened_edge_count - 100
             << "% over " << std::noshowpos << coarsened_edge_count << ") ";
-    VLOG(3) << "  #PUSH:                 " << push_count;
-    VLOG(3) << "  #PUSHPOP:              " << pushpop_count;
-    VLOG(3) << "  #POP (valid):          " << pop_valid_count;
-    VLOG(3) << "  #POP (noop):           " << pop_noop_count;
-    VLOG(3) << "  #filtered noop:        " << pre_relaxation_count << " ("
-            << fixed << setprecision(1)
-            << 100. * pre_relaxation_count / visited_edge_count << "%)";
-    VLOG(3) << "  cycle count:           " << cycle_count;
-    VLOG_IF(3, queue_full_count)
-        << "    queue full:          " << queue_full_count << " (" << std::fixed
-        << std::setprecision(1) << 100. * queue_full_count / cycle_count
-        << "%)";
-    VLOG_IF(3, pe_full_count)
-        << "    PE full:             " << pe_full_count << " (" << std::fixed
-        << std::setprecision(1) << 100. * pe_full_count / cycle_count << "%)";
+    VLOG(3) << "  #vertices visited:    " << setfill(' ') << setw(10)
+            << visited_vertex_count << " (" << setw(4) << fixed
+            << setprecision(1)
+            << 100. * visited_vertex_count / visited_edge_count << "%)";
+    VLOG(3) << "  #discarded by update: " << setfill(' ') << setw(10)
+            << push_noop_count << " (" << setw(4) << fixed << setprecision(1)
+            << 100. * push_noop_count / visited_edge_count << "%)";
+    VLOG(3) << "  #discarded by filter: " << setfill(' ') << setw(10)
+            << pop_noop_count << " (" << setw(4) << fixed << setprecision(1)
+            << 100. * pop_noop_count / visited_edge_count << "%)";
+    VLOG(3) << "  #push:                " << setfill(' ') << setw(10)
+            << push_count;
+    VLOG(3) << "  #pop:                 " << setfill(' ') << setw(10)
+            << pop_count;
+    VLOG(3) << "  cycle count:          " << setfill(' ') << setw(10)
+            << cycle_count;
 
     for (int iid = 0; iid < kIntervalCount; ++iid) {
       for (int siid = 0; siid < kSubIntervalCount / kIntervalCount; ++siid) {
