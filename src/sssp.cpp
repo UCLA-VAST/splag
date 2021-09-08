@@ -2925,8 +2925,7 @@ const int kTaskInputCount = kQueueCount;
 #endif  // TAPA_SSSP_IMMEDIATE_RELAX
 
 void TaskArbiter(  //
-    istream<Task>& task_init_q, ostream<int64_t>& task_stat_q,
-    istreams<Task, kTaskInputCount>& task_in_q,
+    istream<Task>& task_init_q, istreams<Task, kTaskInputCount>& task_in_q,
     ostreams<Task, kPeCount>& task_req_q) {
 exec:
   for (;;) {
@@ -2950,10 +2949,6 @@ exec:
     }
 
     task_init_q.try_open();
-  stat:
-    for (ap_uint<bit_length(kPeCount)> peid = 0; peid < kPeCount; ++peid) {
-      task_stat_q.write(0);
-    }
   }
 }
 
@@ -2975,8 +2970,6 @@ void Dispatcher(
 #endif  // TAPA_SSSP_SWITCH_PORT_COUNT
     // Task initialization.
     ostream<Task>& task_init_q,
-    // Task stats of PEs.
-    istream<int64_t>& task_stat_q,
     // Task count.
     istream<VertexNoop>& vertex_noop_q,
 #ifndef TAPA_SSSP_COARSE_PRIORITY
@@ -3091,15 +3084,6 @@ switch_stat:
     }
   }
 #endif  // TAPA_SSSP_SWITCH_PORT_COUNT
-
-task_stat:
-  for (ap_uint<bit_length(kPeCount)> peid = 0; peid < kPeCount; ++peid) {
-#pragma HLS pipeline II = 1
-    metadata[9 + kShardCount * kEdgeUnitStatCount +
-             kSubIntervalCount * kVertexUniStatCount +
-             kQueueCount * kQueueStatCount + kSwitchCount * kSwitchStatCount +
-             peid] = task_stat_q.read();
-  }
 }
 
 void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
@@ -3142,7 +3126,6 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   streams<Task, kPeCount, 2> task_req_qi("task_req_i");
 
   stream<Task, 2> task_init_q;
-  stream<int64_t, 2> task_stat_q;
   streams<TaskOnChip,
           kQueueCount * kSpilledTaskVecLen *
               kSwitchMuxDegree*(kPopSwitchStageCount + 1),
@@ -3230,19 +3213,12 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
 #if TAPA_SSSP_SWITCH_PORT_COUNT > 1
           switch_done_q, switch_stat_q,
 #endif  // TAPA_SSSP_SWITCH_PORT_COUNT
-          task_init_q, task_stat_q, vertex_noop_q,
+          task_init_q, vertex_noop_q,
 #ifndef TAPA_SSSP_COARSE_PRIORITY
           queue_noop_q,
 #endif  // TAPA_SSSP_COARSE_PRIORITY
           task_count_q)
-#ifdef TAPA_SSSP_IMMEDIATE_RELAX
-      .invoke<detach>(
-          TaskArbiter, task_init_q, task_stat_q, vertex_out_qi, task_req_qi
-#else   // TAPA_SSSP_IMMEDIATE_RELAX
-      .invoke<detach>(
-          TaskArbiter, task_init_q, task_stat_q, queue_pop_q, task_req_qi
-#endif  // TAPA_SSSP_IMMEDIATE_RELAX
-          )
+      .invoke<detach>(TaskArbiter, task_init_q, vertex_out_qi, task_req_qi)
 #ifdef TAPA_SSSP_COARSE_PRIORITY
       .invoke<join, kCgpqPushPortCount>(
           CgpqBucketGen, is_log_bucket, min_distance, max_distance,
