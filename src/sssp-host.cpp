@@ -622,53 +622,46 @@ int main(int argc, char* argv[]) {
 
         // Cache hit/miss.
         const auto read_hit = *(metadata_it++);
-        const auto read_miss = *(metadata_it++);
+        const auto read_total = *(metadata_it++) + read_hit;
         const auto write_hit = *(metadata_it++);
-        const auto write_miss = *(metadata_it++);
-        VLOG_IF(3, read_hit + read_miss)
-            << "    read hit   : " << std::setfill(' ') << std::setw(10)
-            << read_hit << " (" << std::fixed << std::setprecision(1)
-            << 100. * read_hit / (read_hit + read_miss) << "%)";
-        VLOG_IF(3, write_hit + write_miss)
-            << "    write hit  : " << std::setfill(' ') << std::setw(10)
-            << write_hit << " (" << std::fixed << std::setprecision(1)
-            << 100. * write_hit / (write_hit + write_miss) << "%)";
+        const auto write_total = *(metadata_it++) + write_hit;
+        VLOG_IF(3, read_total)
+            << "    read hit   : " << setfill(' ') << setw(10) << read_hit
+            << " / " << read_total << " (" << fixed << setprecision(1)
+            << 100. * read_hit / read_total << "%)";
+        VLOG_IF(3, write_total)
+            << "    write hit  : " << setfill(' ') << setw(10) << write_hit
+            << " / " << write_total << " (" << fixed << setprecision(1)
+            << 100. * write_hit / write_total << "%)";
 
         // Op counts.
         constexpr const char* kVertexUnitOpNamesAligned[] = {
             "#write_resp",  //
             "#read_resp ",  //
-            "#req_hit   ",  //
-            "#req_miss  ",  //
+            "#push_busy ",  //
+            "#pop_busy  ",  //
+            "#noop_busy ",  //
             "#entry_busy",  //
             "#read_busy ",  //
             "#write_busy",  //
             "#idle      ",  //
-            "#stall     ",  //
         };
         constexpr int kVertexOpStatCount = sizeof(kVertexUnitOpNamesAligned) /
                                            sizeof(kVertexUnitOpNamesAligned[0]);
-        const auto kVertexCacheII = 1;
+
         int64_t op_counts[kVertexOpStatCount];
         int64_t total_op_count = 0;
-        for (int i = 0; i < kVertexOpStatCount - 1; ++i) {
+        for (int i = 0; i < kVertexOpStatCount; ++i) {
           op_counts[i] = *(metadata_it++);
           total_op_count += op_counts[i];
         }
 
-        // Stall count is calculated from cycle_count reported by Dispatcher and
-        // II of VertexCache.
-        op_counts[kVertexOpStatCount - 1] =
-            cycle_count / kVertexCacheII - total_op_count;
-
-        // Include stalled cycles in total_op_count.
-        total_op_count = cycle_count / kVertexCacheII;
-
         for (int i = 0; i < kVertexOpStatCount; ++i) {
           VLOG_IF(3, op_counts[i])
               << "    " << kVertexUnitOpNamesAligned[i] << ": " << setfill(' ')
-              << setw(10) << op_counts[i] << " (" << fixed << setprecision(1)
-              << setw(4) << 100. * op_counts[i] / total_op_count << "%)";
+              << setw(10) << op_counts[i] << " / " << total_op_count << " ("
+              << fixed << setprecision(1) << setw(4)
+              << 100. * op_counts[i] / total_op_count << "%)";
         }
       }
     }

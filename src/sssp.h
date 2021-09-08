@@ -197,7 +197,7 @@ constexpr int kGlobalStatCount = 5;
 
 constexpr int kEdgeUnitStatCount = 4;
 
-constexpr int kVertexUniStatCount = 12;
+constexpr int kVertexUniStatCount = 13;
 
 constexpr int kPiHeapIndexOpTypeCount = 4;
 

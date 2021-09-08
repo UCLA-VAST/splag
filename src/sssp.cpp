@@ -6,9 +6,7 @@
 #include <algorithm>
 #include <iomanip>
 
-#include <glog/logging.h>
 #include <tapa.h>
-#include <tapa/synthesizable/util.h>
 
 #include "sssp-cgpq.h"
 #include "sssp-kernel.h"
@@ -2421,18 +2419,21 @@ exec:
 #pragma HLS pipeline off
 
     DECL_ARRAY(int32_t, perf_counters, kVertexUniStatCount, 0);
+
     auto& read_hit = perf_counters[0];
     auto& read_miss = perf_counters[1];
     auto& write_hit = perf_counters[2];
     auto& write_miss = perf_counters[3];
+
     auto& write_resp_count = perf_counters[4];
     auto& read_resp_count = perf_counters[5];
-    auto& req_hit_count = perf_counters[6];
-    auto& req_miss_count = perf_counters[7];
-    auto& entry_busy_count = perf_counters[8];
-    auto& read_busy_count = perf_counters[9];
-    auto& write_busy_count = perf_counters[10];
-    auto& idle_count = perf_counters[11];
+    auto& push_busy_count = perf_counters[6];
+    auto& pop_busy_count = perf_counters[7];
+    auto& noop_busy_count = perf_counters[8];
+    auto& entry_busy_count = perf_counters[9];
+    auto& read_busy_count = perf_counters[10];
+    auto& write_busy_count = perf_counters[11];
+    auto& idle_count = perf_counters[12];
 
     const int kMaxActiveWriteCount = 63;
     int8_t active_write_count = 0;
@@ -2454,6 +2455,27 @@ exec:
     using uint_cache_index_t = ap_uint<log2(kVertexCacheSize)>;
     uint_cache_index_t prev_index = 0;
     VertexCacheEntry prev_entry = nullptr;
+
+#define GEN_NOOP(is_push)                  \
+  do {                                     \
+    noop_q.try_write(is_push);             \
+    VLOG(kLogLevel) << "task     -> NOOP"; \
+  } while (0)
+
+#define MARK_DIRTY()                                                       \
+  do {                                                                     \
+    entry.is_dirty = true;                                                 \
+    VLOG(kLogLevel) << "v$$$[" << entry.GetTask().vid << "] marked dirty"; \
+  } while (0)
+
+#define WRITE_MISS()                                             \
+  do {                                                           \
+    CHECK_LT(active_write_count, kMaxActiveWriteCount);          \
+    ++active_write_count;                                        \
+    ++write_miss;                                                \
+    VLOG(kLogLevel) << "vmem[" << entry.GetTask().vid << "] <- " \
+                    << entry.GetTask();                          \
+  } while (0)
 
   spin:
     for (; done_q.empty();) {
@@ -2484,6 +2506,14 @@ exec:
       bool is_entry_updated = false;
 
       const bool is_hit = entry.is_valid && entry.GetTask().vid == vid;
+      const bool is_entry_busy =
+          entry.is_valid && (entry.is_reading || entry.is_writing);
+      const bool is_read_busy = read_addr_q.full() || read_vid_out_q.full();
+      const bool is_write_busy = entry.is_valid && entry.is_dirty &&
+                                 (write_req_q.full() || write_vid_out_q.full());
+      const bool is_push_out_busy = push_out_q.full();
+      const bool is_pop_out_busy = pop_out_q.full();
+      const bool is_noop_busy = noop_q.full();
 
       if (is_write_ack_valid) {
         ++write_resp_count;
@@ -2498,9 +2528,9 @@ exec:
         CHECK_GT(active_write_count, 0);
         --active_write_count;
       } else if (is_read_ack_valid) {
-        ++read_resp_count;
+        if (!is_push_out_busy && !is_noop_busy) {
+          ++read_resp_count;
 
-        if (!push_out_q.full() && !noop_q.full()) {
           is_read_data_valid = is_read_vid_valid = false;
           VLOG(kLogLevel) << "vmem[" << vid << "] -> " << vertex;
           CHECK(entry.is_valid);
@@ -2513,8 +2543,7 @@ exec:
           if (entry.is_push) {  // Reading for PUSH.
             if (!(entry.GetTask().vertex < vertex)) {
               // Distance in DRAM is closer; generate NOOP and update cache.
-              noop_q.try_write(/*is_push=*/true);
-              VLOG(kLogLevel) << "task     -> NOOP";
+              GEN_NOOP(/*is_push=*/true);
               entry.SetValue(vertex);
             } else {
               // Distance in cache is closer; generate PUSH.
@@ -2522,12 +2551,9 @@ exec:
                 push_out_q.try_write(entry.GetTask());
                 VLOG(kLogLevel) << "task     -> PUSH " << entry.GetTask();
               } else {
-                noop_q.try_write(/*is_push=*/true);
-                VLOG(kLogLevel) << "task     -> NOOP";
+                GEN_NOOP(/*is_push=*/true);
               }
-              entry.is_dirty = true;
-              VLOG(kLogLevel)
-                  << "v$$$[" << entry.GetTask().vid << "] marked dirty";
+              MARK_DIRTY();
               ++write_hit;
             }
           } else {  // Reading for POP.
@@ -2536,29 +2562,25 @@ exec:
               entry.SetValue(vertex);
             } else if (entry.GetTask().vertex < vertex) {
               // Distance in cache is closer; mark cache dirty.
-              entry.is_dirty = true;
-              VLOG(kLogLevel)
-                  << "v$$$[" << entry.GetTask().vid << "] marked dirty";
+              MARK_DIRTY();
               ++write_hit;
             }
           }
           is_entry_updated = true;
+        } else if (is_push_out_busy) {
+          ++push_busy_count;
+        } else {
+          CHECK(is_noop_busy);
+          ++noop_busy_count;
         }
       } else if (is_push_task_valid) {
         is_started = true;
         CHECK_EQ(vid, push_task.vid());
 
-        const bool is_entry_busy =
-            entry.is_valid && (entry.is_reading || entry.is_writing);
-        const bool is_read_busy = read_addr_q.full() || read_vid_out_q.full();
-        const bool is_write_busy =
-            entry.is_valid && entry.is_dirty &&
-            (write_req_q.full() || write_vid_out_q.full());
-
         if (is_hit) {
-          ++req_hit_count;
+          if (!is_push_out_busy && !is_noop_busy) {
+            ++read_hit;
 
-          if (!push_out_q.full() && !noop_q.full()) {
             is_push_task_valid = false;
             VLOG(kLogLevel) << "task     <- " << push_task;
 
@@ -2569,17 +2591,18 @@ exec:
                 // Update cache and read for PUSH.
                 entry.SetValue(push_task.vertex());
                 entry.is_push = true;
+                ++write_hit;
               } else {
                 // New PUSH task does not have higher priority.
                 // Discard PUSH task.
-                noop_q.try_write(/*is_push=*/true);
-                VLOG(kLogLevel) << "task     -> NOOP";
+                GEN_NOOP(/*is_push=*/true);
               }
             } else {  // Reading for PUSH or not reading.
 
               // Update cache if new task has higher priority.
               if ((is_entry_updated = entry.GetTask() < push_task)) {
                 entry.SetValue(push_task.vertex());
+                ++write_hit;
               }
 
               // Generate PUSH if and only if cache is updated and not reading.
@@ -2590,24 +2613,24 @@ exec:
                   push_out_q.try_write(entry.GetTask());
                   VLOG(kLogLevel) << "task     -> PUSH " << entry.GetTask();
                 } else {
-                  noop_q.try_write(/*is_push=*/true);
-                  VLOG(kLogLevel) << "task     -> NOOP";
+                  GEN_NOOP(/*is_push=*/true);
                 }
 
-                entry.is_dirty = true;
-                VLOG(kLogLevel)
-                    << "v$$$[" << entry.GetTask().vid << "] marked dirty";
+                MARK_DIRTY();
                 ++write_hit;
               } else {
-                noop_q.try_write(/*is_push=*/true);
-                VLOG(kLogLevel) << "task     -> NOOP";
+                GEN_NOOP(/*is_push=*/true);
               }
             }
+          } else if (is_push_out_busy) {
+            ++push_busy_count;
+          } else {
+            CHECK(is_noop_busy);
+            ++noop_busy_count;
           }
 
-          ++read_hit;
         } else if (!is_entry_busy && !is_read_busy && !is_write_busy) {
-          ++req_miss_count;
+          ++read_miss;
 
           is_push_task_valid = false;
           VLOG(kLogLevel) << "task     <- " << push_task;
@@ -2623,11 +2646,7 @@ exec:
             write_req_q.try_write(
                 {entry.GetTask().vid / kIntervalCount, entry.GetTask().vertex});
             write_vid_out_q.try_write(entry.GetTask().vid);
-            CHECK_LT(active_write_count, kMaxActiveWriteCount);
-            ++active_write_count;
-            ++write_miss;
-            VLOG(kLogLevel)
-                << "vmem[" << entry.GetTask().vid << "] <- " << entry.GetTask();
+            WRITE_MISS();
           } else {
             entry.is_writing = false;
           }
@@ -2640,8 +2659,6 @@ exec:
           entry.SetVid(vid);
           entry.SetValue(push_task.vertex());
           is_entry_updated = true;
-
-          ++read_miss;
         } else if (is_entry_busy) {
           ++entry_busy_count;
         } else if (is_read_busy) {
@@ -2650,34 +2667,26 @@ exec:
           CHECK(is_write_busy);
           ++write_busy_count;
         }
+
       } else if (is_pop_task_valid) {
         CHECK_EQ(vid, pop_task.vid());
 
-        const bool is_entry_busy =
-            entry.is_valid && (entry.is_reading || entry.is_writing);
-        const bool is_read_busy = read_addr_q.full() || read_vid_out_q.full();
-        const bool is_write_busy =
-            entry.is_valid && entry.is_dirty &&
-            (write_req_q.full() || write_vid_out_q.full());
-
         if (is_hit) {
-          ++req_hit_count;
+          if (!is_pop_out_busy && !is_noop_busy) {
+            ++read_hit;
 
-          if (!pop_out_q.full() && !noop_q.full()) {
             if (entry.is_reading) {
               if (entry.is_push) {  // Reading for PUSH.
                 if (pop_task < entry.GetTask()) {
                   // PUSH task has higher priority.
                   // Discard POP task.
                   is_pop_task_valid = false;
-                  noop_q.try_write(/*is_push=*/false);
-                  VLOG(kLogLevel) << "task     -> NOOP";
+                  GEN_NOOP(/*is_push=*/false);
                 } else {
                   // PUSH task does not have higher priority.
                   // Discard PUSH task.
                   // Read for POP.
-                  noop_q.try_write(/*is_push=*/true);
-                  VLOG(kLogLevel) << "task     -> NOOP";
+                  GEN_NOOP(/*is_push=*/true);
                   entry.is_push = false;
                   is_entry_updated = true;
                 }
@@ -2690,8 +2699,7 @@ exec:
 
               if (pop_task < entry.GetTask()) {
                 // POP task is stale.
-                noop_q.try_write(/*is_push=*/false);
-                VLOG(kLogLevel) << "task     -> NOOP";
+                GEN_NOOP(/*is_push=*/false);
               } else {
                 // POP task is not stale.
                 // It must be exactly the same as in the cache.
@@ -2707,10 +2715,15 @@ exec:
                 VLOG(kLogLevel) << "task     -> POP " << entry.GetTask();
               }
             }
+          } else if (is_pop_out_busy) {
+            ++pop_busy_count;
+          } else {
+            CHECK(is_noop_busy);
+            ++noop_busy_count;
           }
 
         } else if (!is_entry_busy && !is_read_busy && !is_write_busy) {
-          ++req_miss_count;
+          ++read_miss;
 
           // Issue DRAM read request.
           read_addr_q.try_write(vid / kIntervalCount);
@@ -2723,11 +2736,7 @@ exec:
             write_req_q.try_write(
                 {entry.GetTask().vid / kIntervalCount, entry.GetTask().vertex});
             write_vid_out_q.try_write(entry.GetTask().vid);
-            CHECK_LT(active_write_count, kMaxActiveWriteCount);
-            ++active_write_count;
-            ++write_miss;
-            VLOG(kLogLevel)
-                << "vmem[" << entry.GetTask().vid << "] <- " << entry.GetTask();
+            WRITE_MISS();
           } else {
             entry.is_writing = false;
           }
@@ -2740,8 +2749,6 @@ exec:
           entry.SetVid(vid);
           entry.SetValue(pop_task.vertex());
           is_entry_updated = true;
-
-          ++read_miss;
         } else if (is_entry_busy) {
           ++entry_busy_count;
         } else if (is_read_busy) {
@@ -2791,10 +2798,7 @@ exec:
         if (entry.is_valid && entry.is_dirty) {
           write_req_q.write(
               {entry.GetTask().vid / kIntervalCount, entry.GetTask().vertex});
-          ++active_write_count;
-          ++write_miss;
-          VLOG(kLogLevel) << "vmem[" << entry.GetTask().vid << "] <- "
-                          << entry.GetTask();
+          WRITE_MISS();
         }
 
         entry.is_valid = false;
@@ -2819,6 +2823,10 @@ exec:
       stat_q.write(perf_counters[i]);
     }
   }
+
+#undef WRITE_MISS
+#undef MARK_DIRTY
+#undef GEN_NOOP
 }
 
 void VertexNoopMerger(istreams<bool, kSubIntervalCount>& noop_in_q,
