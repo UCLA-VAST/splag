@@ -116,12 +116,14 @@ vector<int64_t> SampleVertices(const vector<int64_t>& degree_no_self_loop) {
   vector<int64_t> population_vertices;
   population_vertices.reserve(vertex_count);
   vector<int64_t> sample_vertices;
-  sample_vertices.reserve(64);
+  // Sample 4x vertices to allow vertices with too small connected component.
+  sample_vertices.reserve(256);
   for (int64_t i = 0; i < vertex_count; ++i) {
     if (degree_no_self_loop[i] > 1) population_vertices.push_back(i);
   }
   std::sample(population_vertices.begin(), population_vertices.end(),
-              std::back_inserter(sample_vertices), 64, std::mt19937());
+              std::back_inserter(sample_vertices), sample_vertices.capacity(),
+              std::mt19937());
   return sample_vertices;
 }
 
@@ -484,7 +486,13 @@ int main(int argc, char* argv[]) {
     }
   }
 
+  int valid_root_count = 0;
   for (const auto root : SampleVertices(degree_no_self_loop)) {
+    ++valid_root_count;
+    if (valid_root_count > 64) {
+      break;
+    }
+
     CHECK_GE(root, 0) << "invalid root";
     CHECK_LT(root, vertex_count) << "invalid root";
     LOG(INFO) << "root: " << root;
@@ -548,7 +556,6 @@ int main(int argc, char* argv[]) {
             tapa::read_only_mmap<HeapIndexEntry>(heap_index)
 #endif  // TAPA_SSSP_COARSE_PRIORITY
         );
-    VLOG(3) << "kernel time: " << elapsed_time << " s";
 
     const auto tic = steady_clock::now();
     Refine(coarsen_records, vertices);
@@ -568,12 +575,20 @@ int main(int argc, char* argv[]) {
     }
     LOG(INFO) << "overall max distance (from root): " << max_distance;
 
+    int64_t connected_vertex_count = 0;
     int64_t connected_edge_count = 0;
     for (int64_t vid = 0; vid < vertex_count; ++vid) {
       if (parents[vid] != kNullVid) {
+        ++connected_vertex_count;
         connected_edge_count += degree[vid] / 2;
       }
     }
+    if (connected_vertex_count * 100 < vertex_count) {
+      LOG(INFO) << "too few vertices in the connected component, skipping";
+      continue;
+    }
+
+    VLOG(3) << "kernel time: " << elapsed_time << " s";
     teps.push_back(connected_edge_count / (elapsed_time + refine_time));
     auto metadata_it = metadata.begin();
     const auto visited_edge_count = *(metadata_it++);
