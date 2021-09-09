@@ -352,6 +352,7 @@ int main(int argc, char* argv[]) {
 
   // Dedup edges.
   vector<unordered_map<Vid, float>> indexed_weights;
+  int64_t max_degree;
   for (Eid eid = 0; eid < edge_count; ++eid) {
     const auto& edge = edges_view[eid];
     auto v0 = edge.v0();
@@ -364,6 +365,8 @@ int main(int argc, char* argv[]) {
     }
     ++degree[v0];
     ++degree[v1];
+    max_degree = std::max(max_degree, degree[v0]);
+    max_degree = std::max(max_degree, degree[v1]);
     if (v0 != v1) {
       if (v0 > v1) std::swap(v0, v1);  // Use smaller vid as v0.
       if (auto it = indexed_weights[v0].find(v1);
@@ -385,6 +388,12 @@ int main(int argc, char* argv[]) {
   CHECK_EQ(degree_no_self_loop.size(), vertex_count);
   CHECK_EQ(indexed_weights.size(), vertex_count);
   CHECK_LT(vertex_count, (1 << kVidWidth));
+
+  VLOG(3) << "total vertex count: " << vertex_count;
+  VLOG(3) << "total edge count: " << edge_count;
+  VLOG(3) << "avg degree: " << fixed << setprecision(1)
+          << 1. * edge_count / vertex_count;
+  VLOG(3) << "max degree: " << max_degree;
 
   if (VLOG_IS_ON(3)) {
     vector<int64_t> bins(7);
