@@ -247,6 +247,4 @@ using uint_spill_addr_t =
     ap_uint<bit_length(kCgpqCapacity) +
             log2(kCgpqChunkSize / kSpilledTaskVecLen * kCgpqBankCountPerMem)>;
 
-using uint_interval_t = ap_uint<3>;
-
 #endif  // TAPA_SSSP_H_

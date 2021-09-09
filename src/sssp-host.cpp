@@ -49,7 +49,6 @@ DEFINE_string(bitstream, "", "path to bitstream file, run csim if empty");
 DEFINE_bool(is_log_bucket, true, "use logarithm bucket instead of linear");
 DEFINE_double(min_distance, 0, "min distance");
 DEFINE_double(max_distance, 0, "max distance");
-DEFINE_int32(interval, 1, "increment expected bid every this many cycles");
 
 DEFINE_string(pq_size, "", "priority queue size history");
 DEFINE_string(bucket_distribution, "", "bucket size history");
@@ -322,7 +321,7 @@ void Refine(
 void SSSP(Task root, tapa::mmap<int64_t> metadata,
           tapa::mmaps<EdgeVec, kShardCount> edges,
           tapa::mmaps<Vertex, kIntervalCount> vertices, bool is_log_bucket,
-          float min_distance, float max_distance, int32_t interval,
+          float min_distance, float max_distance,
           tapa::mmaps<SpilledTaskPerMem, kCgpqPhysMemCount> cgpq_spill);
 
 int main(int argc, char* argv[]) {
@@ -644,7 +643,6 @@ int main(int argc, char* argv[]) {
                 .vectorized<kEdgeVecLen>(),
             tapa::read_write_mmaps<Vertex, kIntervalCount>(vertices),
             FLAGS_is_log_bucket, arg_min_distance, arg_max_distance,
-            FLAGS_interval,
             tapa::placeholder_mmaps<SpilledTaskPerMem, kCgpqPhysMemCount>(
                 cgpq_spill));
 

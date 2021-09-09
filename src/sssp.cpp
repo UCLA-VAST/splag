@@ -911,7 +911,7 @@ spin:
   }
 }
 
-void CgpqOutputArbiter(uint_interval_t interval, istream<bool>& done_q,
+void CgpqOutputArbiter(istream<bool>& done_q,
                        istreams<SpilledTask, kCgpqPushPortCount>& in_q,
                        ostreams<TaskOnChip, kSpilledTaskVecLen>& out_q) {
 spin:
@@ -1998,7 +1998,7 @@ queue_stat:
 void SSSP(Task root, tapa::mmap<int64_t> metadata,
           tapa::mmaps<EdgeVec, kShardCount> edges,
           tapa::mmaps<Vertex, kIntervalCount> vertices, bool is_log_bucket,
-          float min_distance, float max_distance, int32_t interval,
+          float min_distance, float max_distance,
           tapa::mmaps<SpilledTaskPerMem, kCgpqPhysMemCount> cgpq_spill) {
   streams<Task, kSubIntervalCount, 2> vertex_out_q;
   streams<Task, kSubIntervalCount, 2> VAR(vertex_out_qx);
@@ -2107,7 +2107,7 @@ void SSSP(Task root, tapa::mmap<int64_t> metadata,
           cgpq_read_addr_qi, cgpq_read_data_qi,         //
           cgpq_write_req_qi, cgpq_write_resp_qi)
       .invoke(  //
-          CgpqOutputArbiter, interval, cgpq_done_qi, cgpq_pop_qi, queue_pop_q)
+          CgpqOutputArbiter, cgpq_done_qi, cgpq_pop_qi, queue_pop_q)
       .invoke<detach, kCgpqPushPortCount>(  //
           CgpqHeap, cgpq_heap_req_q, cgpq_heap_resp_q)
       .invoke<detach>(  //
