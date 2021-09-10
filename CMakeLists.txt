@@ -14,7 +14,7 @@ target_link_libraries(sssp_kernel PUBLIC tapa::tapa)
 add_executable(sssp)
 target_sources(sssp PRIVATE src/sssp-host.cpp)
 target_compile_features(sssp PRIVATE cxx_std_17)
-target_link_libraries(sssp PRIVATE sssp_kernel tapa::tapa gflags)
+target_link_libraries(sssp PRIVATE sssp_kernel tapa::tapa gflags cnpy)
 
 find_package(SDx REQUIRED)
 add_tapa_target(

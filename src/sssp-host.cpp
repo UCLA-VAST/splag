@@ -1,3 +1,5 @@
+#include <cstdint>
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -12,6 +14,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include <cnpy.h>
 #include <gflags/gflags.h>
 #include <tapa.h>
 
@@ -47,6 +50,9 @@ DEFINE_bool(is_log_bucket, true, "use logarithm bucket instead of linear");
 DEFINE_double(min_distance, 0, "min distance");
 DEFINE_double(max_distance, 0, "max distance");
 DEFINE_int32(interval, 1, "increment expected bid every this many cycles");
+
+DEFINE_string(pq_size, "", "priority queue size history");
+DEFINE_string(bucket_distribution, "", "bucket size history");
 
 template <typename T>
 bool IsValid(int64_t root, PackedEdgesView edges, WeightsView weights,
@@ -502,6 +508,42 @@ int main(int argc, char* argv[]) {
       break;
     }
 
+    if (!FLAGS_pq_size.empty()) {
+      std::vector<float> distances(vertex_count, kInfDistance);
+      auto cmp = [&distances](auto a, auto b) {
+        return distances[a] > distances[b];
+      };
+      std::priority_queue<int64_t, std::vector<int64_t>, decltype(cmp)> pq(cmp);
+
+      distances[root] = 0.f;
+      pq.push(root);
+
+      std::vector<int64_t> pq_size_history;
+
+      while (!pq.empty()) {
+        const auto src = pq.top();
+        pq.pop();
+
+        const auto src_dist = distances[src];
+        const auto src_index = indices[src];
+        for (int64_t i = 0; i < src_index.count; ++i) {
+          pq_size_history.push_back(pq.size());
+
+          const auto edge = edges[src % kShardCount][src_index.offset + i];
+          const auto new_dist = src_dist + edge.weight;
+          if (new_dist < distances[edge.dst]) {
+            distances[edge.dst] = new_dist;
+            pq.push(edge.dst);
+          }
+        }
+      }
+
+      cnpy::npy_save(FLAGS_pq_size, pq_size_history);
+      LOG(INFO) << "history of " << pq_size_history.size()
+                << " iterations saved";
+      return 0;
+    }
+
     CHECK_GE(root, 0) << "invalid root";
     CHECK_LT(root, vertex_count) << "invalid root";
     LOG(INFO) << "root: " << root;
@@ -541,6 +583,80 @@ int main(int argc, char* argv[]) {
         FLAGS_max_distance > 0 ? FLAGS_max_distance : root_min_distance + 0.5f;
     LOG(INFO) << "using min distance " << arg_min_distance;
     LOG(INFO) << "using max distance " << arg_max_distance;
+
+    if (!FLAGS_bucket_distribution.empty()) {
+      std::vector<float> distances(vertex_count, kInfDistance);
+      auto cmp = [&distances](auto a, auto b) {
+        return distances[a] > distances[b];
+      };
+
+      constexpr int kBucketCount = 32;
+
+      std::array<std::queue<int64_t>, kBucketCount> buckets;
+
+      distances[root] = 0.f;
+      buckets[0].push(root);
+
+      std::vector<std::array<int64_t, kBucketCount>>
+          bucket_distribution_history;
+
+      const auto norm =
+          buckets.size() /
+          (FLAGS_is_log_bucket
+               ? (std::log(arg_max_distance) - std::log(arg_min_distance))
+               : (arg_max_distance - arg_min_distance));
+
+      for (;;) {
+        int64_t src;
+        bool is_empty = true;
+        for (int bid = 0; bid < buckets.size(); ++bid) {
+          if (!buckets[bid].empty()) {
+            src = buckets[bid].front();
+            buckets[bid].pop();
+            is_empty = false;
+            break;
+          }
+        }
+        if (is_empty) {
+          break;
+        }
+
+        const auto src_dist = distances[src];
+        const auto src_index = indices[src];
+        for (int64_t i = 0; i < src_index.count; ++i) {
+          {
+            std::array<int64_t, kBucketCount> bucket_distribution;
+            for (int bid = 0; bid < buckets.size(); ++bid) {
+              bucket_distribution[bid] = buckets[bid].size();
+            }
+            bucket_distribution_history.push_back(bucket_distribution);
+          }
+
+          const auto edge = edges[src % kShardCount][src_index.offset + i];
+          const auto new_dist = src_dist + edge.weight;
+          if (new_dist < distances[edge.dst]) {
+            distances[edge.dst] = new_dist;
+
+            const auto bid = std::max(
+                std::min(
+                    int((FLAGS_is_log_bucket
+                             ? (std::log(new_dist) - std::log(arg_min_distance))
+                             : (new_dist - arg_min_distance)) *
+                        norm),
+                    int(buckets.size() - 1)),
+                0);
+            buckets[bid].push(edge.dst);
+          }
+        }
+      }
+
+      cnpy::npy_save(FLAGS_bucket_distribution,
+                     bucket_distribution_history[0].data(),
+                     {bucket_distribution_history.size(), kBucketCount});
+      LOG(INFO) << "history of " << bucket_distribution_history.size()
+                << " iterations saved";
+      return 0;
+    }
 
     const double elapsed_time =
         1e-9 *
