@@ -674,7 +674,7 @@ int main(int argc, char* argv[]) {
                                            sizeof(kVertexUnitOpNamesAligned[0]);
 
         int64_t op_counts[kVertexOpStatCount];
-        int64_t total_op_count = 0;
+        int64_t total_op_count = read_total;
         for (int i = 0; i < kVertexOpStatCount; ++i) {
           op_counts[i] = *(metadata_it++);
           total_op_count += op_counts[i];
