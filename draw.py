@@ -6,7 +6,6 @@ import logging
 import math
 import os.path
 import re
-import statistics
 import json
 import sys
 import types
@@ -15,6 +14,7 @@ from typing import Iterable, List, Tuple
 import matplotlib
 import numpy as np
 from absl import app, flags
+import scipy.stats
 
 FLAGS = flags.FLAGS
 
@@ -125,9 +125,9 @@ class DataPoints(types.SimpleNamespace):
     self.stdev = []
 
   def __iadd__(self, stats: Iterable[float]) -> 'DataPoints':
-    stat_tuple = tuple(stats)
-    self.mean.append(statistics.mean(stat_tuple))
-    self.stdev.append(statistics.stdev(stat_tuple, self.mean[-1]))
+    stat_tuple = [x for x in stats]
+    self.mean.append(scipy.stats.hmean(stat_tuple))
+    self.stdev.append(scipy.stats.gstd(stat_tuple))
     return self
 
 
@@ -229,8 +229,9 @@ def draw(argv: List[str]) -> None:
 
       cvc_idle += itertools.chain.from_iterable(
           m.cvc_idle_count for m in metrics)
-      spill_percentage += (
-          m.spill_count * cgpq_chunk_size * 100 / m.push_count for m in metrics)
+      spill_percentage += (m.spill_count * cgpq_chunk_size * 100 / m.push_count
+                           for m in metrics
+                           if m.spill_count > 0)
       visited_vertices_percentage += (
           m.visited_vertex_count * 100 / m.visited_edge_count for m in metrics)
       discarded_by_filter_percentage += (m.discarded_by_filter_vertex_count *
@@ -246,17 +247,15 @@ def draw(argv: List[str]) -> None:
     plt.bar(
         datasets,
         cvc_idle.mean,
-        yerr=cvc_idle.stdev,
     )
     plt.xlabel('Dataset')
     plt.xticks(rotation=XTICK_ROTATION)
-    plt.ylabel('Percentage of CVC Idling')
+    plt.ylabel('Percentage of CVC Idling (%)')
 
   with figure('spill-stack'):
     plt.bar(
         datasets,
         spill_percentage.mean,
-        yerr=spill_percentage.stdev,
     )
     plt.xlabel('Dataset')
     plt.xticks(rotation=XTICK_ROTATION)
@@ -266,14 +265,12 @@ def draw(argv: List[str]) -> None:
     plt.errorbar(
         datasets,
         read_hit.mean,
-        yerr=read_hit.stdev,
         fmt='o',
         label='Read',
     )
     plt.errorbar(
         datasets,
         write_hit.mean,
-        yerr=write_hit.stdev,
         fmt='s',
         label='Write',
     )
@@ -286,14 +283,12 @@ def draw(argv: List[str]) -> None:
     plt.bar(
         datasets,
         visited_vertices_percentage.mean,
-        yerr=visited_vertices_percentage.stdev,
         bottom=discarded_by_filter_percentage.mean,
         label='Processed by edge fetcher',
     )
     plt.bar(
         datasets,
         discarded_by_filter_percentage.mean,
-        yerr=discarded_by_filter_percentage.stdev,
         label='Discarded by CVC filtering',
     )
 
@@ -306,14 +301,12 @@ def draw(argv: List[str]) -> None:
     plt.errorbar(
         datasets,
         raw_teps.mean,
-        yerr=raw_teps.stdev,
         fmt='o',
         label='Traversal',
     )
     plt.errorbar(
         datasets,
         uniq_teps.mean,
-        yerr=uniq_teps.stdev,
         fmt='s',
         label='Algorithm',
     )
@@ -326,7 +319,6 @@ def draw(argv: List[str]) -> None:
     plt.bar(
         datasets,
         work_efficiency.mean,
-        yerr=work_efficiency.stdev,
     )
     plt.xlabel('Dataset')
     plt.xticks(rotation=XTICK_ROTATION)
