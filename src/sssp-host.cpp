@@ -1052,7 +1052,7 @@ int main(int argc, char* argv[]) {
     }
   }
 
-  printf("sssp harmonic_mean_TEPS:     !  %g\n", geo_mean(teps));
+  printf("sssp harmonic_mean_TEPS:     !  %g\n", harmonic_mean(teps));
 
   return 0;
 }

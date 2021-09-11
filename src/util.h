@@ -140,6 +140,15 @@ inline T average(const Container& container) {
   return sum / count;
 }
 
+template <typename Container, typename T = typename Container::value_type>
+inline T harmonic_mean(const Container& container) {
+  std::vector<double> reciprocals(container.begin(), container.end());
+  for (auto& x : reciprocals) {
+    x = 1 / x;
+  }
+  return 1 / average(reciprocals);
+}
+
 inline bool almost_equal(float x, float y, float relative_error = 1e-5) {
   return std::abs(x - y) < relative_error * std::max(std::abs(x), std::abs(y));
 }
