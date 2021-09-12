@@ -49,7 +49,7 @@ SAVEFIG_KWARGS = {
     },
 }
 
-XTICK_ROTATION = 60
+XTICK_ROTATION = 90
 
 
 def def_var(key, value):
@@ -82,7 +82,7 @@ def main(argv: List[str]):
   plt.rcParams['font.family'] = 'Linux Libertine'
   plt.rcParams['font.size'] = 14  # 2x
   # plt.rcParams['hatch.linewidth'] = BAR_KWARGS['linewidth']
-  # plt.rcParams["figure.figsize"] = (7, 2)
+  plt.rcParams["figure.figsize"] = (6, 2.5)
 
   draw(argv)
 
@@ -250,7 +250,7 @@ def draw(argv: List[str]) -> None:
     )
     plt.xlabel('Dataset')
     plt.xticks(rotation=XTICK_ROTATION)
-    plt.ylabel('Percentage of CVC Idling (%)')
+    plt.ylabel('CVC Idling (%)')
 
   with figure('spill-stack'):
     plt.bar(
@@ -259,7 +259,7 @@ def draw(argv: List[str]) -> None:
     )
     plt.xlabel('Dataset')
     plt.xticks(rotation=XTICK_ROTATION)
-    plt.ylabel('Percentage of Spilled Vertices (%)')
+    plt.ylabel('Spilled Vertices (%)')
 
   with figure('cache-rate'):
     plt.errorbar(
@@ -294,7 +294,7 @@ def draw(argv: List[str]) -> None:
 
     plt.xlabel('Dataset')
     plt.xticks(rotation=XTICK_ROTATION)
-    plt.ylabel('Percentage of Active Vertices (%)')
+    plt.ylabel('Active Vertices (%)')
     plt.legend()
 
   with figure('teps'):
@@ -322,7 +322,7 @@ def draw(argv: List[str]) -> None:
     )
     plt.xlabel('Dataset')
     plt.xticks(rotation=XTICK_ROTATION)
-    plt.ylabel('Normalized Amount of Work')
+    plt.ylabel('Amount of Work')
 
 
 if __name__ == '__main__':
