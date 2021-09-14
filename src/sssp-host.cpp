@@ -463,7 +463,7 @@ int main(int argc, char* argv[]) {
   // Other kernel arguments.
   aligned_vector<int64_t> metadata(
       kGlobalStatCount + kSubIntervalCount * kVertexUniStatCount +
-      kShardCount * kEdgeUnitStatCount + kQueueCount * kQueueStatCount);
+      kShardCount * kEdgeUnitStatCount + kQueueStatCount);
   array<aligned_vector<Vertex>, kIntervalCount> vertices;
   for (auto& interval : vertices) {
     interval.resize(tapa::round_up_div<kIntervalCount>(vertex_count));
@@ -846,23 +846,21 @@ int main(int argc, char* argv[]) {
                   100. * visited_edge_count / (edge_vec_count * kEdgeVecLen))
               << "% edges are null";
 
-    for (int qid = 0; qid < kQueueCount; ++qid) {
-      VLOG(3) << "  queue[" << qid << "]:";
-
+    {
       for (int bank = 0; bank < kCgpqPushPortCount; ++bank) {
-        VLOG(3) << "    bank[" << bank << "]:";
+        VLOG(3) << "  bank[" << bank << "]:";
 
         const auto spill_count = *(metadata_it++);
         const auto max_heap_size = *(metadata_it++);
         const auto cycle_count = *(metadata_it++);
-        VLOG(3) << "      spill count  : " << setfill(' ') << setw(10)
+        VLOG(3) << "    spill count  : " << setfill(' ') << setw(10)
                 << spill_count << " / "
-                << cgpq_spill[qid].size() / kCgpqBankCountPerMem /
+                << cgpq_spill.size() / kCgpqBankCountPerMem /
                        (kCgpqChunkSize / kSpilledTaskVecLen);
-        VLOG(3) << "      max heap size: " << setfill(' ') << setw(10)
+        VLOG(3) << "    max heap size: " << setfill(' ') << setw(10)
                 << max_heap_size << " / " << kCgpqCapacity;
         auto vlog = [&](const char* msg, int64_t var) {
-          VLOG(3) << "      " << msg << ": " << setfill(' ') << setw(10) << var
+          VLOG(3) << "    " << msg << ": " << setfill(' ') << setw(10) << var
                   << " / " << cycle_count << " (" << fixed << setprecision(1)
                   << 100. * var / cycle_count << "%)";
         };

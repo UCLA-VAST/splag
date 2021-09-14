@@ -1054,26 +1054,8 @@ void CgpqPopAdapter(
     ostreams<TaskOnChip, kPopSwitchPortCount * kSwitchMuxDegree>& out_q) {
   Transpose<kSwitchMuxDegree, kPopSwitchPortCount>(
       in_q, out_q, [](const auto& task, int old_pos, int new_pos) {
-        CHECK_EQ(task.vid() / kQueueCount % kPopSwitchPortCount,
+        CHECK_EQ(task.vid() % kPopSwitchPortCount,
                  old_pos % kPopSwitchPortCount);
-      });
-}
-
-void VertexAdapter(istreams<TaskOnChip, kSubIntervalCount>& in_q,
-                   ostreams<TaskOnChip, kSubIntervalCount>& out_q) {
-  Transpose<kQueueCount, kSubIntervalCount / kQueueCount>(
-      in_q, out_q, [](const auto& task, int old_pos, int new_pos) {
-        CHECK_EQ(task.vid() % kSubIntervalCount, new_pos);
-      });
-}
-
-void PopAdapter(istreams<TaskOnChip, kSubIntervalCount>& in_q,
-                ostreams<TaskOnChip, kSubIntervalCount>& out_q) {
-  Transpose<kSubIntervalCount / kQueueCount, kQueueCount>(
-      in_q, out_q, [](const auto& task, int old_pos, int new_pos) {
-        CHECK_EQ(task.vid() % kSubIntervalCount, old_pos);
-        CHECK_EQ(task.vid() % kQueueCount,
-                 new_pos / (kSubIntervalCount / kQueueCount));
       });
 }
 
@@ -1182,7 +1164,7 @@ void PopSwitch2x2(
     istream<TaskOnChip>& in_q0, istream<TaskOnChip>& in_q1,
     //
     ostreams<TaskOnChip, 2>& out_q) {
-  b = kSwitchStageCount - 1 - b / (kQueueCount * kSwitchMuxDegree);
+  b = kSwitchStageCount - 1 - b / kSwitchMuxDegree;
 
   bool should_prioritize_1 = false;
 
@@ -1272,13 +1254,9 @@ void PushAdapter(
       });
 }
 
-const int kSwitchOutputCount = kQueueCount;
-
 void SwitchOutputArbiter(
-    tapa::istreams<TaskOnChip, kShardCount * kEdgeVecLen / kSwitchOutputCount>&
-        in_q,
-    tapa::ostreams<TaskOnChip, kSwitchOutputCount * kCgpqPushPortCount>&
-        out_q) {
+    tapa::istreams<TaskOnChip, kShardCount * kEdgeVecLen>& in_q,
+    tapa::ostreams<TaskOnChip, kCgpqPushPortCount>& out_q) {
   TaskArbiterTemplate(in_q, out_q);
 }
 
@@ -1932,9 +1910,8 @@ void Dispatcher(
     ostreams<bool, kSubIntervalCount>& vertex_cache_done_q,
     istreams<int32_t, kSubIntervalCount>& vertex_cache_stat_q,
     ostreams<bool, kShardCount>& edge_done_q,
-    istreams<int64_t, kShardCount>& edge_stat_q,
-    ostreams<bool, kQueueCount>& queue_done_q,
-    istreams<int32_t, kQueueCount>& queue_stat_q,
+    istreams<int64_t, kShardCount>& edge_stat_q, ostream<bool>& queue_done_q,
+    istream<int32_t>& queue_stat_q,
     // Task initialization.
     ostream<Task>& task_init_q,
     // Task count.
@@ -1983,7 +1960,7 @@ spin:
 
   RANGE(iid, kSubIntervalCount, vertex_cache_done_q[iid].write(false));
   RANGE(sid, kShardCount, edge_done_q[sid].write(false));
-  RANGE(qid, kQueueCount, queue_done_q[qid].write(false));
+  queue_done_q.write(false);
   task_init_q.close();
 
   metadata[0] = visited_edge_count;
@@ -2011,13 +1988,10 @@ edge_stat:
   }
 
 queue_stat:
-  for (int i = 0; i < kQueueCount; ++i) {
-    for (int j = 0; j < kQueueStatCount; ++j) {
+  for (int i = 0; i < kQueueStatCount; ++i) {
 #pragma HLS pipeline II = 1
-      metadata[kGlobalStatCount + kShardCount * kEdgeUnitStatCount +
-               kSubIntervalCount * kVertexUniStatCount + i * kQueueStatCount +
-               j] = queue_stat_q[i].read();
-    }
+    metadata[kGlobalStatCount + kShardCount * kEdgeUnitStatCount +
+             kSubIntervalCount * kVertexUniStatCount + i] = queue_stat_q.read();
   }
 }
 
@@ -2029,8 +2003,8 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   streams<Task, kSubIntervalCount, 2> vertex_out_q;
   streams<Task, kSubIntervalCount, 2> VAR(vertex_out_qx);
   streams<Task, kShardCount, 2> VAR(vertex_out_qi);
-  streams<bool, kQueueCount, 2> queue_done_q;
-  streams<int32_t, kQueueCount, 2> queue_stat_q;
+  stream<bool, 2> VAR(queue_done_q);
+  stream<int32_t, 2> VAR(queue_stat_q);
 
   streams<uint_spill_addr_t, kCgpqPhysMemCount, 2> VAR(cgpq_spill_read_addr_q);
   streams<SpilledTaskPerMem, kCgpqPhysMemCount, 2> VAR(cgpq_spill_read_data_q);
@@ -2042,11 +2016,9 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
 
   stream<Task, 2> task_init_q;
   streams<TaskOnChip,
-          kQueueCount * kSpilledTaskVecLen *
-              kSwitchMuxDegree*(kPopSwitchStageCount + 1),
-          32>
+          kSpilledTaskVecLen * kSwitchMuxDegree*(kPopSwitchStageCount + 1), 32>
       VAR(pop_xbar_q);
-  streams<TaskOnChip, kQueueCount * kSpilledTaskVecLen, 32> VAR(queue_pop_q);
+  streams<TaskOnChip, kSpilledTaskVecLen, 32> VAR(queue_pop_q);
 
   // For edges.
   streams<Vid, kShardCount, 2> edge_read_addr_q("edge_read_addr");
@@ -2062,7 +2034,6 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
 
   streams<TaskOnChip, kSubIntervalCount * kSwitchMuxDegree, 32> VAR(
       vertex_in_qii);
-  streams<TaskOnChip, kSubIntervalCount, 2> VAR(vertex_in_qi);
   streams<TaskOnChip, kSubIntervalCount, 2> VAR(vertex_in_q);
   //   Connect the vertex readers and updaters.
   streams<Vid, kSubIntervalCount, 2> vertex_read_addr_q;
@@ -2081,7 +2052,6 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
   streams<bool, kSubIntervalCount, 2> VAR(vertex_noop_qi);
 
   streams<TaskOnChip, kSubIntervalCount, 2> VAR(vertex_filter_out_q);
-  streams<TaskOnChip, kSubIntervalCount, 2> VAR(vertex_filter_out_qi);
 
   streams<uint_vid_t, kPeCount, 2> task_count_qi;
   stream<TaskCount, 2> task_count_q;
@@ -2157,11 +2127,10 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
       .invoke<detach>(CgpqDuplicateDone, queue_done_q, cgpq_done_qi)
       .invoke<detach>(CgpqStatArbiter, cgpq_stat_qi, queue_stat_q)
       .invoke<detach, kSubIntervalCount>(SwitchDemux, queue_pop_q, pop_xbar_q)
-      .invoke<detach, kQueueCount * kSwitchMuxDegree * kPopSwitchStageCount>(
+      .invoke<detach, kSwitchMuxDegree * kPopSwitchStageCount>(
           PopSwitchStage, seq(), pop_xbar_q, pop_xbar_q)
-      .invoke<detach, kQueueCount>(CgpqPopAdapter, pop_xbar_q, vertex_in_qii)
-      .invoke<detach, kSubIntervalCount>(SwitchMux, vertex_in_qii, vertex_in_qi)
-      .invoke<detach>(VertexAdapter, vertex_in_qi, vertex_in_q)
+      .invoke<detach>(CgpqPopAdapter, pop_xbar_q, vertex_in_qii)
+      .invoke<detach, kSubIntervalCount>(SwitchMux, vertex_in_qii, vertex_in_q)
       .invoke<detach>(VertexOutputAdapter, vertex_out_q, vertex_out_qx)
       .invoke<detach, kShardCount>(VertexOutputArbiter, vertex_out_qx,
                                    vertex_out_qi)
@@ -2182,7 +2151,6 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
           SwitchStage, seq(), xbar_q, xbar_q)
       .invoke<detach>(PushAdapter, xbar_q, xbar_out_q)
       .invoke<detach, kSubIntervalCount>(SwitchMux, xbar_out_q, xbar_out_qx)
-      .invoke<detach>(PopAdapter, vertex_filter_out_qi, vertex_filter_out_q)
       .invoke<detach>(VertexNoopMerger, vertex_noop_qi, vertex_noop_q)
 
       .invoke<detach, kSubIntervalCount>(VertexMem, vertex_read_addr_q,
@@ -2191,7 +2159,7 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
       .invoke<detach, kSubIntervalCount>(
           VertexCache, vertex_cache_done_q, vertex_cache_stat_q,
           //
-          xbar_out_qx, vertex_filter_out_qi,
+          xbar_out_qx, vertex_filter_out_q,
           //
           vertex_in_q, vertex_out_q,
           //

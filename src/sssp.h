@@ -116,8 +116,6 @@ inline std::ostream& operator<<(std::ostream& os, const Task& obj) {
   return os << "{vid: " << obj.vid << ", vertex: " << obj.vertex << "}";
 }
 
-constexpr int kQueueCount = 1;
-
 constexpr int kGlobalStatCount = 5;
 
 constexpr int kEdgeUnitStatCount = 4;
@@ -195,7 +193,7 @@ constexpr int kShardCount = 8;  // #edge partitions.
 
 constexpr int kEdgeVecLen = 2;
 
-static_assert(kShardCount * kEdgeVecLen == kCgpqPushPortCount * kQueueCount);
+static_assert(kShardCount * kEdgeVecLen == kCgpqPushPortCount);
 
 constexpr int kIntervalCount = 16;
 constexpr int kSubIntervalCount = kIntervalCount * 1;
@@ -227,9 +225,9 @@ constexpr int kSpilledTaskVecLen = 16;
 
 static_assert(kShardCount * kEdgeVecLen == kSubIntervalCount);
 
-static_assert(kSubIntervalCount == kSpilledTaskVecLen * kQueueCount);
+static_assert(kSubIntervalCount == kSpilledTaskVecLen);
 
-constexpr int kPopSwitchPortCount = kSubIntervalCount / kQueueCount;
+constexpr int kPopSwitchPortCount = kSubIntervalCount;
 
 constexpr int kPopSwitchStageCount = log2(kPopSwitchPortCount);
 
