@@ -14,8 +14,6 @@ using uint_vid_t = ap_uint<kVidWidth>;
 
 using uint_eid_t = ap_uint<kEidWidth>;
 
-using uint_queue_noop_t = ap_uint<bit_length(kQueueCount)>;
-
 struct VertexNoop {
   using uint_vertex_noop_t = ap_uint<bit_length(kSubIntervalCount)>;
 
@@ -37,86 +35,6 @@ struct TaskCount {
   ap_uint<bit_length(kPeCount)> old_task_count;
   uint_eid_t new_task_count;
 };
-
-// Used in:
-//
-// ProcElemS1 -> (net)
-// (net) -> VertexReaderS0 -> VertexReaderS1 -> VertexUpdater -> Dispatcher
-struct TaskOp {
-  enum Op { NEW, NOOP } op;
-  TaskOnChip task;  // Valid only when op is NEW.
-};
-
-inline std::ostream& operator<<(std::ostream& os, const TaskOp& obj) {
-  switch (obj.op) {
-    case TaskOp::NEW:
-      return os << "{ op: NEW, task: " << Task(obj.task) << " }";
-    case TaskOp::NOOP:
-      return os << "{ op: NOOP }";
-  }
-}
-
-// Used in:
-//
-// Dispatcher -> TaskQueue
-struct QueueOp {
-  enum Op { PUSH, PUSHPOP, POP } op;
-  TaskOnChip task;  // Valid only when op is PUSH.
-
-  bool is_push() const { return op == QueueOp::PUSH; }
-  bool is_pop() const { return op == QueueOp::POP; }
-  bool is_pushpop() const { return op == QueueOp::PUSHPOP; }
-};
-
-// Used in:
-//
-// TaskQueue -> Dispatcher
-struct QueueOpResp {
-  QueueOp::Op queue_op;
-  // Valid values are NEW and NOOP.
-  // If queue_op is PUSH, NEW indicates a new task is created; NOOP indicates
-  // the priority of existing task is increased.
-  // If queue_op is POP, NEW indicates a task is dequeued and returned; NOOP
-  // indicates the queue is empty.
-  TaskOp::Op task_op;
-  TaskOnChip task;  // Valid only when queue_op is POP and task_op is NEW.
-
-  bool is_push() const { return queue_op == QueueOp::PUSH; }
-  bool is_pop_noop() const {
-    return queue_op == QueueOp::POP && task_op == TaskOp::NOOP;
-  }
-  bool is_pop_new() const {
-    return queue_op != QueueOp::PUSH && task_op == TaskOp::NEW;
-  }
-};
-
-inline std::ostream& operator<<(std::ostream& os, const QueueOpResp& obj) {
-  os << "{queue_op: ";
-  switch (obj.queue_op) {
-    case QueueOp::PUSH:
-      os << "PUSH";
-      break;
-    case QueueOp::PUSHPOP:
-      os << "PUSHPOP";
-      break;
-    case QueueOp::POP:
-      os << "POP";
-      break;
-  }
-  os << ", task_op: ";
-  switch (obj.task_op) {
-    case TaskOp::NEW:
-      os << "NEW";
-      break;
-    case TaskOp::NOOP:
-      os << "NOOP";
-      break;
-  }
-  if (obj.queue_op != QueueOp::PUSH && obj.task_op == TaskOp::NEW) {
-    os << ", task: " << Task(obj.task);
-  }
-  return os << "}";
-}
 
 struct VertexCacheEntry {
   bool is_valid;

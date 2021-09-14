@@ -1851,20 +1851,6 @@ spin:
   }
 }
 
-void QueueNoopMerger(istreams<bool, kQueueCount>& in_q,
-                     ostream<uint_queue_noop_t>& out_q) {
-spin:
-  for (;;) {
-#pragma HLS pipeline II = 1
-    uint_queue_noop_t count = 0;
-    bool buf;
-    RANGE(qid, kQueueCount, in_q[qid].try_read(buf) && ++count);
-    if (count) {
-      out_q.write(count);
-    }
-  }
-}
-
 void TaskCountMerger(istreams<uint_vid_t, kPeCount>& in_q,
                      ostream<TaskCount>& out_q) {
 spin:
