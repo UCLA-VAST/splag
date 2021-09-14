@@ -9,8 +9,6 @@
 #include "sssp-kernel.h"
 #include "sssp.h"
 
-#define TAPA_SSSP_2X_BUFFER
-
 namespace cgpq {
 
 constexpr int kBucketCount = 128;
@@ -21,11 +19,7 @@ constexpr int kChunkSize = kCgpqChunkSize;
 
 constexpr int kVecCountPerChunk = kChunkSize / kSpilledTaskVecLen;
 
-#ifdef TAPA_SSSP_2X_BUFFER
 constexpr int kBufferSize = kChunkSize * 2;
-#else
-constexpr int kBufferSize = kChunkSize;
-#endif  // TAPA_SSSP_2X_BUFFER
 
 constexpr int kPosPartFac = kSpilledTaskVecLen;
 
@@ -94,20 +88,8 @@ class ChunkMeta {
     return is_empty_;
   }
 
-  bool IsAlmostFull() const {
-#ifdef TAPA_SSSP_2X_BUFFER
-    return is_almost_full_;
-#else
-    return IsFull();
-#endif  // TAPA_SSSP_2X_BUFFER
-  }
-  bool IsAlmostEmpty() const {
-#ifdef TAPA_SSSP_2X_BUFFER
-    return is_almost_empty_;
-#else
-    return IsEmpty();
-#endif  // TAPA_SSSP_2X_BUFFER
-  }
+  bool IsAlmostFull() const { return is_almost_full_; }
+  bool IsAlmostEmpty() const { return is_almost_empty_; }
 
   void Update(uint_delta_t push, uint_delta_t pop, int_delta_t delta, int bid) {
     if (push) {
