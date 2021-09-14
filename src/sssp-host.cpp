@@ -10,7 +10,6 @@
 #include <memory>
 #include <random>
 #include <string>
-#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -30,7 +29,6 @@ using std::make_unique;
 using std::setfill;
 using std::setprecision;
 using std::setw;
-using std::tuple;
 using std::unordered_map;
 using std::unordered_set;
 using std::vector;
@@ -323,16 +321,9 @@ void Refine(
 
 void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
           tapa::mmaps<EdgeVec, kShardCount> edges,
-          tapa::mmaps<Vertex, kIntervalCount> vertices,
-#ifdef TAPA_SSSP_COARSE_PRIORITY
-          bool is_log_bucket, float min_distance, float max_distance,
-          int32_t interval,
-          tapa::mmaps<SpilledTaskPerMem, kCgpqPhysMemCount> cgpq_spill
-#else   // TAPA_SSSP_COARSE_PRIORITY
-          tapa::mmap<HeapElemPacked> heap_array,
-          tapa::mmap<HeapIndexEntry> heap_index
-#endif  // TAPA_SSSP_COARSE_PRIORITY
-);
+          tapa::mmaps<Vertex, kIntervalCount> vertices, bool is_log_bucket,
+          float min_distance, float max_distance, int32_t interval,
+          tapa::mmaps<SpilledTaskPerMem, kCgpqPhysMemCount> cgpq_spill);
 
 int main(int argc, char* argv[]) {
   FLAGS_logtostderr = true;
@@ -481,46 +472,9 @@ int main(int argc, char* argv[]) {
   for (auto& spill : cgpq_spill) {
     spill.resize(1 << uint_spill_addr_t::width);
   }
-  aligned_vector<HeapElemPacked> heap_array(
-      GetAddrOfOffChipHeapElem(kLevelCount - 1,
-                               GetCapOfLevel(kLevelCount - 1) - 1,
-                               kQueueCount - 1) +
-      1);
-  aligned_vector<HeapIndexEntry> heap_index(vertex_count);
 
   // Statistics.
   vector<double> teps;
-
-  for (int level = kOnChipLevelCount; level < kLevelCount; ++level) {
-    VLOG(5) << "off-chip level " << level << " addr: ["
-            << GetAddrOfOffChipHeapElem(level, 0, 0) << ", "
-            << GetAddrOfOffChipHeapElem(level, GetCapOfLevel(level) - 1,
-                                        kQueueCount - 1)
-            << "]";
-  }
-  for (int level = 0; level < kLevelCount - 1; ++level) {
-    // Child capacity should be the sum of all children's child capacity + 1.
-    CHECK_EQ(GetChildCapOfLevel(level),
-             GetChildCapOfLevel(level + 1) * kPiHeapWidth + 1);
-  }
-
-  for (int level = kOnChipLevelCount; level < kLevelCount; ++level) {
-    const auto cap = GetChildCapOfLevel(level);
-    HeapElemAxi init_elem;
-    init_elem.valid = false;
-    for (int i = 0; i < kPiHeapWidth; ++i) {
-      init_elem.cap[i] = cap;
-    }
-    init_elem.size = 0;
-    const auto init_elem_packed = HeapElemAxi::Pack({init_elem, init_elem});
-
-    for (int qid = 0; qid < kQueueCount; ++qid) {
-      for (int idx = 0; idx < GetCapOfLevel(level); idx += 2) {
-        const auto addr = GetAddrOfOffChipHeapElem(level, idx, qid);
-        heap_array[addr] = init_elem_packed;
-      }
-    }
-  }
 
   int valid_root_count = 0;
   for (const auto root : SampleVertices(degree_no_self_loop)) {
@@ -574,9 +528,6 @@ int main(int argc, char* argv[]) {
                 Vertex{.parent = kNullVid, .distance = kInfDistance});
     }
 
-    for (size_t i = 0; i < heap_index.size(); ++i) {
-      heap_index[i].invalidate();
-    }
     vertices[root % kIntervalCount][root / kIntervalCount] = {
         .parent = Vid(root), .distance = 0.f};
     for (int64_t vid = 0; vid < vertex_count; ++vid) {
@@ -692,16 +643,10 @@ int main(int argc, char* argv[]) {
             tapa::read_only_mmaps<Edge, kShardCount>(edges)
                 .vectorized<kEdgeVecLen>(),
             tapa::read_write_mmaps<Vertex, kIntervalCount>(vertices),
-#ifdef TAPA_SSSP_COARSE_PRIORITY
             FLAGS_is_log_bucket, arg_min_distance, arg_max_distance,
             FLAGS_interval,
             tapa::placeholder_mmaps<SpilledTaskPerMem, kCgpqPhysMemCount>(
-                cgpq_spill)
-#else   // TAPA_SSSP_COARSE_PRIORITY
-            tapa::read_only_mmap<HeapElemPacked>(heap_array),
-            tapa::read_only_mmap<HeapIndexEntry>(heap_index)
-#endif  // TAPA_SSSP_COARSE_PRIORITY
-        );
+                cgpq_spill));
 
     const auto tic = steady_clock::now();
     Refine(coarsen_records, vertices);
@@ -904,7 +849,6 @@ int main(int argc, char* argv[]) {
     for (int qid = 0; qid < kQueueCount; ++qid) {
       VLOG(3) << "  queue[" << qid << "]:";
 
-#ifdef TAPA_SSSP_COARSE_PRIORITY
       for (int bank = 0; bank < kCgpqPushPortCount; ++bank) {
         VLOG(3) << "    bank[" << bank << "]:";
 
@@ -933,137 +877,6 @@ int main(int argc, char* argv[]) {
         vlog("pop blocked by bank conflict", *(metadata_it++));
         vlog("pop blocked by alignment    ", *(metadata_it++));
       }
-#else   // TAPA_SSSP_COARSE_PRIORITY
-
-      // Queue op counts.
-      {
-        constexpr const char* kQueueUnitOpNamesAligned[] = {
-            "#idling  ",  //
-            "#pushing ",  //
-            "#popping ",  //
-            "#indexing",  //
-        };
-        int64_t op_counts[sizeof(kQueueUnitOpNamesAligned) /
-                          sizeof(kQueueUnitOpNamesAligned[0])];
-        int64_t total_op_count = 0;
-        for (int i = 0; i < sizeof(op_counts) / sizeof(op_counts[0]); ++i) {
-          op_counts[i] = *(metadata_it++);
-          total_op_count += op_counts[i];
-        }
-        const auto push_count = *(metadata_it++);
-        const auto pop_count = *(metadata_it++);
-        const auto pushpop_count = *(metadata_it++);
-        const auto max_size = *(metadata_it++);
-        auto total_size = *(metadata_it++) << 32;
-        total_size += *(metadata_it++);
-
-        VLOG_IF(3, max_size) << "    capacity: " << std::setfill(' ')
-                             << std::setw(10) << kPiHeapCapacity;
-        VLOG_IF(3, max_size) << "    max size: " << std::setfill(' ')
-                             << std::setw(10) << max_size;
-        VLOG_IF(3, total_op_count)
-            << "    avg size: " << std::setfill(' ') << std::setw(10)
-            << total_size / total_op_count;
-
-        VLOG_IF(3, op_counts[1])
-            << "    avg push    latency: " << std::setfill(' ') << std::setw(10)
-            << op_counts[1] / push_count;
-        VLOG_IF(3, op_counts[2])
-            << "    avg     pop latency: " << std::setfill(' ') << std::setw(10)
-            << op_counts[2] / pop_count;
-        VLOG_IF(3, op_counts[3])
-            << "    avg pushpop latency: " << std::setfill(' ') << std::setw(10)
-            << op_counts[3] / pushpop_count;
-
-        for (int i = 0; i < sizeof(op_counts) / sizeof(op_counts[0]); ++i) {
-          VLOG_IF(3, total_op_count)
-              << "    " << kQueueUnitOpNamesAligned[i] << ": "
-              << std::setfill(' ') << std::setw(10) << op_counts[i] << " ("
-              << std::fixed << std::setprecision(1)
-              << 100. * op_counts[i] / total_op_count << "%)";
-        }
-      }
-
-      // Index op counts.
-      {
-        int64_t state_counts[kPiHeapIndexOpTypeCount] = {};
-        int64_t op_counts[kPiHeapIndexOpTypeCount] = {};
-        int64_t total_op_count = 0;
-        const char* kIndexOpNamesAligned[kPiHeapIndexOpTypeCount] = {
-            "GET_STALE    ",  //
-            "CLEAR_STALE  ",  //
-            "UPDATE_INDEX ",  //
-            "CLEAR_FRESH  ",  //
-        };
-        for (int level = 0; level < kLevelCount; ++level) {
-          int64_t level_state_counts[kPiHeapIndexOpTypeCount];
-          int64_t level_op_counts[kPiHeapIndexOpTypeCount];
-          int64_t total_level_op_count = 0;
-          for (int i = 0; i < kPiHeapIndexOpTypeCount; ++i) {
-            level_state_counts[i] = *(metadata_it++);
-            level_op_counts[i] = *(metadata_it++);
-            total_level_op_count += level_op_counts[i];
-
-            state_counts[i] += level_state_counts[i];
-            op_counts[i] += level_op_counts[i];
-            total_op_count += level_op_counts[i];
-          }
-
-          VLOG_IF(3, total_level_op_count) << "    level[" << level << "]:";
-          for (int i = 0; i < kPiHeapIndexOpTypeCount; ++i) {
-            VLOG_IF(3, total_level_op_count)
-                << "      " << kIndexOpNamesAligned[i] << " : " << setfill(' ')
-                << setw(10) << level_op_counts[i] << " ( " << fixed
-                << setprecision(1) << setw(5)
-                << 100. * level_op_counts[i] / total_level_op_count << "%) / "
-                << setw(5) << 1. * level_state_counts[i] / level_op_counts[i];
-          }
-        }
-
-        VLOG_IF(3, total_op_count) << "    total:";
-        for (int i = 0; i < kPiHeapIndexOpTypeCount; ++i) {
-          VLOG_IF(3, total_op_count)
-              << "      " << kIndexOpNamesAligned[i] << " : " << setfill(' ')
-              << setw(10) << op_counts[i] << " ( " << fixed << setprecision(1)
-              << setw(5) << 100. * op_counts[i] / total_op_count << "%) / "
-              << setw(5) << 1. * state_counts[i] / op_counts[i];
-        }
-
-        const auto read_hit = *(metadata_it++);
-        const auto read_miss = *(metadata_it++);
-        const auto write_hit = *(metadata_it++);
-        const auto write_miss = *(metadata_it++);
-        const auto idle_count = *(metadata_it++);
-        const auto busy_count = *(metadata_it++);
-        const auto collect_write_count = write_miss;
-        const auto acquire_index_count = read_miss;
-
-        // The `total_op_count` only counts the new requests; here the
-        // `total_cycle_count` further includes the read/write acknowledges and
-        // idle iteration. Note that II>1 so the real cycle count would be much
-        // larger.
-        const auto total_cycle_count = total_op_count + collect_write_count +
-                                       acquire_index_count + idle_count +
-                                       busy_count;
-
-        VLOG(3) << "  index[" << qid << "]:";
-        for (auto [name, item, total] :
-             vector<tuple<const char*, int64_t, int64_t>>{
-                 {"read hit ", read_hit, read_hit + read_miss},
-                 {"write hit", write_hit, write_hit + write_miss},
-                 {"idle         ", idle_count, total_cycle_count},
-                 {"busy         ", busy_count, total_cycle_count},
-                 {"collect write", collect_write_count, total_cycle_count},
-                 {"acquire index", acquire_index_count, total_cycle_count},
-                 {"new requests ", total_op_count, total_cycle_count},
-             }) {
-          VLOG_IF(3, total_cycle_count)
-              << "    " << name << " : " << setfill(' ') << setw(10) << item
-              << " ( " << fixed << setprecision(1) << setw(5)
-              << 100. * item / total << "%)";
-        }
-      }
-#endif  // TAPA_SSSP_COARSE_PRIORITY
     }
 
     if (!IsValid(root, edges_view, weights_view, indexed_weights,

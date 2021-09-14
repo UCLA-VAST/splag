@@ -11,8 +11,6 @@
 
 #include <ap_int.h>
 
-#define TAPA_SSSP_COARSE_PRIORITY
-
 // Kernel-friendly bit_cast.
 template <typename To, typename From>
 inline To bit_cast(const From& from) {
@@ -122,94 +120,11 @@ inline std::ostream& operator<<(std::ostream& os, const Task& obj) {
 
 constexpr int kQueueCount = 1;
 
-#ifndef TAPA_SSSP_PHEAP_WIDTH
-#define TAPA_SSSP_PHEAP_WIDTH 16
-#endif
-
-constexpr int kPiHeapWidth = TAPA_SSSP_PHEAP_WIDTH;
-
-inline constexpr int GetCapOfLevel(int level) {
-  constexpr int width = log2(kPiHeapWidth);  // Makes HLS happy.
-  return 1 << (width * level);
-}
-
-#if TAPA_SSSP_PHEAP_WIDTH == 2
-constexpr int kOnChipLevelCount = 15;
-constexpr int kOffChipLevelCount = 5;
-#elif TAPA_SSSP_PHEAP_WIDTH == 4
-constexpr int kOnChipLevelCount = 8;
-constexpr int kOffChipLevelCount = 3;
-#elif TAPA_SSSP_PHEAP_WIDTH == 8
-constexpr int kOnChipLevelCount = 5;
-constexpr int kOffChipLevelCount = 3;
-#elif TAPA_SSSP_PHEAP_WIDTH == 16
-constexpr int kOnChipLevelCount = 4;
-constexpr int kOffChipLevelCount = 2;
-#else
-#error "invalid TAPA_SSSP_PHEAP_WIDTH"
-#endif  // TAPA_SSSP_PHEAP_WIDTH
-
-constexpr int kLevelCount = kOnChipLevelCount + kOffChipLevelCount;
-
-inline constexpr int GetChildCapOfLevel(int level) {
-  return (GetCapOfLevel(kLevelCount - level - 1) - 1) / (kPiHeapWidth - 1);
-}
-
-constexpr int kPiHeapCapacity = GetChildCapOfLevel(0) * kPiHeapWidth + 1;
-
-using OffChipLevelId = ap_uint<bit_length(kOffChipLevelCount - 1)>;
-using LevelId = ap_uint<bit_length(kLevelCount - 1)>;
-using LevelIndex = ap_uint<bit_length(GetCapOfLevel(kLevelCount - 1) - 1)>;
-
-inline int GetAddrOfOffChipHeapElem(int level, int idx, int qid) {
-  CHECK_GE(level, kOnChipLevelCount) << "not an off-chip level";
-  CHECK_LT(level, kLevelCount);
-  CHECK_GE(idx, 0);
-  CHECK_LT(idx, GetCapOfLevel(level));
-  CHECK_GE(qid, 0);
-  CHECK_LT(qid, kQueueCount);
-  CHECK_EQ(GetCapOfLevel(level) % kPiHeapWidth, 0);
-
-  // Raw index in queue: (GetCapOfLevel(level) + idx) / 2.
-  // Divided by 2 because each pack contains 2 elements.
-  // Mapped index is concatenated by the following parts:
-  //  1. index: bits excluding qid and offset;
-  //  2. qid: log2(kQueueCount) bits;
-  //  3. offset: log2(kPiHeapWidth) bits.
-  constexpr int kQidWidth = std::max(1, log2(kQueueCount));
-  constexpr int kOffsetWidth = log2(kPiHeapWidth / 2);
-  constexpr int kIndexWidth = LevelIndex::width + 1 - kOffsetWidth;
-  static_assert(kIndexWidth + kQidWidth + kOffsetWidth < 32,
-                "need to change return value");
-  const auto raw_index =
-      ap_uint<kIndexWidth + kOffsetWidth>((GetCapOfLevel(level) + idx) / 2);
-  if (kQueueCount == 1) {
-    return ap_uint<kIndexWidth>(
-               raw_index.range(kIndexWidth + kOffsetWidth - 1, kOffsetWidth)),
-           ap_uint<kOffsetWidth>(idx / 2);
-  }
-  return ap_uint<kIndexWidth>(
-             raw_index.range(kIndexWidth + kOffsetWidth - 1, kOffsetWidth)),
-         ap_uint<kQidWidth>(qid), ap_uint<kOffsetWidth>(idx / 2);
-}
-
 constexpr int kGlobalStatCount = 5;
 
 constexpr int kEdgeUnitStatCount = 4;
 
 constexpr int kVertexUniStatCount = 13;
-
-constexpr int kPiHeapIndexOpTypeCount = 4;
-
-constexpr int kPiHeapStatCount[] = {
-    10 + kPiHeapIndexOpTypeCount * kLevelCount * 2,  // PiHeapHead
-    6,                                               // PiHeapIndex
-};
-constexpr int kPiHeapStatTotalCount = kPiHeapStatCount[0] + kPiHeapStatCount[1];
-constexpr int kPiHeapStatTaskCount =
-    sizeof(kPiHeapStatCount) / sizeof(kPiHeapStatCount[0]);
-
-#ifdef TAPA_SSSP_COARSE_PRIORITY
 
 #ifndef TAPA_SSSP_CGPQ_PUSH_COUNT
 #define TAPA_SSSP_CGPQ_PUSH_COUNT 16
@@ -220,9 +135,6 @@ constexpr int kCgpqPushPortCount = TAPA_SSSP_CGPQ_PUSH_COUNT;
 constexpr int kCgpqPushStageCount = log2(kCgpqPushPortCount);
 
 constexpr int kQueueStatCount = 11 * kCgpqPushPortCount;
-#else   // TAPA_SSSP_COARSE_PRIORITY
-constexpr int kQueueStatCount = kPiHeapStatTotalCount;
-#endif  // TAPA_SSSP_COARSE_PRIORITY
 
 class TaskOnChip {
  public:
@@ -282,144 +194,6 @@ class TaskOnChip {
 
   friend struct HeapElemAxi;
 };
-
-using HeapElemPacked = ap_uint<512>;
-
-struct HeapElemAxi {
-  static constexpr int kCapWidth =
-      bit_length(GetChildCapOfLevel(kOnChipLevelCount));
-  using Capacity = ap_uint<kCapWidth>;
-
-  bool valid;
-  TaskOnChip task;
-  Capacity cap[kPiHeapWidth];
-  ap_uint<Capacity::width + log2(kPiHeapWidth)> size;  // Size of all children.
-
-  static void Unpack(const HeapElemPacked& packed, HeapElemAxi (&unpacked)[2]) {
-#pragma HLS inline
-    for (int i = 0; i < 2; ++i) {
-#pragma HLS unroll
-      const auto base = HeapElemPacked::width / 2 * i;
-      unpacked[i].valid = packed.get_bit(kValidBit + base);
-      unpacked[i].task.data = packed.range(kTaskMsb + base, kTaskLsb + base);
-      for (int j = 0; j < kPiHeapWidth; ++j) {
-#pragma HLS unroll
-        unpacked[i].cap[j] =
-            packed.range(kCapLsb + kCapWidth * (j + 1) - 1 + base,
-                         kCapLsb + kCapWidth * j + base);
-      }
-      unpacked[i].size = packed.range(kSizeMsb + base, kSizeLsb + base);
-    }
-  }
-  static HeapElemPacked Pack(const HeapElemAxi (&unpacked)[2]) {
-#pragma HLS inline
-    HeapElemPacked packed;
-    for (int i = 0; i < 2; ++i) {
-#pragma HLS unroll
-      const auto base = HeapElemPacked::width / 2 * i;
-      packed.set_bit(kValidBit + base, unpacked[i].valid);
-      packed.range(kTaskMsb + base, kTaskLsb + base) = unpacked[i].task.data;
-      for (int j = 0; j < kPiHeapWidth; ++j) {
-#pragma HLS unroll
-        packed.range(kCapLsb + kCapWidth * (j + 1) - 1 + base,
-                     kCapLsb + kCapWidth * j + base) = unpacked[i].cap[j];
-      }
-      packed.range(kSizeMsb + base, kSizeLsb + base) = unpacked[i].size;
-    }
-    return packed;
-  }
-
- private:
-  static constexpr int kValidBit = 0;
-  static constexpr int kTaskLsb = kValidBit + 1;
-  static constexpr int kTaskMsb = kTaskLsb + TaskOnChip::length - 1;
-  static constexpr int kCapLsb = kTaskMsb + 1;
-  static constexpr int kSizeLsb = kCapLsb + kCapWidth * kPiHeapWidth;
-  static constexpr int kSizeMsb = kSizeLsb + decltype(size)::width;
-
-  static_assert(kSizeMsb < HeapElemPacked::width / 2,
-                "HeapElemPacked has insufficient width");
-};
-
-class HeapIndexEntry {
- public:
-  HeapIndexEntry() {}
-  HeapIndexEntry(std::nullptr_t) { invalidate(); }
-  HeapIndexEntry(LevelId level, LevelIndex index, float distance) {
-    this->set(level, index, distance);
-  }
-
-  bool valid() const { return data_.bit(kValidBit); }
-  void invalidate() { data_.clear(kValidBit); }
-
-  LevelId level() const {
-    CHECK(valid());
-    return data_.range(kLevelMsb, kLevelLsb);
-  }
-  LevelIndex index() const {
-    CHECK(valid());
-    return data_.range(kIndexMsb, kIndexLsb);
-  }
-  float distance() const {
-    CHECK(valid());
-    return bit_cast<float>(
-        uint32_t(data_.range(kDistanceMsb, kDistanceLsb) << kFloatLsb));
-  }
-  void set(LevelId level, LevelIndex index, float distance) {
-    CHECK_GE(level, 0);
-    CHECK_LT(level, kLevelCount);
-    CHECK_GE(index, 0);
-    CHECK_LT(index, GetCapOfLevel(level));
-    data_.set(kValidBit);
-    data_.range(kLevelMsb, kLevelLsb) = level;
-    data_.range(kIndexMsb, kIndexLsb) = index;
-    data_.range(kDistanceMsb, kDistanceLsb) =
-        bit_cast<ap_uint<32>>(distance).range(kFloatMsb, kFloatLsb);
-  }
-
-  LevelIndex parent_index_at(LevelId level) const {
-    CHECK(valid());
-    CHECK_GE(this->level(), level);
-    return this->index() / GetCapOfLevel(this->level() - level);
-  }
-
-  bool is_descendant_of(LevelId level, LevelIndex index) const {
-    return parent_index_at(level) == index;
-  };
-
-  bool distance_eq(const HeapIndexEntry& other) const {
-    return valid() && data_.range(kDistanceMsb, kDistanceLsb) ==
-                          other.data_.range(kDistanceMsb, kDistanceLsb);
-  }
-  bool distance_le(const HeapIndexEntry& other) const {
-    return valid() && other.valid() &&
-           data_.range(kDistanceMsb, kDistanceLsb) <=
-               other.data_.range(kDistanceMsb, kDistanceLsb);
-  }
-
- private:
-  ap_uint<256> data_;
-  // bool valid;
-  // LevelId level;
-  // LevelIndex index;
-  // ap_uint<kFloatWidth> distance;
-  static constexpr int kValidBit = 0;
-  static constexpr int kLevelLsb = kValidBit + 1;
-  static constexpr int kLevelMsb = kLevelLsb + LevelId::width - 1;
-  static constexpr int kIndexLsb = kLevelMsb + 1;
-  static constexpr int kIndexMsb = kIndexLsb + LevelIndex::width - 1;
-  static constexpr int kDistanceLsb = kIndexMsb + 1;
-  static constexpr int kDistanceMsb = kDistanceLsb + kFloatWidth - 1;
-  static_assert(kDistanceMsb < decltype(data_)::width, "invalid configuration");
-};
-
-inline std::ostream& operator<<(std::ostream& os, const HeapIndexEntry& obj) {
-  if (obj.valid()) {
-    return os << obj.level() << "`" << obj.index() << " (" << obj.distance()
-              << ")";
-  }
-  return os << "invalid";
-}
 
 // Platform-specific constants and types.
 
