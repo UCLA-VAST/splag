@@ -116,8 +116,6 @@ inline std::ostream& operator<<(std::ostream& os, const Task& obj) {
   return os << "{vid: " << obj.vid << ", vertex: " << obj.vertex << "}";
 }
 
-#define TAPA_SSSP_SWITCH_PORT_COUNT 16
-
 constexpr int kQueueCount = 1;
 
 constexpr int kGlobalStatCount = 5;
@@ -126,11 +124,7 @@ constexpr int kEdgeUnitStatCount = 4;
 
 constexpr int kVertexUniStatCount = 13;
 
-#ifndef TAPA_SSSP_CGPQ_PUSH_COUNT
-#define TAPA_SSSP_CGPQ_PUSH_COUNT 16
-#endif  // TAPA_SSSP_CGPQ_PUSH_COUNT
-
-constexpr int kCgpqPushPortCount = TAPA_SSSP_CGPQ_PUSH_COUNT;
+constexpr int kCgpqPushPortCount = 16;
 
 constexpr int kCgpqPushStageCount = log2(kCgpqPushPortCount);
 
@@ -203,11 +197,14 @@ constexpr int kEdgeVecLen = 2;
 
 static_assert(kShardCount * kEdgeVecLen == kCgpqPushPortCount * kQueueCount);
 
+constexpr int kIntervalCount = 16;
+constexpr int kSubIntervalCount = kIntervalCount * 1;
+
 using EdgeVec = tapa::vec_t<Edge, kEdgeVecLen>;
 
 constexpr int kSwitchMuxDegree = 2;  // Mux output from this many switches.
 
-constexpr int kSwitchPortCount = TAPA_SSSP_SWITCH_PORT_COUNT;
+constexpr int kSwitchPortCount = kSubIntervalCount;
 
 constexpr int kSwitchStageCount = log2(kSwitchPortCount);
 
@@ -215,9 +212,6 @@ constexpr int kSwitchCount =
     kSwitchPortCount / 2 * kSwitchStageCount * kSwitchMuxDegree;
 
 constexpr int kSwitchStatCount = 5;
-
-constexpr int kIntervalCount = TAPA_SSSP_SWITCH_PORT_COUNT;
-constexpr int kSubIntervalCount = kIntervalCount * 1;
 
 constexpr int kPeCount = kShardCount;
 

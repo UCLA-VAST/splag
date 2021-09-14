@@ -930,7 +930,6 @@ spin:
   done_q.read(nullptr);
 }
 
-#if TAPA_SSSP_CGPQ_PUSH_COUNT >= 2
 void CgpqSwitch(
     //
     int b,
@@ -1036,8 +1035,6 @@ void CgpqPushAdapter(
       });
 }
 
-#endif  // TAPA_SSSP_CGPQ_PUSH_COUNT
-
 void SwitchMux(istreams<TaskOnChip, kSwitchMuxDegree>& in_q,
                ostream<TaskOnChip>& out_q) {
 spin:
@@ -1080,7 +1077,6 @@ void PopAdapter(istreams<TaskOnChip, kSubIntervalCount>& in_q,
       });
 }
 
-#if TAPA_SSSP_SWITCH_PORT_COUNT >= 2
 void Switch2x2(
     //
     int b,
@@ -1254,7 +1250,6 @@ void PopSwitchStage(int b, istreams<TaskOnChip, kPopSwitchPortCount>& in_q,
                     ostreams<TaskOnChip, kPopSwitchPortCount>& out_q) {
   task().invoke<detach>(PopSwitchInnerStage, b, in_q, in_q, out_q);
 }
-#endif  // TAPA_SSSP_SWITCH_PORT_COUNT
 
 void SwitchDemux(istream<TaskOnChip>& in_q,
                  ostreams<TaskOnChip, kSwitchMuxDegree>& out_q) {
@@ -2143,10 +2138,8 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
           cgpq_done_qi, vertex_filter_out_q, cgpq_push_req_q)
       .invoke<detach, kCgpqPushPortCount>(CgpqSwitchDemux, cgpq_push_req_q,
                                           cgpq_xbar_q)
-#if TAPA_SSSP_CGPQ_PUSH_COUNT >= 2
       .invoke<detach, kSwitchMuxDegree * kCgpqPushStageCount>(
           CgpqSwitchStage, seq(), cgpq_xbar_q, cgpq_xbar_q)
-#endif  // TAPA_SSSP_CGPQ_PUSH_COUNT
       .invoke<detach>(CgpqPushAdapter, cgpq_xbar_q, cgpq_xbar_out_qi)
       .invoke<detach, kCgpqPushPortCount>(  //
           CgpqSwitchMux, cgpq_xbar_out_qi, cgpq_xbar_out_q)
@@ -2199,10 +2192,8 @@ void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
       // For vertices.
       // Route updates via a kShardCount x kShardCount network.
       .invoke<detach, kShardCount * kEdgeVecLen>(SwitchDemux, xbar_in_q, xbar_q)
-#if TAPA_SSSP_SWITCH_PORT_COUNT >= 2
       .invoke<detach, kSwitchMuxDegree * kSwitchStageCount>(  //
           SwitchStage, seq(), xbar_q, xbar_q)
-#endif  // TAPA_SSSP_SWITCH_PORT_COUNT
       .invoke<detach>(PushAdapter, xbar_q, xbar_out_q)
       .invoke<detach, kSubIntervalCount>(SwitchMux, xbar_out_q, xbar_out_qx)
       .invoke<detach>(PopAdapter, vertex_filter_out_qi, vertex_filter_out_q)
