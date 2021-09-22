@@ -1885,7 +1885,7 @@ exec:
     task_req_q[tid_init].write(task_init);
 
   spin:
-    for (; !task_init_q.eos(nullptr);) {
+    for (; !task_init_q.eot(nullptr);) {
 #pragma HLS pipeline II = 1
       // Issue task requests.
       RANGE(tid, kTaskInputCount, {
