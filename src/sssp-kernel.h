@@ -14,6 +14,8 @@ using uint_vid_t = ap_uint<kVidWidth>;
 
 using uint_eid_t = ap_uint<kEidWidth>;
 
+using uint_deg_t = ap_uint<kDegreeWidth>;
+
 struct VertexNoop {
   using uint_vertex_noop_t = ap_uint<bit_length(kSubIntervalCount)>;
 
@@ -74,6 +76,8 @@ struct VertexCacheEntry {
   }
 
   void SetMetadata(const Vertex& vertex) {
+    CHECK_LT(vertex.offset, 1 << decltype(offset_)::width);
+    CHECK_LT(vertex.degree, 1 << decltype(degree_)::width);
     offset_ = vertex.offset;
     degree_ = vertex.degree;
   }
@@ -83,7 +87,7 @@ struct VertexCacheEntry {
   uint_vid_t parent_;
   float distance_;
   uint_eid_t offset_;
-  uint_vid_t degree_;
+  uint_deg_t degree_;
 };
 
 // Convenient functions and macros.

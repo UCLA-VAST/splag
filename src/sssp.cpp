@@ -309,7 +309,7 @@ void CgpqCore(
   DECL_ARRAY(ChunkMeta, chunk_meta, kBucketCountPerBank, ChunkMeta());
 
   TaskOnChip chunk_buf[kBucketCountPerBank][kBufferSize];
-#pragma HLS bind_storage variable = chunk_buf type = RAM_S2P impl = URAM
+#pragma HLS bind_storage variable = chunk_buf type = RAM_S2P impl = BRAM
 #pragma HLS array_partition variable = chunk_buf cyclic factor = \
     kPosPartFac dim = 2
 
@@ -1763,6 +1763,7 @@ exec:
 
   reset:
     for (int i = 0; i < kVertexCacheSize;) {
+#pragma HLS pipeline II = 1
 #pragma HLS dependence variable = cache inter false
       // Limit number of outstanding write requests to kMaxActiveWriteCount.
       const bool is_ready = active_write_count < kMaxActiveWriteCount;

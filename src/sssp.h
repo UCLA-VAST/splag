@@ -32,13 +32,14 @@ using Eid = int32_t;  // Large enough to index all edges.
 // since all distances are positive and normalized, we can store fewer bits.
 // kFloatWidth bits from kFloatMsb is used.
 constexpr int kFloatMsb = 30;
-constexpr int kFloatWidth = 18;
+constexpr int kFloatWidth = 31;
 constexpr int kFloatLsb = kFloatMsb - kFloatWidth + 1;
 static_assert(kFloatLsb >= 0, "invalid configuration");
 static_assert(kFloatMsb <= 32, "invalid configuration");
 
-static constexpr int kVidWidth = 23;
+static constexpr int kVidWidth = 28;
 static constexpr int kEidWidth = 28;
+static constexpr int kDegreeWidth = 23;
 
 constexpr Vid kNullVid = -1;
 constexpr float kInfDistance = std::numeric_limits<float>::infinity();
@@ -169,14 +170,14 @@ class TaskOnChip {
         ap_uint<32>(bit_cast<uint32_t>(distance)).range(kFloatMsb, kFloatLsb);
   }
 
-  static constexpr int kDegreeWidth = 20;
   static constexpr int vid_lsb = 0;
   static constexpr int vid_msb = vid_lsb + kVidWidth - 1;
   static constexpr int parent_lsb = vid_msb + 1;
   static constexpr int parent_msb = parent_lsb + kVidWidth - 1;
   static constexpr int distance_lsb = parent_msb + 1;
   static constexpr int distance_msb = distance_lsb + kFloatWidth - 1;
-  static constexpr int length = distance_msb + 1;
+  static constexpr int length = 128;
+  static_assert(length > distance_msb);
   ap_uint<length> data;
 
   friend struct HeapElemAxi;
@@ -226,7 +227,7 @@ using SpilledTask = std::array<TaskOnChip, kSpilledTaskVecLen>;
 
 constexpr int kCgpqPhysMemCount = 4;
 
-constexpr int kCgpqLogicMemCount = 2;
+constexpr int kCgpqLogicMemCount = 1;
 
 constexpr int kCgpqLogicMemWidth = kCgpqPhysMemCount / kCgpqLogicMemCount;
 
@@ -237,9 +238,9 @@ constexpr int kSpilledTaskVecLenPerMem =
 
 using SpilledTaskPerMem = std::array<TaskOnChip, kSpilledTaskVecLenPerMem>;
 
-constexpr int kCgpqChunkSize = 1024;
+constexpr int kCgpqChunkSize = 512;
 
-constexpr int kCgpqLevel = 14;
+constexpr int kCgpqLevel = 13;
 
 constexpr int kCgpqCapacity = (1 << kCgpqLevel) - 1;
 
