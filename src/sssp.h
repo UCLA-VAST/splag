@@ -212,10 +212,6 @@ static_assert(
     kPeCount % kShardCount == 0,
     "current implementation assumes PE count is a multiple of shard count");
 
-constexpr int kHeapOnChipWidth = 8;  // #children per on-heap element.
-
-constexpr int kHeapOffChipWidth = 16;  // #children per off-heap element.
-
 constexpr int kSpilledTaskVecLen = 16;
 
 static_assert(kShardCount * kEdgeVecLen == kSubIntervalCount);

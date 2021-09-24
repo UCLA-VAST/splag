@@ -319,7 +319,7 @@ void Refine(
   }
 }
 
-void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
+void SSSP(Task root, tapa::mmap<int64_t> metadata,
           tapa::mmaps<EdgeVec, kShardCount> edges,
           tapa::mmaps<Vertex, kIntervalCount> vertices, bool is_log_bucket,
           float min_distance, float max_distance, int32_t interval,
@@ -633,7 +633,7 @@ int main(int argc, char* argv[]) {
     const double elapsed_time =
         1e-9 *
         tapa::invoke_in_new_process(
-            SSSP, FLAGS_bitstream, Vid(vertex_count),
+            SSSP, FLAGS_bitstream,
             Task{
                 .vid = Vid(root),
                 .vertex =

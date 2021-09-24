@@ -1995,7 +1995,7 @@ queue_stat:
   }
 }
 
-void SSSP(Vid vertex_count, Task root, tapa::mmap<int64_t> metadata,
+void SSSP(Task root, tapa::mmap<int64_t> metadata,
           tapa::mmaps<EdgeVec, kShardCount> edges,
           tapa::mmaps<Vertex, kIntervalCount> vertices, bool is_log_bucket,
           float min_distance, float max_distance, int32_t interval,
