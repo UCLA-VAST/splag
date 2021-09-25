@@ -855,7 +855,7 @@ int main(int argc, char* argv[]) {
         const auto cycle_count = *(metadata_it++);
         VLOG(3) << "    spill count  : " << setfill(' ') << setw(10)
                 << spill_count << " / "
-                << cgpq_spill.size() / kCgpqBankCountPerMem /
+                << cgpq_spill[0].size() / kCgpqBankCountPerMem /
                        (kCgpqChunkSize / kSpilledTaskVecLen);
         VLOG(3) << "    max heap size: " << setfill(' ') << setw(10)
                 << max_heap_size << " / " << kCgpqCapacity;
