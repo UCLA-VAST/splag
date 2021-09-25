@@ -213,21 +213,21 @@ static_assert(
     kPeCount % kShardCount == 0,
     "current implementation assumes PE count is a multiple of shard count");
 
-constexpr int kSpilledTaskVecLen = 16;
+constexpr int kSpilledTaskVecLen = 4;
 
 static_assert(kShardCount * kEdgeVecLen == kSubIntervalCount);
 
-static_assert(kSubIntervalCount == kSpilledTaskVecLen);
-
-constexpr int kPopSwitchPortCount = kSubIntervalCount;
+constexpr int kPopSwitchPortCount = kSpilledTaskVecLen * kSwitchMuxDegree;
 
 constexpr int kPopSwitchStageCount = log2(kPopSwitchPortCount);
+
+constexpr int kSubIntervalPerSwPort = kSubIntervalCount / kPopSwitchPortCount;
 
 using SpilledTask = std::array<TaskOnChip, kSpilledTaskVecLen>;
 
 constexpr int kCgpqPhysMemCount = 4;
 
-constexpr int kCgpqLogicMemCount = 1;
+constexpr int kCgpqLogicMemCount = 4;
 
 constexpr int kCgpqLogicMemWidth = kCgpqPhysMemCount / kCgpqLogicMemCount;
 
