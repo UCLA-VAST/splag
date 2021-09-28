@@ -37,7 +37,7 @@ if(SDx_FOUND)
     CONNECTIVITY ${CMAKE_CURRENT_SOURCE_DIR}/link_config.ini
     CONSTRAINT ${CMAKE_CURRENT_BINARY_DIR}/constraint.tcl
     CLOCK_PERIOD 6.250
-    PLATFORM xilinx_u280_xdma_201920_3)
+    PLATFORM xilinx_u250_xdma_201830_2)
 
   include(ProcessorCount)
   ProcessorCount(NPROC)

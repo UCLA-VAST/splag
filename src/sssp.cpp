@@ -309,7 +309,7 @@ void CgpqCore(
   DECL_ARRAY(ChunkMeta, chunk_meta, kBucketCountPerBank, ChunkMeta());
 
   TaskOnChip chunk_buf[kBucketCountPerBank][kBufferSize];
-#pragma HLS bind_storage variable = chunk_buf type = RAM_S2P impl = BRAM
+#pragma HLS bind_storage variable = chunk_buf type = RAM_S2P impl = URAM
 #pragma HLS array_partition variable = chunk_buf cyclic factor = \
     kPosPartFac dim = 2
 
