@@ -11,12 +11,7 @@
 
 #include <ap_int.h>
 
-// Kernel-friendly bit_cast.
-template <typename To, typename From>
-inline To bit_cast(const From& from) {
-  static_assert(sizeof(To) == sizeof(From), "unsupported bitcast");
-  return reinterpret_cast<const To&>(from);
-}
+using tapa::bit_cast;
 
 // Test power-of-k.
 inline constexpr bool is_power_of(int n, int b) {
