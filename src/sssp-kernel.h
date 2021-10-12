@@ -688,4 +688,61 @@ spin:
   }
 }
 
+void Switch2x2Impl(int b, tapa::istream<TaskOnChip>& in_q0,
+                   tapa::istream<TaskOnChip>& in_q1,
+                   tapa::ostreams<TaskOnChip, 2>& out_q) {
+  bool should_prioritize_1 = false;
+
+spin:
+  for (bool is_pkt_0_valid, is_pkt_1_valid;;) {
+#pragma HLS pipeline II = 1
+#pragma HLS latency max = 0
+    const auto pkt_0 = in_q0.peek(is_pkt_0_valid);
+    const auto pkt_1 = in_q1.peek(is_pkt_1_valid);
+
+    const uint_vid_t addr_0 = pkt_0.vid();
+    const uint_vid_t addr_1 = pkt_1.vid();
+
+    const bool should_fwd_0_0 = is_pkt_0_valid && !addr_0.get_bit(b);
+    const bool should_fwd_0_1 = is_pkt_0_valid && addr_0.get_bit(b);
+    const bool should_fwd_1_0 = is_pkt_1_valid && !addr_1.get_bit(b);
+    const bool should_fwd_1_1 = is_pkt_1_valid && addr_1.get_bit(b);
+
+    const bool has_conflict = is_pkt_0_valid && is_pkt_1_valid &&
+                              should_fwd_0_0 == should_fwd_1_0 &&
+                              should_fwd_0_1 == should_fwd_1_1;
+
+    const bool should_read_0 = !((!should_fwd_0_0 && !should_fwd_0_1) ||
+                                 (should_prioritize_1 && has_conflict));
+    const bool should_read_1 = !((!should_fwd_1_0 && !should_fwd_1_1) ||
+                                 (!should_prioritize_1 && has_conflict));
+    const bool should_write_0 = should_fwd_0_0 || should_fwd_1_0;
+    const bool should_write_1 = should_fwd_1_1 || should_fwd_0_1;
+    const bool shoud_write_0_0 =
+        should_fwd_0_0 && (!should_fwd_1_0 || !should_prioritize_1);
+    const bool shoud_write_1_1 =
+        should_fwd_1_1 && (!should_fwd_0_1 || should_prioritize_1);
+
+    // if can forward through (0->0 or 1->1), do it
+    // otherwise, check for conflict
+    const bool is_0_written =
+        should_write_0 && out_q[0].try_write(shoud_write_0_0 ? pkt_0 : pkt_1);
+    const bool is_1_written =
+        should_write_1 && out_q[1].try_write(shoud_write_1_1 ? pkt_1 : pkt_0);
+
+    // if can forward through (0->0 or 1->1), do it
+    // otherwise, round robin priority of both ins
+    if (should_read_0 && (shoud_write_0_0 ? is_0_written : is_1_written)) {
+      in_q0.read(nullptr);
+    }
+    if (should_read_1 && (shoud_write_1_1 ? is_1_written : is_0_written)) {
+      in_q1.read(nullptr);
+    }
+
+    if (has_conflict) {
+      should_prioritize_1 = !should_prioritize_1;
+    }
+  }
+}
+
 #endif  // TAPA_SSSP_KERNEL_H_
