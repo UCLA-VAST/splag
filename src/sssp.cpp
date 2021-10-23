@@ -1251,7 +1251,7 @@ void VertexCache(
     ostream<packet<Vid, Vertex>>& write_req_q, istream<bool>& write_resp_q) {
   constexpr int kLogLevel = 5;
 
-  constexpr int kVertexCacheSize = 4096 * 16;
+  constexpr int kVertexCacheSize = 4096 * 32;
   VertexCacheEntry cache[kVertexCacheSize];
 #pragma HLS bind_storage variable = cache type = RAM_S2P impl = URAM
 #pragma HLS aggregate variable = cache bit

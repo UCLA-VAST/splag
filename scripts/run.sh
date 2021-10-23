@@ -6,14 +6,14 @@ build_dir="$(realpath "$2")"
 output_dir="$(realpath "$3")"
 
 datasets=(
-  rmat-21
+  hlwd-09
 )
 
 files=("${datasets[@]}")
 for file in "${files[@]}"; do
   files+=("${file}".weights)
 done
-files+=(SSSP.xilinx_u250_xdma_201830_2.vu5p.hw.xclbin)
+files+=(SSSP.xilinx_u250_xdma_201830_2.hw.xclbin)
 
 mkdir -p "${data_dir}"
 for file in "${files[@]}"; do
@@ -26,7 +26,7 @@ for file in "${files[@]}"; do
 done
 
 for dataset in "${datasets[@]}"; do
-  if [[ ! -f "${output_dir}/${dataset}.vu5p.log" ]]; then
+  if [[ ! -f "${output_dir}/${dataset}.u250.log" ]]; then
     case "${dataset}" in
     amzn)
       # amzn has discrete edge weights so handle it differently
@@ -46,6 +46,6 @@ for dataset in "${datasets[@]}"; do
       "${args[@]}" \
       "${data_dir}/${dataset}" |&
       tee "${output_dir}/.partial.log"
-    mv "${output_dir}/.partial.log" "${output_dir}/${dataset}.vu5p.log"
+    mv "${output_dir}/.partial.log" "${output_dir}/${dataset}.u250.log"
   fi
 done
