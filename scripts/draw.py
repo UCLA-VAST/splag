@@ -277,6 +277,8 @@ def draw(argv: List[str]) -> None:
     plt.xlabel('Dataset')
     plt.xticks(rotation=XTICK_ROTATION)
     plt.ylabel('Cache Hit Rate (%)')
+    plt.ylim([0, 100])
+    plt.gca().yaxis.grid()
     plt.legend()
 
   with figure('discarded-vertices'):
