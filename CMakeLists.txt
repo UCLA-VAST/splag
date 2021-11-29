@@ -6,8 +6,19 @@ project(sssp)
 find_package(gflags REQUIRED)
 find_package(TAPA REQUIRED)
 
+include(FetchContent)
+
+FetchContent_Declare(
+  ap_int
+  GIT_REPOSITORY https://github.com/Xilinx/HLS_arbitrary_Precision_Types.git
+  GIT_TAG 200a9aecaadf471592558540dc5a88256cbf880f # 2019/03/18
+)
+
+FetchContent_MakeAvailable(ap_int)
+
 add_library(sssp_kernel)
 target_sources(sssp_kernel PRIVATE src/sssp.cpp)
+target_compile_options(sssp_kernel PUBLIC -I${ap_int_SOURCE_DIR}/include)
 target_compile_features(sssp_kernel PUBLIC cxx_std_17)
 target_link_libraries(sssp_kernel PUBLIC tapa::tapa)
 
