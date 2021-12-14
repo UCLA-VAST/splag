@@ -44,6 +44,7 @@ from matplotlib import pyplot as plt  # isort:skip pylint:disable=all
 SAVEFIG_KWARGS = {
     'dpi': 300,
     'bbox_inches': 'tight',
+    'pad_inches': 0,
     'metadata': {
         'CreationDate': None,
     },
@@ -78,11 +79,9 @@ def figure(name: str):
 
 
 def main(argv: List[str]):
-  # matplotlib.font_manager._rebuild()
   plt.rcParams['font.family'] = 'Linux Libertine'
-  plt.rcParams['font.size'] = 14  # 2x
-  # plt.rcParams['hatch.linewidth'] = BAR_KWARGS['linewidth']
-  plt.rcParams["figure.figsize"] = (6, 2.5)
+  plt.rcParams['font.size'] = 12
+  plt.rcParams["figure.figsize"] = (6, 1.65)
 
   draw(argv)
 
@@ -160,6 +159,7 @@ def draw(argv: List[str]) -> None:
       plt.ylabel('Bucket Size')
 
   with figure('pq-size'):
+    plt.gcf().set_size_inches(6, 2.05)
     for filename in FLAGS.pq_size:
       history = np.load(filename)
       logging.info('loaded file "%s"', filename)
@@ -188,6 +188,7 @@ def draw(argv: List[str]) -> None:
   for filename in argv[1:]:
     datasets.append(os.path.basename(filename).split('.', 1)[0])
     with open(filename) as fp:
+      logging.info('reading file "%s"', filename)
       metrics: List[QueryMetric] = []
       for line in fp:
         line = _ANSI_ESCAPE.sub('', line)
@@ -315,6 +316,7 @@ def draw(argv: List[str]) -> None:
     plt.xlabel('Dataset')
     plt.xticks(rotation=XTICK_ROTATION)
     plt.ylabel('Throughput (MTEPS)')
+    plt.gca().yaxis.grid()
     plt.legend()
 
   with figure('work-efficiency'):
