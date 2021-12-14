@@ -7,11 +7,7 @@ if [[ ! -x "${sssp_bin}" ]]; then
   exit 1
 fi
 
-dataset_dir="$2"
-if [[ ! -d "${dataset_dir}" ]]; then
-  echo "${dataset_dir} is not an directory" >&2
-  exit 2
-fi
+data_dir="$2"
 
 shift 2
 
@@ -27,7 +23,15 @@ for file in "$@"; do
   dataset="${dataset%%.*}"
   bucket_count=128
 
-  log_file="${file%/*}/${dataset}.${sssp_bin##*/}.log"
+  mkdir -p "${data_dir}"
+  if [[ ! -f "${data_dir}/${dataset}.gr" ]]; then
+    curl -L \
+      "https://github.com/UCLA-VAST/splag/releases/download/fpga22/${dataset}.gr.gz" |
+      gzip -d >"${data_dir}"/.partial
+    mv "${data_dir}"/.partial "${data_dir}/${dataset}.gr"
+  fi
+
+  log_file="${file%/*}/${dataset}.sssp-cpu.log"
   exec {log_fd}>${log_file}
 
   trv_teps_recp=0.
@@ -52,7 +56,7 @@ for file in "$@"; do
       delta=$(((max_distance - min_distance) / bucket_count))
 
       "${sssp_bin}" \
-        "${dataset_dir}/${dataset}.gr" \
+        "${data_dir}/${dataset}.gr" \
         --algo=deltaStep \
         --delta="${delta}" \
         -t="$(nproc)" \
@@ -74,7 +78,7 @@ for file in "$@"; do
       trv_teps_recp=$((trv_teps_recp + 1000. * time_ms / edge_traversed))
       alg_teps_recp=$((alg_teps_recp + 1000. * time_ms / edge_connected))
       query_count=$((query_count + 1))
-      printf 'query #%d: %.0f / %.0f MTEPS\n' \
+      printf "${dataset}: query #%02d: %.0f / %.0f MTEPS\n" \
         ${query_count} \
         $((query_count / trv_teps_recp)) \
         $((query_count / alg_teps_recp)) |
@@ -85,7 +89,7 @@ for file in "$@"; do
     esac
   done <"${file}"
 
-  printf 'Throughput: %.0f / %.0f MTEPS (harmonic mean over %d queries)\n' \
+  printf "${dataset}: Throughput: %.0f / %.0f MTEPS (harmonic mean over %d queries)\n" \
     $((query_count / trv_teps_recp)) \
     $((query_count / alg_teps_recp)) \
     ${query_count} |
