@@ -2,3 +2,6 @@
 /.vscode/
 /build/
 /compile_commands.json
+/docker/build
+/docker/data
+/docker/output
