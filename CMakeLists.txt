@@ -31,12 +31,13 @@ find_package(SDx)
 if(SDx_FOUND)
   add_tapa_target(
     sssp-hw-xo
+    --enable-synth-util
     INPUT src/sssp.cpp
     TOP SSSP
-    DIRECTIVE ${CMAKE_CURRENT_SOURCE_DIR}/directive.json
+    CONNECTIVITY ${CMAKE_CURRENT_SOURCE_DIR}/link_config.ini
     CONSTRAINT ${CMAKE_CURRENT_BINARY_DIR}/constraint.tcl
     CLOCK_PERIOD 6.250
-    PLATFORM xilinx_u250_xdma_201830_2)
+    PLATFORM xilinx_u280_xdma_201920_3)
 
   include(ProcessorCount)
   ProcessorCount(NPROC)

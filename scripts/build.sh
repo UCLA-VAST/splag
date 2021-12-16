@@ -21,5 +21,5 @@ PATH="${tmp_dir}:${PATH}"
 cmake -S. -B"${build_dir}" -DCMAKE_BUILD_TYPE=Release
 make -C "${build_dir}" sssp-hw-xo
 bash <<EOF
-exec make -C ${build_dir@Q} SSSP.xilinx_u250_xdma_201830_2.hw_xclbin
+exec make -C ${build_dir@Q} SSSP.xilinx_u280_xdma_201920_3.hw_xclbin
 EOF

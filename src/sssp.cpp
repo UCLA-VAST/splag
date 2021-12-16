@@ -309,7 +309,7 @@ void CgpqCore(
   DECL_ARRAY(ChunkMeta, chunk_meta, kBucketCountPerBank, ChunkMeta());
 
   TaskOnChip chunk_buf[kBucketCountPerBank][kBufferSize];
-#pragma HLS bind_storage variable = chunk_buf type = RAM_S2P impl = URAM
+#pragma HLS bind_storage variable = chunk_buf type = RAM_S2P impl = BRAM
 #pragma HLS array_partition variable = chunk_buf cyclic factor = \
     kPosPartFac dim = 2
 
@@ -1251,7 +1251,7 @@ void VertexCache(
     ostream<packet<Vid, Vertex>>& write_req_q, istream<bool>& write_resp_q) {
   constexpr int kLogLevel = 5;
 
-  constexpr int kVertexCacheSize = 4096 * 32;
+  constexpr int kVertexCacheSize = 4096 * 16;
   VertexCacheEntry cache[kVertexCacheSize];
 #pragma HLS bind_storage variable = cache type = RAM_S2P impl = URAM
 #pragma HLS aggregate variable = cache bit

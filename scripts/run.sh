@@ -6,14 +6,30 @@ build_dir="$(realpath "$2")"
 output_dir="$(realpath "$3")"
 
 datasets=(
+  amzn
+  dblp
+  digg
+  flickr
+  g500-15
+  g500-16
+  g500-17
+  g500-18
+  g500-19
+  g500-20
+  g500-21
+  g500-22
   hlwd-09
+  orkut
+  rmat-21
+  wiki
+  youtube
 )
 
-files=("${datasets[@]}")
+files=(g500-13 g500-14 road-ny road-col road-fla "${datasets[@]}")
 for file in "${files[@]}"; do
   files+=("${file}".weights)
 done
-files+=(SSSP.xilinx_u250_xdma_201830_2.hw.xclbin)
+files+=(metadata.json SSSP.xilinx_u280_xdma_201920_3.hw.xclbin)
 
 mkdir -p "${data_dir}"
 for file in "${files[@]}"; do
@@ -25,8 +41,9 @@ for file in "${files[@]}"; do
   fi
 done
 
+logs=()
 for dataset in "${datasets[@]}"; do
-  if [[ ! -f "${output_dir}/${dataset}.u250.log" ]]; then
+  if [[ ! -f "${output_dir}/${dataset}.log" ]]; then
     case "${dataset}" in
     amzn)
       # amzn has discrete edge weights so handle it differently
@@ -46,6 +63,51 @@ for dataset in "${datasets[@]}"; do
       "${args[@]}" \
       "${data_dir}/${dataset}" |&
       tee "${output_dir}/.partial.log"
-    mv "${output_dir}/.partial.log" "${output_dir}/${dataset}.u250.log"
+    mv "${output_dir}/.partial.log" "${output_dir}/${dataset}.log"
   fi
+  logs+=("${output_dir}/${dataset}.log")
 done
+
+if [[ ! -f "${output_dir}"/g500-15.bucket-distribution.npy ]]; then
+  "${build_dir}"/sssp \
+    --bucket_distribution="${output_dir}"/.partial.npy \
+    "${data_dir}"/g500-15 \
+    --max_distance=1.2
+  mv \
+    "${output_dir}"/.partial.npy \
+    "${output_dir}"/g500-15.bucket-distribution.npy
+fi
+
+pq_sizes=''
+for dataset in g500-13 g500-14 g500-15 road-ny road-col road-fla; do
+  if [[ ! -f "${output_dir}/${dataset}.pq-size.npy" ]]; then
+    "${build_dir}"/sssp \
+      "${data_dir}/${dataset}" \
+      --pq_size="${output_dir}"/.partial.npy
+    mv "${output_dir}"/.partial.npy "${output_dir}/${dataset}.pq-size.npy"
+  fi
+  pq_sizes="${pq_sizes}${dataset}.pq-size.npy,"
+done
+
+if [[ ! -f ~/.local/share/fonts/.downloaded-LinLibertineTTF_5.3.0_2012_07_02.tgz ]]; then
+  mkdir -p ~/.local/share/fonts
+  curl -L \
+    'https://sourceforge.net/projects/linuxlibertine/files/linuxlibertine/5.3.0/LinLibertineTTF_5.3.0_2012_07_02.tgz' |
+    tar --directory ~/.local/share/fonts \
+      --extract \
+      --gzip \
+      --wildcards \
+      --file - \
+      'LinLibertine_R*.ttf'
+  touch ~/.local/share/fonts/.downloaded-LinLibertineTTF_5.3.0_2012_07_02.tgz
+fi
+
+pushd "${output_dir}"
+LANG=en_US.UTF-8 "${base_dir}"/draw.py \
+  --png_dir=. \
+  --pdf_dir=. \
+  "${logs[@]}" \
+  --pq_size="${pq_sizes%,}" \
+  --bucket_distribution=g500-15.bucket-distribution.npy \
+  --metadata="${data_dir}"/metadata.json
+popd

@@ -118,7 +118,7 @@ constexpr int kEdgeUnitStatCount = 4;
 
 constexpr int kVertexUniStatCount = 13;
 
-constexpr int kCgpqPushPortCount = 8;
+constexpr int kCgpqPushPortCount = 16;
 
 constexpr int kCgpqPushStageCount = log2(kCgpqPushPortCount);
 
@@ -185,13 +185,13 @@ class TaskOnChip {
 
 // Platform-specific constants and types.
 
-constexpr int kShardCount = 4;  // #edge partitions.
+constexpr int kShardCount = 8;  // #edge partitions.
 
 constexpr int kEdgeVecLen = 2;
 
 static_assert(kShardCount * kEdgeVecLen == kCgpqPushPortCount);
 
-constexpr int kIntervalCount = 8;
+constexpr int kIntervalCount = 16;
 constexpr int kSubIntervalCount = kIntervalCount * 1;
 
 using EdgeVec = tapa::vec_t<Edge, kEdgeVecLen>;
@@ -225,9 +225,9 @@ constexpr int kSubIntervalPerSwPort = kSubIntervalCount / kPopSwitchPortCount;
 
 using SpilledTask = std::array<TaskOnChip, kSpilledTaskVecLen>;
 
-constexpr int kCgpqPhysMemCount = 2;
+constexpr int kCgpqPhysMemCount = 4;
 
-constexpr int kCgpqLogicMemCount = 2;
+constexpr int kCgpqLogicMemCount = 4;
 
 constexpr int kCgpqLogicMemWidth = kCgpqPhysMemCount / kCgpqLogicMemCount;
 
@@ -238,9 +238,9 @@ constexpr int kSpilledTaskVecLenPerMem =
 
 using SpilledTaskPerMem = std::array<TaskOnChip, kSpilledTaskVecLenPerMem>;
 
-constexpr int kCgpqChunkSize = 1024;
+constexpr int kCgpqChunkSize = 512;
 
-constexpr int kCgpqLevel = 15;
+constexpr int kCgpqLevel = 13;
 
 constexpr int kCgpqCapacity = (1 << kCgpqLevel) - 1;
 
