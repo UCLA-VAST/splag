@@ -50,7 +50,6 @@ DEFINE_bool(is_log_bucket, true, "use logarithm bucket instead of linear");
 DEFINE_double(min_distance, 0, "min distance");
 DEFINE_double(max_distance, 0, "max distance");
 
-DEFINE_string(pq_size, "", "priority queue size history");
 DEFINE_string(bucket_distribution, "", "bucket size history");
 DEFINE_bool(bf_amount_of_work, false, "calculate bellman-ford amount of work");
 DEFINE_string(mtx, "", "dump mtx file");
@@ -480,42 +479,6 @@ int main(int argc, char* argv[]) {
     ++valid_root_count;
     if (valid_root_count > 64) {
       break;
-    }
-
-    if (!FLAGS_pq_size.empty()) {
-      std::vector<float> distances(vertex_count, kInfDistance);
-      auto cmp = [&distances](auto a, auto b) {
-        return distances[a] > distances[b];
-      };
-      std::priority_queue<int64_t, std::vector<int64_t>, decltype(cmp)> pq(cmp);
-
-      distances[root] = 0.f;
-      pq.push(root);
-
-      std::vector<int64_t> pq_size_history;
-
-      while (!pq.empty()) {
-        const auto src = pq.top();
-        pq.pop();
-
-        const auto src_dist = distances[src];
-        const auto src_index = indices[src];
-        for (int64_t i = 0; i < src_index.count; ++i) {
-          pq_size_history.push_back(pq.size());
-
-          const auto edge = edges[src % kShardCount][src_index.offset + i];
-          const auto new_dist = src_dist + edge.weight;
-          if (new_dist < distances[edge.dst]) {
-            distances[edge.dst] = new_dist;
-            pq.push(edge.dst);
-          }
-        }
-      }
-
-      cnpy::npy_save(FLAGS_pq_size, pq_size_history);
-      LOG(INFO) << "history of " << pq_size_history.size()
-                << " iterations saved";
-      return 0;
     }
 
     CHECK_GE(root, 0) << "invalid root";
