@@ -14,7 +14,6 @@
 #include <unordered_set>
 #include <vector>
 
-#include <cnpy.h>
 #include <gflags/gflags.h>
 #include <glog/logging.h>
 #include <tapa.h>
