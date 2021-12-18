@@ -50,8 +50,6 @@ DEFINE_bool(is_log_bucket, true, "use logarithm bucket instead of linear");
 DEFINE_double(min_distance, 0, "min distance");
 DEFINE_double(max_distance, 0, "max distance");
 
-DEFINE_string(mtx, "", "dump mtx file");
-
 template <typename T>
 bool IsValid(int64_t root, PackedEdgesView edges, WeightsView weights,
              const vector<unordered_map<T, float>>& indexed_weights,
@@ -391,23 +389,6 @@ int main(int argc, char* argv[]) {
   VLOG(3) << "avg degree: " << fixed << setprecision(1)
           << 1. * edge_count / vertex_count;
   VLOG(3) << "max degree: " << max_degree;
-
-  if (!FLAGS_mtx.empty()) {
-    std::ofstream ofs(FLAGS_mtx);
-    ofs << vertex_count << " " << vertex_count << " " << edge_count * 2
-        << std::endl;
-    for (Eid eid = 0; eid < edge_count; ++eid) {
-      const auto& edge = edges_view[eid];
-      const auto weight = weights_view[eid];
-      ofs << edge.v0() + 1 << " " << edge.v1() + 1 << " " << weight << std::endl
-          << edge.v1() + 1 << " " << edge.v0() + 1 << " " << weight
-          << std::endl;
-      LOG_EVERY_N(INFO, 1000000)
-          << eid << " / " << edge_count << " edges processed (" << fixed
-          << setprecision(1) << 100. * eid / edge_count << "%)";
-    }
-    return 0;
-  }
 
   if (VLOG_IS_ON(3)) {
     vector<int64_t> bins(7);
