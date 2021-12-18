@@ -50,7 +50,6 @@ DEFINE_bool(is_log_bucket, true, "use logarithm bucket instead of linear");
 DEFINE_double(min_distance, 0, "min distance");
 DEFINE_double(max_distance, 0, "max distance");
 
-DEFINE_bool(bf_amount_of_work, false, "calculate bellman-ford amount of work");
 DEFINE_string(mtx, "", "dump mtx file");
 
 template <typename T>
@@ -563,55 +562,6 @@ int main(int argc, char* argv[]) {
     if (connected_vertex_count * 100 < vertex_count) {
       LOG(INFO) << "too few vertices in the connected component, skipping";
       continue;
-    }
-
-    if (FLAGS_bf_amount_of_work) {
-      std::vector<float> distances_curr(vertex_count, kInfDistance);
-      std::vector<float> distances_next(vertex_count, kInfDistance);
-      std::vector<bool> is_active_ping(vertex_count, false);
-      std::vector<bool> is_active_pong(vertex_count, false);
-
-      auto is_active_curr = &is_active_ping;
-      auto is_active_next = &is_active_pong;
-
-      distances_curr[root] = 0.f;
-      is_active_curr->at(root) = true;
-
-      int64_t edges_visited = 0;
-
-      for (;;) {
-        bool has_update = false;
-        std::fill(is_active_next->begin(), is_active_next->end(), false);
-
-        for (int64_t src = 0; src < vertex_count; ++src) {
-          if (is_active_curr->at(src)) {
-            const auto src_dist = distances_curr[src];
-            const auto src_index = indices[src];
-            for (int64_t i = 0; i < src_index.count; ++i) {
-              ++edges_visited;
-
-              const auto edge = edges[src % kShardCount][src_index.offset + i];
-              const auto new_dist = src_dist + edge.weight;
-              if (new_dist < distances_next[edge.dst]) {
-                has_update = true;
-                is_active_next->at(edge.dst) = true;
-                distances_next[edge.dst] = new_dist;
-              }
-            }
-          }
-        }
-
-        std::swap(is_active_curr, is_active_next);
-        distances_curr = distances_next;
-
-        if (!has_update) {
-          break;
-        }
-      }
-
-      LOG(INFO) << "#edges visited: " << edges_visited << " (" << fixed
-                << setprecision(1) << 1. * edges_visited / connected_edge_count
-                << "x of " << connected_edge_count << ")";
     }
 
     VLOG(3) << "kernel time: " << elapsed_time << " s";
