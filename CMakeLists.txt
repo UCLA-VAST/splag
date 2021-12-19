@@ -32,6 +32,19 @@ target_sources(sssp PRIVATE src/sssp-g500.cpp)
 target_compile_features(sssp PRIVATE cxx_std_17)
 target_link_libraries(sssp PRIVATE sssp_kernel sssp_host tapa::tapa gflags)
 
+add_executable(recut-sssp)
+target_sources(recut-sssp PRIVATE src/recut-sssp.cpp)
+target_compile_features(recut-sssp PRIVATE cxx_std_17)
+target_link_libraries(
+  recut-sssp
+  PRIVATE sssp_kernel
+          sssp_host
+          tapa::tapa
+          gflags
+          openvdb
+          Half
+          tbb)
+
 find_package(SDx)
 if(SDx_FOUND)
   add_tapa_target(
