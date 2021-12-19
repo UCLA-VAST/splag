@@ -22,10 +22,15 @@ target_compile_options(sssp_kernel PUBLIC -I${ap_int_SOURCE_DIR}/include)
 target_compile_features(sssp_kernel PUBLIC cxx_std_17)
 target_link_libraries(sssp_kernel PUBLIC tapa::tapa)
 
+add_library(sssp_host)
+target_sources(sssp_host PRIVATE src/sssp-host.cpp)
+target_compile_features(sssp_host PUBLIC cxx_std_17)
+target_link_libraries(sssp_host PUBLIC sssp_kernel tapa::tapa)
+
 add_executable(sssp)
-target_sources(sssp PRIVATE src/sssp-host.cpp)
+target_sources(sssp PRIVATE src/sssp-g500.cpp)
 target_compile_features(sssp PRIVATE cxx_std_17)
-target_link_libraries(sssp PRIVATE sssp_kernel tapa::tapa gflags)
+target_link_libraries(sssp PRIVATE sssp_kernel sssp_host tapa::tapa gflags)
 
 find_package(SDx)
 if(SDx_FOUND)

@@ -248,4 +248,11 @@ using uint_spill_addr_t =
     ap_uint<bit_length(kCgpqCapacity) +
             log2(kCgpqChunkSize / kSpilledTaskVecLen * kCgpqBankCountPerMem)>;
 
+// The kernel function.
+void SSSP(Task root, tapa::mmap<int64_t> metadata,
+          tapa::mmaps<EdgeVec, kShardCount> edges,
+          tapa::mmaps<Vertex, kIntervalCount> vertices, bool is_log_bucket,
+          float min_distance, float max_distance,
+          tapa::mmaps<SpilledTaskPerMem, kCgpqPhysMemCount> cgpq_spill);
+
 #endif  // TAPA_SSSP_H_
