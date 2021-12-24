@@ -157,7 +157,7 @@ if [[ -r "${img}" ]]; then
   gzip -cd <"${base_dir}/${img}" | docker load
 else
   for item in "${items[@]}"; do
-    argv docker build \
+    docker build \
       --target="${item}-${job}" \
       --tag=splag-"${item}-${job}" \
       --network=host \
