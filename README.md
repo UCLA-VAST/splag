@@ -18,7 +18,7 @@ SPLAG is an FPGA accelerator for the single-source shortest path (SSSP) problem,
 
 + [TAPA](https://github.com/UCLA-VAST/tapa)
 + [AutoBridge](https://github.com/Licheng-Guo/AutoBridge)
-+ Xilinx Alveo U280 FPGA and its `xilinx_u280_xdma_201920_3 ` shell platform
++ Xilinx Alveo U280 FPGA and its `xilinx_u280_xdma_201920_3` shell platform
 
 ## Getting Started
 
