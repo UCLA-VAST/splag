@@ -35,7 +35,7 @@ void CgpqSpillMem(
     istream<packet<uint_spill_addr_t, SpilledTaskPerMem>>& write_req_q,
     ostream<bool>& write_resp_q,
     //
-    tapa::async_mmap<SpilledTaskPerMem> mem) {
+    tapa::async_mmap<SpilledTaskPerMem>& mem) {
   ReadWriteMem(read_addr_q, read_data_q, write_req_q, write_resp_q, mem);
 }
 
@@ -1137,7 +1137,7 @@ void SwitchOutputArbiter(
 
 void EdgeMem(istream<bool>& done_q, ostream<int64_t>& stat_q,
              istream<Vid>& read_addr_q, ostream<EdgeVec>& read_data_q,
-             async_mmap<EdgeVec> mem) {
+             async_mmap<EdgeVec>& mem) {
   int64_t total_cycle_count = 0;
   int64_t active_cycle_count = 0;
   int64_t mem_stall_cycle_count = 0;
@@ -1230,7 +1230,7 @@ void VertexMem(
     istream<Vid>& read_addr_q, ostream<Vertex>& read_data_q,
     istream<packet<Vid, Vertex>>& write_req_q, ostream<bool>& write_resp_q,
     //
-    tapa::async_mmap<Vertex> mem) {
+    tapa::async_mmap<Vertex>& mem) {
   ReadWriteMem(read_addr_q, read_data_q, write_req_q, write_resp_q, mem);
 }
 
